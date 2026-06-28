@@ -1,0 +1,795 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full scroll-smooth">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>1st RDP Security Monitor - Live Report</title>
+    
+    <!-- External CSS -->
+    <link rel="stylesheet" href="assets/css/1st_rdpmon-styles.css">
+    
+    <!-- External JavaScript (set type="module" on production for config) -->
+    <script src="assets/js/1st_config.js" defer></script>
+    <script src="assets/js/1st_rdpmon-app.js" defer></script>
+    <script src="assets/js/1st_AbuseIPDB.js" defer></script>
+    <script src="assets/js/1st_OpenWindow.js" defer></script>
+    
+    <!-- Tailwind CSS CDN (2025 Latest) -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        const GIT_URL = 'https://github.com/paulmann/RDPAudit';
+        
+        // Template variables that will be replaced by PowerShell
+        const TEMPLATE_VARS = {
+            GENERATION_TIME: '{{GENERATION_TIME}}',
+            TOTAL_RECORDS: '{{TOTAL_RECORDS}}',
+            AUTO_REFRESH_INTERVAL: parseInt('{{AUTO_REFRESH_INTERVAL}}') || 30,
+            DATABASE_PATH: '{{DATABASE_PATH}}',
+            REPORT_ID: '{{REPORT_ID}}',
+            DATA_JSON: '{{DATA_JSON}}'
+        };
+        
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: {
+                        primary: {
+                            50: '#eff6ff',
+                            100: '#dbeafe',
+                            200: '#bfdbfe',
+                            300: '#93c5fd',
+                            400: '#60a5fa',
+                            500: '#3b82f6',
+                            600: '#2563eb',
+                            700: '#1d4ed8',
+                            800: '#1e40af',
+                            900: '#1e3a8a',
+                        },
+                        danger: {
+                            50: '#fef2f2',
+                            100: '#fee2e2',
+                            200: '#fecaca',
+                            300: '#fca5a5',
+                            400: '#f87171',
+                            500: '#ef4444',
+                            600: '#dc2626',
+                            700: '#b91c1c',
+                            800: '#991b1b',
+                            900: '#7f1d1d',
+                        },
+                        success: {
+                            50: '#f0fdf4',
+                            100: '#dcfce7',
+                            200: '#bbf7d0',
+                            300: '#86efac',
+                            400: '#4ade80',
+                            500: '#22c55e',
+                            600: '#16a34a',
+                            700: '#15803d',
+                            800: '#166534',
+                            900: '#14532d',
+                        }
+                    },
+                    animation: {
+                        'pulse-slow': 'pulse 3s cubic-bezier(0.4, 0, 0.6, 1) infinite',
+                        'float': 'float 3s ease-in-out infinite',
+                        'gradient': 'gradient 8s ease infinite',
+                    },
+                    keyframes: {
+                        float: {
+                            '0%, 100%': { transform: 'translateY(0)' },
+                            '50%': { transform: 'translateY(-10px)' },
+                        },
+                        gradient: {
+                            '0%, 100%': { backgroundPosition: '0% 50%' },
+                            '50%': { backgroundPosition: '100% 50%' },
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+    
+    <!-- Font Awesome Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    
+    <!-- Inter Font -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    
+    <!-- Chart.js -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body class="bg-gradient-to-br from-gray-50 to-gray-100 dark:from-gray-900 dark:to-gray-800 min-h-screen transition-colors duration-300">
+    <div class="mx-auto px-4 py-6 md:py-8 w-full max-w-full" id="main-container">
+        <!-- Header Section -->
+        <header class="mb-8 md:mb-12">
+            <div class="flex flex-col md:flex-row justify-between items-center mb-8">
+                <div class="mb-6 md:mb-0">
+                    <h1 class="text-3xl md:text-4xl font-bold mb-2">
+                        <span class="gradient-text">
+                            <i class="fas fa-shield-alt mr-3"></i>RDP Security Monitor
+                        </span>
+                    </h1>
+                    <p class="text-gray-600 dark:text-gray-400">
+                        Real-time monitoring of RDP authentication attempts
+                        <span class="ml-2 px-2 py-1 bg-primary-100 dark:bg-primary-900/30 text-primary-700 dark:text-primary-300 rounded text-xs font-medium">
+                            <i class="fas fa-clock mr-1"></i>Generated: <span id="generation-time">{{GENERATION_TIME}}</span>
+                        </span>
+                    </p>
+                </div>
+                
+                <div class="flex flex-wrap gap-3">
+                    <!-- Last update time display -->
+                    <div class="tooltip" data-tip="Last update time">
+                        <div class="px-4 py-2 glass-card rounded-xl flex items-center space-x-2 text-gray-800 dark:text-white">
+                            <i class="fas fa-clock text-primary-500"></i>
+                            <span id="last-updated" class="font-medium">Just now</span>
+                        </div>
+                    </div>
+                    
+                    <!-- Manual refresh button -->
+                    <button id="refresh-btn" class="px-4 py-2 bg-primary-500 hover:bg-primary-600 text-white rounded-xl transition-all duration-300 hover:scale-105 active:scale-95 flex items-center">
+                        <i class="fas fa-sync-alt mr-2"></i>
+                        <span class="hidden md:inline">Refresh</span>
+                    </button>
+                    
+                    <!-- Theme toggle button -->
+                    <button id="theme-toggle" class="px-4 py-2 glass-card rounded-xl hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors text-gray-800 dark:text-white">
+                        <i id="theme-icon" class="fas fa-moon"></i>
+                    </button>
+                </div>
+            </div>
+            
+            <!-- Statistics Cards -->
+            <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
+                <!-- Attack Attempts Card -->
+                <div class="glass-card rounded-2xl p-5 transform transition-all duration-300 hover:scale-[1.02] hover-lift">
+                    <div class="flex items-center">
+                        <div class="p-3 bg-danger-100 dark:bg-danger-900/30 rounded-xl mr-4">
+                            <i class="fas fa-skull-crossbones text-danger-500 text-xl"></i>
+                        </div>
+                        <div>
+                            <p class="text-gray-500 dark:text-gray-400 text-sm mb-1">Attack Attempts</p>
+                            <p class="text-2xl font-bold text-gray-800 dark:text-white" id="attack-count">0</p>
+                        </div>
+                    </div>
+                    <div class="mt-3 h-1 w-full bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
+                        <div id="attack-progress" class="h-full bg-danger-500 rounded-full transition-all duration-500"></div>
+                    </div>
+                </div>
+                
+                <!-- Legitimate Logins Card -->
+                <div class="glass-card rounded-2xl p-5 transform transition-all duration-300 hover:scale-[1.02] hover-lift">
+                    <div class="flex items-center">
+                        <div class="p-3 bg-success-100 dark:bg-success-900/30 rounded-xl mr-4">
+                            <i class="fas fa-check-circle text-success-500 text-xl"></i>
+                        </div>
+                        <div>
+                            <p class="text-gray-500 dark:text-gray-400 text-sm mb-1">Legitimate Logins</p>
+                            <p class="text-2xl font-bold text-gray-800 dark:text-white" id="legit-count">0</p>
+                        </div>
+                    </div>
+                    <div class="mt-3 h-1 w-full bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
+                        <div id="legit-progress" class="h-full bg-success-500 rounded-full transition-all duration-500"></div>
+                    </div>
+                </div>
+                
+                <!-- Total Failures Card -->
+                <div class="glass-card rounded-2xl p-5 transform transition-all duration-300 hover:scale-[1.02] hover-lift">
+                    <div class="flex items-center">
+                        <div class="p-3 bg-primary-100 dark:bg-primary-900/30 rounded-xl mr-4">
+                            <i class="fas fa-exclamation-triangle text-primary-500 text-xl"></i>
+                        </div>
+                        <div>
+                            <p class="text-gray-500 dark:text-gray-400 text-sm mb-1">Total Failures</p>
+                            <p class="text-2xl font-bold text-gray-800 dark:text-white" id="fail-total">0</p>
+                        </div>
+                    </div>
+                    <div class="mt-3 text-xs text-gray-500">
+                        <span id="fail-rate">0%</span> failure rate
+                    </div>
+                </div>
+                
+                <!-- Active Sessions Card -->
+                <div class="glass-card rounded-2xl p-5 transform transition-all duration-300 hover:scale-[1.02] hover-lift">
+                    <div class="flex items-center">
+                        <div class="p-3 bg-purple-100 dark:bg-purple-900/30 rounded-xl mr-4">
+                            <i class="fas fa-user-clock text-purple-500 text-xl"></i>
+                        </div>
+                        <div>
+                            <p class="text-gray-500 dark:text-gray-400 text-sm mb-1">Active Sessions</p>
+                            <p class="text-2xl font-bold text-gray-800 dark:text-white" id="active-count">0</p>
+                        </div>
+                    </div>
+                    <div class="mt-2">
+                        <span class="px-2 py-1 bg-purple-100 dark:bg-purple-900/30 text-purple-700 dark:text-purple-300 rounded text-xs">
+                            Real-time
+                        </span>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Quick Action Buttons -->
+            <div class="flex flex-wrap gap-3 mb-6">
+                <button id="filter-all" class="px-4 py-2 glass-card rounded-xl hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors tab-active text-gray-800 dark:text-white">
+                    <i class="fas fa-list mr-2 text-primary-500"></i>All Connections
+                </button>
+                <button id="filter-attack" class="px-4 py-2 glass-card rounded-xl hover:bg-danger-50 dark:hover:bg-danger-900/20 transition-colors text-gray-800 dark:text-white">
+                    <i class="fas fa-skull-crossbones mr-2 text-danger-500"></i>Attack Only
+                </button>
+                <button id="filter-legit" class="px-4 py-2 glass-card rounded-xl hover:bg-success-50 dark:hover:bg-success-900/20 transition-colors text-gray-800 dark:text-white">
+                    <i class="fas fa-check-circle mr-2 text-success-500"></i>Legitimate Only
+                </button>
+                <button id="export-btn" class="px-4 py-2 glass-card rounded-xl hover:bg-primary-50 dark:hover:bg-primary-900/20 transition-colors text-gray-800 dark:text-white">
+                    <i class="fas fa-download mr-2 text-primary-500"></i>Export Data
+                </button>
+            </div>
+        </header>
+
+        <!-- Main Content with Tabs -->
+        <main>
+            <!-- Tabs Navigation -->
+            <div class="mb-6 border-b border-gray-200 dark:border-gray-700">
+                <nav class="flex space-x-8 overflow-x-auto">
+                    <button id="tab-connections" class="tab-button py-3 px-1 border-b-2 border-primary-500 font-medium text-sm text-primary-600 dark:text-primary-400 whitespace-nowrap" data-tab="connections">
+                        <i class="fas fa-network-wired mr-2"></i>Connections
+                    </button>
+                    <button id="tab-sessions" class="tab-button py-3 px-1 border-b-2 border-transparent font-medium text-sm text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-300 whitespace-nowrap" data-tab="sessions">
+                        <i class="fas fa-desktop mr-2"></i>Sessions
+                    </button>
+                    <button id="tab-metrics" class="tab-button py-3 px-1 border-b-2 border-transparent font-medium text-sm text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-300 whitespace-nowrap" data-tab="metrics">
+                        <i class="fas fa-chart-bar mr-2"></i>Metrics
+                    </button>
+                    <button id="tab-settings" class="tab-button py-3 px-1 border-b-2 border-transparent font-medium text-sm text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-300 whitespace-nowrap" data-tab="settings">
+                        <i class="fas fa-cog mr-2"></i>Settings
+                    </button>
+                </nav>
+            </div>
+
+            <!-- Connections Tab (Default) -->
+            <div id="connections-tab" class="tab-content">
+                <!-- Charts Section -->
+                <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
+                    <!-- Activity Timeline Chart with Working Period Buttons -->
+                    <div class="glass-card rounded-2xl p-5">
+                        <div class="flex justify-between items-center mb-4 flex-wrap gap-2">
+                            <h3 class="text-lg font-semibold text-gray-800 dark:text-white">
+                                <i class="fas fa-chart-line mr-2"></i>Activity Timeline
+                            </h3>
+                            <div class="flex space-x-2">
+    <button class="px-3 py-1 glass-card rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-800 dark:text-white transition-colors timeline-period active period-btn" 
+            data-period="day">
+        Day
+    </button>
+    <button class="px-3 py-1 glass-card rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-800 dark:text-white transition-colors timeline-period period-btn" 
+            data-period="week">
+        Week
+    </button>
+    <button class="px-3 py-1 glass-card rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-800 dark:text-white transition-colors timeline-period period-btn" 
+            data-period="month">
+        Month
+    </button>
+    <button class="px-3 py-1 glass-card rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-800 dark:text-white transition-colors timeline-period period-btn" 
+            data-period="year">
+        Year
+    </button>                            </div>
+                        </div>
+                        <div class="h-64">
+                            <canvas id="timelineChart"></canvas>
+                        </div>
+                    </div>
+                    
+                    <!-- Connection Distribution Chart with Item Limit Selector -->
+                    <div class="glass-card rounded-2xl p-5">
+                        <div class="flex justify-between items-center mb-4 flex-wrap gap-2">
+                            <h3 class="text-lg font-semibold text-gray-800 dark:text-white">
+                                <i class="fas fa-chart-pie mr-2"></i>Connection Distribution
+                            </h3>
+                            <div class="flex items-center space-x-3" style="display:none">
+                                <div class="flex items-center space-x-2">
+                                    <span class="text-sm text-gray-600 dark:text-gray-400">Show:</span>
+                                    <select id="distribution-limit" class="px-3 py-1 glass-card rounded-lg text-gray-800 dark:text-white text-sm">
+                                        <option value="5">Top 5</option>
+                                        <option value="10" selected>Top 10</option>
+                                        <option value="15">Top 15</option>
+                                        <option value="20">Top 20</option>
+                                        <option value="0">All</option>
+                                    </select>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="h-64 relative">
+                            <canvas id="distributionChart"></canvas>
+                            <div id="distribution-legend" class="mt-4 text-sm"></div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Enhanced Connections Data Table with Full Width Support -->
+                <div class="glass-card rounded-2xl overflow-hidden mb-8">
+                    <div class="p-5 border-b border-gray-200 dark:border-gray-700">
+                        <div class="flex flex-col lg:flex-row justify-between items-start lg:items-center">
+                            <h3 class="text-lg font-semibold text-gray-800 dark:text-white mb-4 lg:mb-0">
+                                <i class="fas fa-table mr-2"></i>Connection Details
+                                <span class="ml-2 text-sm font-normal text-gray-500 dark:text-gray-400">
+                                    Showing <span id="table-count">0</span> of <span id="total-records">{{TOTAL_RECORDS}}</span> records
+                                </span>
+                            </h3>
+                            
+                            <div class="flex flex-col md:flex-row items-stretch md:items-center gap-4 w-full lg:w-auto">
+                                <!-- Search input -->
+                                <div class="relative w-full md:w-64">
+                                    <input type="text" id="table-search" placeholder="Search IP, user or hostname..." 
+                                           class="pl-10 pr-4 py-2 glass-card rounded-xl w-full text-gray-800 dark:text-white dark:placeholder-gray-400">
+                                    <i class="fas fa-search absolute left-3 top-3 text-gray-400"></i>
+                                </div>
+                                
+                                <!-- Auto-refresh interval control -->
+                                <div class="tooltip" data-tip="Auto-refresh interval">
+                                    <div class="flex items-center space-x-2">
+                                        <input type="range" id="refresh-interval" min="10" max="300" value="{{AUTO_REFRESH_INTERVAL}}" 
+                                               class="w-20 md:w-24 accent-primary-500">
+                                        <span id="interval-value" class="text-sm text-gray-600 dark:text-gray-400 min-w-12">{{AUTO_REFRESH_INTERVAL}}s</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Responsive table container with horizontal scroll for small screens -->
+                    <div class="overflow-x-auto overflow-y-hidden scrollbar-thin max-w-full">
+                        <table class="min-w-full divide-y divide-gray-200 dark:divide-gray-700 table-auto">
+                            <thead class="bg-gray-50 dark:bg-gray-800/50">
+                                <tr>
+                                    <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider cursor-pointer sortable" data-sort="ip">
+                                        IP Address <i class="fas fa-sort ml-1"></i>
+                                    </th>
+                                    <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider cursor-pointer sortable" data-sort="type">
+                                        Status <i class="fas fa-sort ml-1"></i>
+                                    </th>
+                                    <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider cursor-pointer sortable" data-sort="fails">
+                                        Failed <i class="fas fa-sort ml-1"></i>
+                                    </th>
+                                    <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider hidden lg:table-cell">
+                                        Successful
+                                    </th>
+                                    <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider cursor-pointer sortable hidden md:table-cell" data-sort="first">
+                                        First Seen <i class="fas fa-sort ml-1"></i>
+                                    </th>
+                                    <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider cursor-pointer sortable hidden md:table-cell" data-sort="last">
+                                        Last Seen <i class="fas fa-sort ml-1"></i>
+                                    </th>
+                                    <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider cursor-pointer sortable hidden xl:table-cell" data-sort="users">
+                                        Users <i class="fas fa-sort ml-1"></i>
+                                    </th>
+                                    <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
+                                        Actions
+                                    </th>
+                                </tr>
+                            </thead>
+                            <tbody id="data-table" class="divide-y divide-gray-200 dark:divide-gray-800">
+                                <!-- Data will be populated by JavaScript -->
+                            </tbody>
+                        </table>
+                    </div>
+                    
+                    <!-- Pagination Controls -->
+                    <div class="p-4 border-t border-gray-200 dark:border-gray-700 flex justify-between items-center">
+                        <div class="text-sm text-gray-500 dark:text-gray-400">
+                            <span id="page-info">Page 1 of 1</span>
+                        </div>
+                        <div class="flex space-x-2">
+                            <button id="prev-page" class="px-3 py-1 glass-card rounded disabled:opacity-50 text-gray-800 dark:text-white" disabled>
+                                <i class="fas fa-chevron-left"></i>
+                            </button>
+                            <button id="next-page" class="px-3 py-1 glass-card rounded disabled:opacity-50 text-gray-800 dark:text-white" disabled>
+                                <i class="fas fa-chevron-right"></i>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Sessions Tab -->
+            <div id="sessions-tab" class="tab-content hidden">
+                <div class="glass-card rounded-2xl overflow-hidden mb-8">
+                    <div class="p-5 border-b border-gray-200 dark:border-gray-700">
+                        <h3 class="text-lg font-semibold text-gray-800 dark:text-white mb-4">
+                            <i class="fas fa-desktop mr-2"></i>Session History
+                            <span class="ml-2 text-sm font-normal text-gray-500 dark:text-gray-400">
+                                <span id="session-count">0</span> sessions recorded
+                            </span>
+                        </h3>
+                    </div>
+                    
+                    <div class="overflow-x-auto scrollbar-thin">
+                        <table class="min-w-full divide-y divide-gray-200 dark:divide-gray-700">
+                            <thead class="bg-gray-50 dark:bg-gray-800/50">
+                                <tr>
+                                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
+                                        Session ID
+                                    </th>
+                                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
+                                        User
+                                    </th>
+                                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
+                                        IP Address
+                                    </th>
+                                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
+                                        Start Time
+                                    </th>
+                                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
+                                        End Time
+                                    </th>
+                                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
+                                        Duration
+                                    </th>
+                                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
+                                        Type
+                                    </th>
+                                </tr>
+                            </thead>
+                            <tbody id="sessions-table" class="divide-y divide-gray-200 dark:divide-gray-800">
+                                <!-- Session data will be populated by JavaScript -->
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Metrics Tab -->
+            <div id="metrics-tab" class="tab-content hidden">
+                <div class="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-8">
+                    <!-- Database Information Card -->
+                    <div class="glass-card rounded-2xl p-5">
+                        <h3 class="text-lg font-semibold text-gray-800 dark:text-white mb-4">
+                            <i class="fas fa-database mr-2"></i>Database Information
+                        </h3>
+                        <div class="space-y-3">
+                            <div class="flex justify-between">
+                                <span class="text-gray-600 dark:text-gray-400">Last Addr Change:</span>
+                                <span id="last-addr-change" class="font-medium text-gray-800 dark:text-white">N/A</span>
+                            </div>
+                            <div class="flex justify-between">
+                                <span class="text-gray-600 dark:text-gray-400">Last Session Change:</span>
+                                <span id="last-session-change" class="font-medium text-gray-800 dark:text-white">N/A</span>
+                            </div>
+                            <div class="flex justify-between">
+                                <span class="text-gray-600 dark:text-gray-400">Total Collections:</span>
+                                <span id="total-collections" class="font-medium text-gray-800 dark:text-white">4</span>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Data Statistics Card -->
+                    <div class="glass-card rounded-2xl p-5">
+                        <h3 class="text-lg font-semibold text-gray-800 dark:text-white mb-4">
+                            <i class="fas fa-chart-area mr-2"></i>Data Statistics
+                        </h3>
+                        <div class="space-y-3">
+                            <div class="flex justify-between">
+                                <span class="text-gray-600 dark:text-gray-400">Total Addr Records:</span>
+                                <span id="total-addr-records" class="font-medium text-gray-800 dark:text-white">0</span>
+                            </div>
+                            <div class="flex justify-between">
+                                <span class="text-gray-600 dark:text-gray-400">Total Session Records:</span>
+                                <span id="total-session-records" class="font-medium text-gray-800 dark:text-white">0</span>
+                            </div>
+                            <div class="flex justify-between">
+                                <span class="text-gray-600 dark:text-gray-400">Unique IPs:</span>
+                                <span id="unique-ips" class="font-medium text-gray-800 dark:text-white">0</span>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Time Statistics Card -->
+                    <div class="glass-card rounded-2xl p-5">
+                        <h3 class="text-lg font-semibold text-gray-800 dark:text-white mb-4">
+                            <i class="fas fa-clock mr-2"></i>Time Statistics
+                        </h3>
+                        <div class="space-y-3">
+                            <div class="flex justify-between">
+                                <span class="text-gray-600 dark:text-gray-400">Report Generated:</span>
+                                <span id="report-generated" class="font-medium text-gray-800 dark:text-white">{{GENERATION_TIME}}</span>
+                            </div>
+                            <div class="flex justify-between">
+                                <span class="text-gray-600 dark:text-gray-400">Auto-refresh:</span>
+                                <span id="auto-refresh-status" class="font-medium text-gray-800 dark:text-white">{{AUTO_REFRESH_INTERVAL}}s</span>
+                            </div>
+                            <div class="flex justify-between">
+                                <span class="text-gray-600 dark:text-gray-400">Database Path:</span>
+                                <span id="db-path" class="font-medium text-gray-800 dark:text-white truncate">{{DATABASE_PATH}}</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Settings Tab -->
+            <div id="settings-tab" class="tab-content hidden">
+                <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                    <!-- Application Settings Card -->
+                    <div class="glass-card rounded-2xl p-6">
+                        <h3 class="text-lg font-semibold text-gray-800 dark:text-white mb-6 pb-3 border-b border-gray-200 dark:border-gray-700">
+                            <i class="fas fa-cog mr-2"></i>Application Settings
+                        </h3>
+                        <div class="space-y-6">
+                            <!-- IP Information Service Selection -->
+                            <div>
+                                <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                                    IP Information Service
+                                </label>
+                                <select id="ip-info-service" class="w-full px-4 py-2 glass-card rounded-xl text-gray-800 dark:text-white">
+                                    <option value="whois">Whois (DomainTools)</option>
+                                    <option value="ripe">RIPE NCC</option>
+                                </select>
+                                <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                                    Service used for IP information lookup (excluding AbuseIPDB)
+                                </p>
+                            </div>
+                            
+                            <!-- Default Chart Period Selection -->
+                            <div>
+                                <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                                    Default Chart Period
+                                </label>
+                                <select id="default-chart-period" class="w-full px-4 py-2 glass-card rounded-xl text-gray-800 dark:text-white">
+                                    <option value="day">Day</option>
+                                    <option value="week">Week</option>
+                                    <option value="month" selected>Month</option>
+                                    <option value="year">Year</option>
+                                </select>
+                            </div>
+                            
+                            <!-- Distribution Chart Limit Selection -->
+                            <div style="display:none">
+                                <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                                    Distribution Chart Limit
+                                </label>
+                                <select id="chart-items-limit" class="w-full px-4 py-2 glass-card rounded-xl text-gray-800 dark:text-white">
+                                    <option value="5">Top 5</option>
+                                    <option value="10" selected>Top 10</option>
+                                    <option value="15">Top 15</option>
+                                    <option value="20">Top 20</option>
+                                    <option value="0">Show All</option>
+                                </select>
+                            </div>
+                            
+                            <!-- Items per page setting (New) -->
+                            <div>
+                                <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                                    Items per page (Connection Details)
+                                </label>
+                                <select id="page-size-select" class="w-full px-4 py-2 glass-card rounded-xl text-gray-800 dark:text-white">
+                                    <option value="5">5</option>
+                                    <option value="10" selected>10</option>
+                                    <option value="25">25</option>
+                                    <option value="50">50</option>
+                                    <option value="100">100</option>
+                                </select>
+                            </div>
+                            
+                            <!-- Auto-refresh Interval Control -->
+                            <div>
+                                <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                                    Auto-refresh Interval
+                                </label>
+                                <div class="flex items-center space-x-4">
+                                    <input type="range" id="settings-refresh-interval" min="10" max="300" value="{{AUTO_REFRESH_INTERVAL}}" 
+                                           class="flex-1 accent-primary-500">
+                                    <span id="settings-interval-value" class="text-sm text-gray-600 dark:text-gray-400 min-w-12">{{AUTO_REFRESH_INTERVAL}}s</span>
+                                </div>
+                            </div>
+                            
+                            <!-- Settings Action Buttons -->
+                            <div class="pt-4 border-t border-gray-200 dark:border-gray-700">
+                                <button id="save-settings" class="px-4 py-2 bg-primary-500 hover:bg-primary-600 text-white rounded-xl transition-all duration-300 hover:scale-105">
+                                    <i class="fas fa-save mr-2"></i>Save Settings
+                                </button>
+                                <button id="reset-settings" class="px-4 py-2 glass-card rounded-xl hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors text-gray-800 dark:text-white ml-3">
+                                    <i class="fas fa-undo mr-2"></i>Reset to Defaults
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- UI Preferences Card -->
+                    <div class="glass-card rounded-2xl p-6">
+                        <h3 class="text-lg font-semibold text-gray-800 dark:text-white mb-6 pb-3 border-b border-gray-200 dark:border-gray-700">
+                            <i class="fas fa-palette mr-2"></i>UI Preferences
+                        </h3>
+                        <div class="space-y-6">
+                            <!-- Theme Mode Selection -->
+                            <div>
+                                <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                                    Theme Mode
+                                </label>
+                                <div class="flex space-x-3">
+                                    <button class="flex-1 px-4 py-2 glass-card rounded-xl hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors text-gray-800 dark:text-white theme-mode-btn" data-mode="light">
+                                        <i class="fas fa-sun mr-2"></i>Light
+                                    </button>
+                                    <button class="flex-1 px-4 py-2 glass-card rounded-xl hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors text-gray-800 dark:text-white theme-mode-btn active" data-mode="dark">
+                                        <i class="fas fa-moon mr-2"></i>Dark
+                                    </button>
+                                    <button class="flex-1 px-4 py-2 glass-card rounded-xl hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors text-gray-800 dark:text-white theme-mode-btn" data-mode="auto">
+                                        <i class="fas fa-adjust mr-2"></i>Auto
+                                    </button>
+                                </div>
+                            </div>
+                            
+                            <!-- Table Density Selection -->
+                            <div>
+                                <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                                    Table Density
+                                </label>
+                                <div class="flex space-x-3">
+                                    <button class="flex-1 px-4 py-2 glass-card rounded-xl hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors text-gray-800 dark:text-white table-density-btn active" data-density="compact">
+                                        Compact
+                                    </button>
+                                    <button class="flex-1 px-4 py-2 glass-card rounded-xl hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors text-gray-800 dark:text-white table-density-btn" data-density="normal">
+                                        Normal
+                                    </button>
+                                    <button class="flex-1 px-4 py-2 glass-card rounded-xl hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors text-gray-800 dark:text-white table-density-btn" data-density="comfortable">
+                                        Comfortable
+                                    </button>
+                                </div>
+                            </div>
+                            
+                            <!-- Animation Level Selection -->
+                            <div>
+                                <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                                    Animation Level
+                                </label>
+                                <div class="flex space-x-3">
+                                    <button class="flex-1 px-4 py-2 glass-card rounded-xl hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors text-gray-800 dark:text-white animation-level-btn" data-level="none">
+                                        None
+                                    </button>
+                                    <button class="flex-1 px-4 py-2 glass-card rounded-xl hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors text-gray-800 dark:text-white animation-level-btn active" data-level="minimal">
+                                        Minimal
+                                    </button>
+                                    <button class="flex-1 px-4 py-2 glass-card rounded-xl hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors text-gray-800 dark:text-white animation-level-btn" data-level="full">
+                                        Full
+                                    </button>
+                                </div>
+                            </div>
+
+				<!-- Screen config -->
+				<div>
+				    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+				        Page Width
+				    </label>
+				    <div class="flex space-x-3">
+				        <button class="flex-1 px-4 py-2 glass-card rounded-xl hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors text-gray-800 dark:text-white page-width-btn active" data-width="full">
+				            100%
+				        </button>
+				        <button class="flex-1 px-4 py-2 glass-card rounded-xl hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors text-gray-800 dark:text-white page-width-btn" data-width="normal">
+				            Normal
+				        </button>
+				        <button class="flex-1 px-4 py-2 glass-card rounded-xl hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors text-gray-800 dark:text-white page-width-btn" data-width="narrow">
+				            Narrow
+				        </button>
+				    </div>
+				</div>
+                            
+                            <!-- Clear Local Storage Button -->
+                            <div class="pt-4 border-t border-gray-200 dark:border-gray-700">
+                                <button id="clear-storage" class="px-4 py-2 glass-card rounded-xl hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors text-red-600 dark:text-red-400">
+                                    <i class="fas fa-trash-alt mr-2"></i>Clear Local Storage
+                                </button>
+                                <p class="text-xs text-gray-500 dark:text-gray-400 mt-2">
+                                    This will reset all settings and clear cached data
+                                </p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </main>
+
+        <!-- Footer Section -->
+        <footer class="mt-12 pt-8 border-t border-gray-200 dark:border-gray-700">
+            <div class="flex flex-col md:flex-row justify-between items-center">
+                <div class="mb-6 md:mb-0">
+                    <!-- System Status Indicator -->
+                    <div class="flex items-center space-x-2 mb-2">
+                        <div class="w-3 h-3 rounded-full bg-green-500 animate-pulse"></div>
+                        <span class="text-sm text-gray-600 dark:text-gray-400">System Operational</span>
+                    </div>
+                    <p class="text-gray-500 dark:text-gray-400 text-sm">
+                        <i class="fas fa-database mr-2"></i>Database: <span id="db-info" class="font-mono text-xs">{{DATABASE_PATH}}</span>
+                    </p>
+                </div>
+                
+                <!-- Center Links -->
+                <div class="text-center mb-6 md:mb-0">
+                    <div class="flex justify-center space-x-6 mb-3">
+                        <a href="https://deynekin.com" class="text-gray-600 dark:text-gray-400 hover:text-primary-500 transition-colors" target="_blank">
+                            <i class="fas fa-globe mr-1"></i> deynekin.com
+                        </a>
+                        <a href="https://github.com/paulmann/RDPAudit" class="text-gray-600 dark:text-gray-400 hover:text-primary-500 transition-colors" target="_blank">
+                            <i class="fab fa-github mr-1"></i> GitHub Project
+                        </a>
+                        <a href="https://github.com/cameyo/rdpmon" class="text-gray-600 dark:text-gray-400 hover:text-primary-500 transition-colors" target="_blank">
+                            <i class="fas fa-code mr-1"></i> RdpMon
+                        </a>
+                    </div>
+                    <p class="text-gray-500 dark:text-gray-400 text-sm">
+                        RDP Monitor Analyzer v3.0.0 • MIT License • Data updates every <span id="footer-interval">{{AUTO_REFRESH_INTERVAL}}</span> seconds
+                    </p>
+                </div>
+                
+                <!-- Copyright Information -->
+                <div class="text-right">
+                    <p class="text-gray-500 dark:text-gray-400 text-sm">
+                        &copy; 2025 Mikhail Deynekin
+                    </p>
+                    <p class="text-gray-500 dark:text-gray-400 text-xs mt-1">
+                        Report ID: <span id="report-id">{{REPORT_ID}}</span>
+                    </p>
+                </div>
+            </div>
+        </footer>
+    </div>
+
+    <!-- Initialize application with template variables -->
+    <script>
+        // Parse PowerShell JSON data
+        function parsePowerShellJSON(jsonString) {
+            try {
+                let cleanedJson = jsonString;
+                
+                // Remove outer quotes and unescape inner quotes
+                if (cleanedJson.startsWith('"') && cleanedJson.endsWith('"')) {
+                    cleanedJson = cleanedJson.substring(1, cleanedJson.length - 1);
+                }
+                
+                // Replace escaped quotes
+                cleanedJson = cleanedJson.replace(/\\"/g, '"');
+                // Replace escaped backslashes
+                cleanedJson = cleanedJson.replace(/\\\\/g, '\\');
+                
+                // Parse the cleaned JSON
+                return JSON.parse(cleanedJson);
+            } catch (error) {
+                console.error('Error parsing PowerShell JSON:', error);
+                
+                // Return empty data structure on error
+                return {
+                    PropData: [],
+                    AddrData: [],
+                    DatabaseStats: {},
+                    ReportInfo: {
+                        TotalRecords: 0,
+                        GenerationTime: TEMPLATE_VARS.GENERATION_TIME,
+                        DatabasePath: TEMPLATE_VARS.DATABASE_PATH,
+                        ReportId: TEMPLATE_VARS.REPORT_ID,
+                        AutoRefreshInterval: TEMPLATE_VARS.AUTO_REFRESH_INTERVAL
+                    },
+                    EnhancedData: {
+                        ChartData: {
+                            Distribution: { Labels: [], Data: [] },
+                            Timeline: { Labels: [], SuccessData: [], FailData: [] }
+                        },
+                        Statistics: {}
+                    },
+                    SessionData: [],
+                    SummaryStats: {}
+                };
+            }
+        }
+        
+        // Initialize application when DOM is loaded
+        document.addEventListener('DOMContentLoaded', () => {
+            // Initialize the main application with template variables
+            if (typeof RDP_Monitor_App !== 'undefined') {
+                RDP_Monitor_App.init({
+                    gitUrl: GIT_URL,
+                    templateVars: TEMPLATE_VARS,
+                    parsePowerShellJSON: parsePowerShellJSON
+                });
+            }
+        });
+    </script>
+</body>
+</html>

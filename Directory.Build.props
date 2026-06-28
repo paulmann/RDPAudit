@@ -1,0 +1,170 @@
+<Project>
+	<PropertyGroup>
+		<TargetFramework>net8.0-windows</TargetFramework>
+		<PlatformTarget>x64</PlatformTarget>
+		<Platforms>x64</Platforms>
+		<Nullable>enable</Nullable>
+		<ImplicitUsings>enable</ImplicitUsings>
+		<TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+		<AnalysisMode>All</AnalysisMode>
+		<EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
+		<LangVersion>latest</LangVersion>
+		<Optimize Condition="'$(Configuration)'=='Release'">true</Optimize>
+		<Authors>Mikhail Deynekin</Authors>
+		<Company>Mikhail Deynekin (https://Deynekin.com)</Company>
+		<Product>RdpAudit</Product>
+		<Copyright>Copyright (c) Mikhail Deynekin</Copyright>
+		<!-- Central version surface. publish.ps1 -p:VersionPrefix overrides this for releases;
+		     the default below ensures the assembly version embedded in the binary is something
+		     other than the implicit 1.0.0.0 placeholder so the Service tab can distinguish
+		     runtime / installed / distribution binaries by version. Pinned to 1.4.4 for the
+		     current release stream — see RdpAuditVersionMetadataTests for the gate. The 1.3.9
+		     release finishes the live firewall matcher integration: the production scanner / parser /
+		     reconciler / FirewallPage / Repair paths now all route ownership through the pure
+		     RdpAuditFirewallRuleMatcher, so a GUID-named rule whose DisplayName is RdpAudit-Block-&lt;ip&gt;
+		     (empty Group) is recognized as RdpAudit-owned, the Firewall tab no longer shows MISSING RULE
+		     when a valid rule exists, duplicate canonical + GUID rules are reported and Repair prefers the
+		     canonical Name + Group rule. It fixes the Expires (UTC) bug: manual blacklist adds and
+		     auto-blocks now set ExpiresUtc = AddedUtc + DefaultBlockDuration when the configured duration is
+		     non-zero (null/Never only when the duration is exactly zero), Blacklist and Active blocks share
+		     the same semantics, and a DEBUG OperationLog records AddedUtc/Duration/ExpiresUtc/Source/IP/Actor
+		     on each block. The temporary firewall probe is now stage-based (create, targeted verify, broad
+		     verify, cleanup, cleanup verify) with per-stage timeout / duration / backend / command / result /
+		     exception so one slow stage never makes the whole probe look broken, and a service-side timeout is
+		     clearly distinguished from a successful local provider probe. GetDiagnostics is section-based and
+		     bounded so a slow firewall scan can never starve basic service diagnostics — partial snapshots are
+		     returned with per-section timing / timeout flags. DB diagnostics are schema-aware (PRAGMA
+		     table_info / index_list, max RawEvents.TimeUtc, max AuthAttemptFacts.TimeUtc, max
+		     AttackStats.LastSeenUtc — never assuming AttackStats.TimeUtc or AuthAttemptFacts.UserName exist)
+		     and structured DEBUG OperationLogs now cover firewall scan / provider detection / probe / repair /
+		     reconciliation / diagnostics / RDP Activity. It preserves the 1.3.8 RDP Clients Current behavior
+		     and the 1.3.7 SQLite support bundle. The 1.3.8
+		     release fixes the "RDP Clients" Current? column so it flags ONLY the session owned by
+		     the operator running the Configurator: a pure Core CurrentRdpSessionMatcher scopes
+		     Current? to the running process SessionId and the normalized current Windows identity
+		     (WindowsIdentity.GetCurrent().Name and $env:USERNAME, with domain-qualified XEON\md
+		     compared as both the normalized leaf "md" and the qualified "XEON\md"), so disconnected
+		     and active-but-foreign sessions are no longer mis-flagged; the page surfaces the matching
+		     diagnostics (current SessionId, identity, username, rule used). It also closes a firewall
+		     verification gap: a pure Core RdpAuditFirewallRuleMatcher recognizes both the canonical
+		     Name = RdpAudit-Block-&lt;ip&gt; rule and a GUID-named rule whose DisplayName is
+		     RdpAudit-Block-&lt;ip&gt; (empty Group), reports duplicate rules for the same IP, and
+		     recommends the canonical rule for repair. It preserves every 1.3.7 SQLite support bundle
+		     fix. The 1.3.7
+		     release makes the SQLite diagnostic dependency surface deterministic: publish.ps1 now
+		     guarantees the published Configurator folder physically carries the managed
+		     SQLitePCLRaw / Microsoft.Data.Sqlite assemblies and the native e_sqlite3.dll (resolved
+		     from the same NuGet dependency graph the app builds against, never a sqlite.org download
+		     or a global C:\sqlite install), so external PowerShell diagnostics that call Add-Type /
+		     NativeLibrary.Load load the provider without manual copying. The first-run install /
+		     repair flow verifies that support bundle next to the running Configurator before it
+		     proceeds and fails with the exact missing file names; the Diagnostic tab gains a bounded
+		     "SQLite support bundle" preflight section listing each required file, its resolved path
+		     and the loaded managed assembly / native library versions. The 1.3.6
+		     release fixes stale RDP Activity (AttackStats) aggregation: the projection worker now
+		     orders AuthAttemptFacts NEWEST-first (TimeUtc DESC) so the bounded per-pass slice can no
+		     longer starve fresh activity once the 30-day look-back window holds more facts than the
+		     per-pass cap (the prior Id-ascending slice froze AttackStat.LastSeenUtc while RawEvents /
+		     AuthAttemptFacts kept advancing). The DEBUG "Rebuild RDP Activity statistics" action now
+		     forces a FULL rebuild that pages through every in-window fact and re-derives every IP's
+		     current-day LastSeenUtc, and reports RowsBefore/After plus the input/output watermarks. The
+		     Diagnostic snapshot gains StatsWorkerEnabled, StatsWorkerLastStarted/CompletedUtc,
+		     StatsWorkerLastRunFullRebuild, LatestSourceFactUtc and LatestAttackStatLastSeenUtc so a
+		     stale tab is attributable without log access. The 1.3.5
+		     release exposes the firewall block scope to the operator: the Firewall tab gains a "Block
+		     scope (new rules)" dropdown (All inbound traffic from IP / RDP port only) persisted to
+		     Firewall:BlockScope and consumed by service enforcement; an "Apply scope to existing rules"
+		     button re-installs RdpAudit block rules under the current scope (no silent claim of
+		     RDP-only while live rules still block all inbound); and the firewall diagnostics report
+		     gains a "[Block scope]" section showing the configured scope, resolved RDP port, expected
+		     rule shape, and any existing-rule scope mismatches. The 1.3.4
+		     release stabilizes IPC logging and the RDP Activity projection: the IPC accept loop now
+		     classifies expected client disconnects (logged Debug, never durable) versus genuine faults
+		     (Error + rate-limited durable Critical) so the OperationLog is no longer flooded with
+		     "AcceptLoopFault" Critical spam; the Logs tab hides Debug / IPC noise and collapses repeated
+		     identical rows by default; the Diagnostic tab always renders a structured, actionable report
+		     (command, outcome, duration, exception, service state, resolved RDP port / firewall scope,
+		     RDP Activity freshness, recent operation-log tail) instead of a bare "No diagnostics
+		     available"; the "Attack Statistics" tab is renamed "RDP Activity" and the "Remote RDP
+		     Clients" tab "RDP Clients", with a FIXED tab order (Overview first, Settings last); and one
+		     append-only IPC command (RebuildAttackStats=60) backs a DEBUG manual rebuild. The 1.3.3
+		     release makes the service crash-proof and observable: a durable OperationLogs subsystem
+		     (program-action audit trail with severity / source / operation indexes and bounded
+		     retention), a process-wide CrashGuard that records unhandled faults to an OperationLog /
+		     Windows Event Log / fallback file instead of dying silently, and resilient background
+		     workers that log Critical and continue instead of tearing down the host. The Configurator
+		     gains a Logs tab (paged, filtered, DEBUG-detail), a global DEBUG toggle in Settings (with a
+		     destructive-actions warning and a status indicator) that gates the Firewall maintenance
+		     buttons, and an Overview historical-analysis progress bar so the UI opens immediately on a
+		     large database. Two append-only IPC commands (QueryOperationLogs=58, GetOverviewProgress=59)
+		     back these. It carries forward the 1.3.2 guarded cleanup operations, the 1.3.1 firewall
+		     Remove / Repair / diagnostics stabilization and the 1.3.0 IPC reliability overhaul. -->
+		<!-- 1.4.0: Firewall whitelist gains CIDR-range support. A new family-aware CidrRange type
+		     (RdpAudit.Core.Util) parses and matches both IPv4 and IPv6 prefixes via a bitwise
+		     prefix mask, and the auto-block worker now skips any source IP that falls inside a
+		     whitelisted range (not just exact-string matches). The Configurator Firewall tab adds
+		     an "Add local network IPs" button that whitelists the standard private / unique-local
+		     ranges (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, fc00::/7, fd00::/8) in one click, and
+		     the manual whitelist add now accepts CIDR input. The enforcement-health line is rendered
+		     as a full-width status band (yellow neutral / green healthy / red error) with a dark,
+		     high-contrast foreground so it is always legible on the dark theme. -->
+		<!-- 1.4.1: Fixes the Firewall tab "Add local network IPs" failure (reported as "5 failed")
+		     and adds comprehensive DEBUG-mode diagnostics across firewall activities. Root cause:
+		     the service-side whitelist add/remove validator rejected CIDR input (it used a bare
+		     IPAddress.TryParse), so every private / unique-local range was refused, and the Configurator
+		     silently collapsed the IPC error to a bare "failed". The validator is now CIDR-aware on the
+		     whitelist add / remove paths, and the Configurator surfaces the real service error text and
+		     the full per-range failure list. When Diagnostics.DebugMode is enabled the IpcDispatcher
+		     writes structured OperationLog DEBUG entries for whitelist / blocklist / status / unblock /
+		     remove-all and reconcile / repair, the WindowsFirewallProvider traces every netsh add /
+		     delete / unblock boundary (args + exit code), the FirewallAutoBlockWorker traces its
+		     resolved block decision, and the FirewallExpirationWorker traces its per-tick due set and
+		     each expiry attempt; the Configurator IpcClient emits a per-command round-trip trace to the
+		     debugger output under an attached-debugger session. -->
+		<!-- 1.4.2: Three Configurator usability features. (1) The default firewall block
+		     duration is now 3 days (4320 minutes) instead of 0 (permanent): both the auto-block
+		     policy and manual whitelist/block additions expire after 3 days unless overridden.
+		     (2) The Settings tab parameter tree is now editable in place — double-click (or F2)
+		     a scalar leaf value to edit it inline; the change is written back to the JSON model,
+		     reflected in the raw editor, and marks the form dirty for Save. (3) The Overview tab
+		     adds a license-key panel: enter a key and Activate, after which the active key is shown
+		     with a Delete License Key button that resets to the input state. Activation is currently
+		     a local stub (accepts any non-empty key, persisted to HKCU); the production path POSTs
+		     key=[key] to https://activate.3389port.com/ and treats response "1" as success. -->
+		<!-- 1.4.3: Build fix. SettingsPage.ParseScalar return type narrowed from JsonNode to
+		     JsonValue to satisfy analyzer CA1859 (TreatWarningsAsErrors), since every return path
+		     already produces a JsonValue; the value-type JsonValue.Create overloads are null-forgiven
+		     to keep the non-nullable return contract. No behavioral change. -->
+		<!-- 1.4.4: Overview + RDP Clients refinements. (1) The RDP Clients "Registry Keys" grid now
+		     auto-sizes the first "Registry key" column to its widest content and lets the last
+		     "Description" column fill the remaining width, and gains a right-click Copy Cell / Copy Row /
+		     Copy All clipboard menu. (2) The Overview license panel shows a 40-day trial notice under the
+		     key input while unactivated and adds a "Buy" button that opens https://buy.rdpaudit.com/.
+		     The Website link now points to https://rdpaudit.com. (3) License activation is now live:
+		     LicenseStore.ActivateOnlineAsync POSTs key=[key] to https://activate.rdpaudit.com/ and maps
+		     the response to Activated ("1"), InvalidKey ("0"), EmptyResponse (no/unknown body) or
+		     NetworkError (unreachable), each surfaced with a distinct message. -->
+		<VersionPrefix Condition="'$(VersionPrefix)' == ''">1.4.4</VersionPrefix>
+		<FileVersion>$(VersionPrefix).0</FileVersion>
+		<AssemblyVersion>$(VersionPrefix).0</AssemblyVersion>
+		<!-- Build SHA surface: when the build/publish pipeline passes -p:SourceRevisionId=<short-sha>
+		     the SHA is appended as SemVer build metadata (after '+'), so the Service / Tools Diag report
+		     can show exactly which commit produced the running binary. It defaults to empty so local and
+		     test builds keep InformationalVersion == VersionPrefix exactly (RdpAuditVersionMetadataTests
+		     trims any '+meta' suffix but also forbids legacy version substrings; keeping the SHA out of
+		     non-pipeline builds avoids any rare short-SHA collision with those substrings). -->
+		<SourceRevisionId Condition="'$(SourceRevisionId)' == ''"></SourceRevisionId>
+		<!-- We compose the '+<sha>' SemVer build-metadata suffix ourselves below. With this left at its
+		     default (true), the SDK appends '.<SourceRevisionId>' to InformationalVersion a SECOND time,
+		     producing a duplicated suffix such as '1.3.1+abc123def456.abc123def456' — the historic
+		     ProductVersion duplication. Disabling the automatic append leaves exactly one well-formed
+		     '+<sha>' suffix produced by the conditional InformationalVersion below. -->
+		<IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
+		<InformationalVersion Condition="'$(SourceRevisionId)' == ''">$(VersionPrefix)</InformationalVersion>
+		<InformationalVersion Condition="'$(SourceRevisionId)' != ''">$(VersionPrefix)+$(SourceRevisionId)</InformationalVersion>
+		<NeutralLanguage>en-US</NeutralLanguage>
+		<InvariantGlobalization>false</InvariantGlobalization>
+		<EnableWindowsTargeting>true</EnableWindowsTargeting>
+		<NoWarn>$(NoWarn);CA1014;CA1303;CA1305;CA1307;CA1308;CA1310;CA1812;CA1848;CA2007;CA2227;CA1002;CA1056;CA1054;CA1024;CA1716;CA1819;CA5394;CA1031;CA1062;CA1822;CA2208;CA1721;CA1304;CA1819;CA1707;CA1851;CA2000;CA1063;CA1816;CA1051;CA1050;CA1034;CA1724;CA1720;CA1727;CA2254;CA5379;CA1845;CA1860;CA1864;CA1873;CA1869;CA2249;CA1725;CA5392;CA1032;CA1064;CA2201;CA1018;CA1810;CA1873;CA1872;CA2249;CA1820;CA1829;CA1854;CA1867;CA1865;CA1866;CA2208;CA5350;CA5351;CA5359;CA5404;CA1052;CA2249;CA1715;CA1838;CA2213;CA1849;CA1861</NoWarn>
+	</PropertyGroup>
+</Project>

@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+	<PropertyGroup>
+		<OutputType>WinExe</OutputType>
+		<UseWindowsForms>true</UseWindowsForms>
+		<RootNamespace>RdpAudit.Configurator</RootNamespace>
+		<AssemblyName>RdpAudit.Configurator</AssemblyName>
+		<RuntimeIdentifier>win-x64</RuntimeIdentifier>
+		<SelfContained>false</SelfContained>
+		<ApplicationManifest>app.manifest</ApplicationManifest>
+	</PropertyGroup>
+	<ItemGroup>
+		<PackageReference Include="MessagePack" Version="2.5.187" />
+		<PackageReference Include="Microsoft.EntityFrameworkCore" Version="8.0.10" />
+		<PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="8.0.10" />
+		<PackageReference Include="System.ServiceProcess.ServiceController" Version="8.0.1" />
+		<PackageReference Include="System.Diagnostics.EventLog" Version="8.0.1" />
+		<PackageReference Include="System.Management" Version="8.0.0" />
+	</ItemGroup>
+	<ItemGroup>
+		<ProjectReference Include="..\RdpAudit.Core\RdpAudit.Core.csproj" />
+	</ItemGroup>
+</Project>

@@ -1,0 +1,521 @@
+/* RDP Monitor Styles - Modern Design 2025 - v.1.1.0 */
+
+* {
+    font-family: 'Inter', sans-serif;
+}
+
+/* Full-width container adjustment */
+.container {
+    max-width: 100% !important;
+    padding-left: 1rem;
+    padding-right: 1rem;
+}
+
+@media (min-width: 1280px) {
+    .container {
+        padding-left: 2rem;
+        padding-right: 2rem;
+    }
+}
+
+@media (min-width: 1536px) {
+    .container {
+        padding-left: 3rem;
+        padding-right: 3rem;
+    }
+}
+
+/* Glass morphism effect for cards */
+.glass-card {
+    background: rgba(255, 255, 255, 0.7);
+    backdrop-filter: blur(10px);
+    border: 1px solid rgba(255, 255, 255, 0.2);
+}
+
+.dark .glass-card {
+    background: rgba(30, 41, 59, 0.7);
+    border: 1px solid rgba(51, 65, 85, 0.3);
+}
+
+/* Glow effects for different statuses */
+.attack-glow {
+    box-shadow: 0 0 20px rgba(239, 68, 68, 0.3);
+}
+
+.success-glow {
+    box-shadow: 0 0 20px rgba(34, 197, 94, 0.3);
+}
+
+/* Gradient text effect */
+.gradient-text {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+}
+
+/* Animated gradient background */
+.animate-gradient {
+    background: linear-gradient(-45deg, #3b82f6, #8b5cf6, #10b981, #3b82f6);
+    background-size: 400% 400%;
+    animation: gradient 15s ease infinite;
+}
+
+/* Custom scrollbar styling */
+.scrollbar-thin {
+    scrollbar-width: thin;
+}
+
+.scrollbar-thin::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+}
+
+.scrollbar-thin::-webkit-scrollbar-track {
+    background: rgba(0, 0, 0, 0.1);
+    border-radius: 10px;
+}
+
+.scrollbar-thin::-webkit-scrollbar-thumb {
+    background: rgba(59, 130, 246, 0.5);
+    border-radius: 10px;
+}
+
+.scrollbar-thin::-webkit-scrollbar-thumb:hover {
+    background: rgba(59, 130, 246, 0.8);
+}
+
+/* Enhanced dark mode fixes */
+.dark .text-gray-800 {
+    color: #f1f5f9 !important;
+}
+
+.dark .hover\:bg-gray-100:hover {
+    background-color: rgba(51, 65, 85, 0.5) !important;
+}
+
+/* Fix for dark mode buttons */
+.dark button:not(.bg-primary-500):not(.bg-danger-500):not(.bg-success-500) {
+    color: #f1f5f9 !important;
+}
+
+.dark .tooltip .glass-card {
+    color: #f1f5f9 !important;
+}
+
+/* Tab content animation */
+.tab-content {
+    transition: opacity 0.3s ease-in-out;
+}
+
+/* Pulse animation for active sessions */
+@keyframes pulse-active {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
+}
+
+.pulse-active {
+    animation: pulse-active 2s infinite;
+}
+
+/* Modern card design for 2025 */
+.card-modern {
+    border-radius: 1.5rem;
+    padding: 1.5rem;
+    background: linear-gradient(145deg, #ffffff 0%, #f8fafc 100%);
+    box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+}
+
+.dark .card-modern {
+    background: linear-gradient(145deg, #1e293b 0%, #0f172a 100%);
+    box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.3), 0 2px 4px -1px rgba(0, 0, 0, 0.2);
+}
+
+/* Glass effect for modern UI */
+.glass-effect {
+    background: rgba(255, 255, 255, 0.1);
+    backdrop-filter: blur(10px);
+    border: 1px solid rgba(255, 255, 255, 0.2);
+}
+
+.dark .glass-effect {
+    background: rgba(30, 41, 59, 0.3);
+    border: 1px solid rgba(51, 65, 85, 0.4);
+}
+
+/* Gradient borders */
+.gradient-border {
+    position: relative;
+    background: linear-gradient(white, white) padding-box,
+                linear-gradient(135deg, #667eea 0%, #764ba2 100%) border-box;
+    border: 2px solid transparent;
+}
+
+.dark .gradient-border {
+    background: linear-gradient(#1e293b, #1e293b) padding-box,
+                linear-gradient(135deg, #667eea 0%, #764ba2 100%) border-box;
+}
+
+/* Smooth animations */
+.transition-all {
+    transition-property: all;
+    transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+    transition-duration: 200ms;
+}
+
+/* Fade-in animation */
+.fade-in {
+    animation: fadeIn 0.3s ease-in-out;
+}
+
+@keyframes fadeIn {
+    from { opacity: 0; transform: translateY(10px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+/* Modern button styling */
+.btn-modern {
+    padding: 0.5rem 1rem;
+    border-radius: 0.75rem;
+    font-weight: 500;
+    transition: all 0.3s;
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: white;
+}
+
+.btn-modern:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 10px 25px rgba(102, 126, 234, 0.3);
+}
+
+/* Responsive table adjustments */
+@media (max-width: 768px) {
+    .table-responsive th:nth-child(4),
+    .table-responsive td:nth-child(4),
+    .table-responsive th:nth-child(5),
+    .table-responsive td:nth-child(5),
+    .table-responsive th:nth-child(6),
+    .table-responsive td:nth-child(6) {
+        display: none;
+    }
+}
+
+@media (max-width: 1024px) {
+    .table-responsive th:nth-child(7),
+    .table-responsive td:nth-child(7) {
+        display: none;
+    }
+}
+
+/* Custom glow for active elements */
+.active-glow {
+    box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.5);
+}
+
+/* Smooth hover effects */
+.hover-lift {
+    transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.hover-lift:hover {
+    transform: translateY(-4px);
+    box-shadow: 0 10px 25px rgba(0, 0, 0, 0.1);
+}
+
+.dark .hover-lift:hover {
+    box-shadow: 0 10px 25px rgba(0, 0, 0, 0.3);
+}
+
+/* Active tab styling */
+.tab-active {
+    border-bottom-color: #3b82f6 !important;
+    color: #2563eb !important;
+}
+
+.dark .tab-active {
+    color: #60a5fa !important;
+}
+
+/* UI Preferences - Active button styling for BOTH light and dark themes */
+/* Light theme active buttons */
+.theme-mode-btn.active,
+.table-density-btn.active,
+.animation-level-btn.active,
+.page-width-btn.active {
+    background-color: #3b82f6 !important; /* primary-500 */
+    color: white !important;
+    border-color: #3b82f6 !important;
+    box-shadow: 0 2px 4px rgba(59, 130, 246, 0.3);
+}
+
+/* Light theme active button hover */
+.theme-mode-btn.active:hover,
+.table-density-btn.active:hover,
+.animation-level-btn.active:hover,
+.page-width-btn.active:hover {
+    background-color: #2563eb !important; /* primary-600 */
+    color: white !important;
+    box-shadow: 0 4px 8px rgba(37, 99, 235, 0.4);
+}
+
+/* Light theme inactive buttons */
+.theme-mode-btn:not(.active),
+.table-density-btn:not(.active),
+.animation-level-btn:not(.active),
+.page-width-btn:not(.active) {
+    background-color: rgba(255, 255, 255, 0.7) !important;
+    color: #374151 !important; /* gray-700 */
+    border: 1px solid rgba(209, 213, 219, 0.5) !important;
+    backdrop-filter: blur(10px);
+}
+
+/* Light theme inactive button hover */
+.theme-mode-btn:not(.active):hover,
+.table-density-btn:not(.active):hover,
+.animation-level-btn:not(.active):hover,
+.page-width-btn:not(.active):hover {
+    background-color: rgba(243, 244, 246, 0.8) !important; /* gray-100 */
+    color: #111827 !important; /* gray-900 */
+    border-color: rgba(156, 163, 175, 0.6) !important;
+}
+
+/* Dark theme active buttons - overwrite light theme styles */
+.dark .theme-mode-btn.active,
+.dark .table-density-btn.active,
+.dark .animation-level-btn.active,
+.dark .page-width-btn.active {
+    background-color: #3b82f6 !important; /* primary-500 */
+    color: white !important;
+    border-color: #3b82f6 !important;
+    box-shadow: 0 2px 4px rgba(59, 130, 246, 0.3);
+}
+
+/* Dark theme active button hover */
+.dark .theme-mode-btn.active:hover,
+.dark .table-density-btn.active:hover,
+.dark .animation-level-btn.active:hover,
+.dark .page-width-btn.active:hover {
+    background-color: #2563eb !important; /* primary-600 */
+    color: white !important;
+    box-shadow: 0 4px 8px rgba(37, 99, 235, 0.4);
+}
+
+/* Dark theme inactive buttons */
+.dark .theme-mode-btn:not(.active),
+.dark .table-density-btn:not(.active),
+.dark .animation-level-btn:not(.active),
+.dark .page-width-btn:not(.active) {
+    background-color: rgba(30, 41, 59, 0.7) !important; /* slate-800 */
+    color: #e5e7eb !important; /* gray-200 */
+    border: 1px solid rgba(51, 65, 85, 0.3) !important; /* slate-700 */
+    backdrop-filter: blur(10px);
+}
+
+/* Dark theme inactive button hover */
+.dark .theme-mode-btn:not(.active):hover,
+.dark .table-density-btn:not(.active):hover,
+.dark .animation-level-btn:not(.active):hover,
+.dark .page-width-btn:not(.active):hover {
+    background-color: rgba(51, 65, 85, 0.8) !important; /* slate-700 */
+    color: #f9fafb !important; /* gray-50 */
+    border-color: rgba(71, 85, 105, 0.5) !important; /* slate-600 */
+}
+
+/* Ensure proper button text visibility in all states */
+.theme-mode-btn,
+.table-density-btn,
+.animation-level-btn,
+.page-width-btn {
+    font-weight: 500 !important;
+    transition: all 0.2s ease-in-out !important;
+}
+
+/* Wide screen adjustments */
+@media (min-width: 1920px) {
+    .wide-screen-grid {
+        grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+    }
+    
+    .wide-screen-card {
+        min-height: 280px;
+    }
+    
+    .wide-screen-table {
+        font-size: 0.95rem;
+    }
+}
+
+/* Compact table styles for density settings */
+.table-compact td,
+.table-compact th {
+    padding: 0.5rem 0.75rem !important;
+    font-size: 0.875rem !important;
+}
+
+.table-normal td,
+.table-normal th {
+    padding: 0.75rem 1rem !important;
+    font-size: 1rem !important;
+}
+
+.table-comfortable td,
+.table-comfortable th {
+    padding: 1rem 1.25rem !important;
+    font-size: 1.125rem !important;
+}
+
+/* Animation level classes */
+.animation-none * {
+    animation: none !important;
+    transition: none !important;
+}
+
+.animation-minimal * {
+    animation-duration: 0.2s !important;
+    transition-duration: 0.2s !important;
+}
+
+/* Settings panel improvements */
+.settings-section {
+    transition: all 0.3s ease;
+}
+
+.settings-section:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 10px 25px rgba(0, 0, 0, 0.1);
+}
+
+.dark .settings-section:hover {
+    box-shadow: 0 10px 25px rgba(0, 0, 0, 0.3);
+}
+
+/* Enhanced tooltips */
+.tooltip {
+    position: relative;
+}
+
+.tooltip::after {
+    content: attr(data-tip);
+    position: absolute;
+    bottom: 100%;
+    left: 50%;
+    transform: translateX(-50%);
+    background: rgba(0, 0, 0, 0.8);
+    color: white;
+    padding: 0.5rem 0.75rem;
+    border-radius: 0.375rem;
+    font-size: 0.75rem;
+    white-space: nowrap;
+    opacity: 0;
+    visibility: hidden;
+    transition: opacity 0.2s, visibility 0.2s;
+    z-index: 10;
+}
+
+.dark .tooltip::after {
+    background: rgba(30, 41, 59, 0.9);
+    border: 1px solid rgba(51, 65, 85, 0.5);
+}
+
+.tooltip:hover::after {
+    opacity: 1;
+    visibility: visible;
+}
+
+/* Custom width classes */
+.max-w-7xl {
+    max-width: 80rem !important; /* 1280px */
+}
+
+.max-w-4xl {
+    max-width: 56rem !important; /* 896px */
+}
+
+.max-w-full {
+    max-width: 100% !important;
+}
+
+/* Smooth transitions for container width changes */
+#main-container {
+    transition: max-width 0.3s ease-in-out;
+}
+
+/* Ensure proper spacing on narrow view */
+@media (max-width: 640px) {
+    #main-container {
+        padding-left: 1rem !important;
+        padding-right: 1rem !important;
+    }
+}
+
+/* Active button states - additional specificity */
+button.theme-mode-btn.active,
+button.table-density-btn.active,
+button.animation-level-btn.active,
+button.page-width-btn.active {
+    background-color: #3b82f6 !important;
+    color: white !important;
+    border-color: #3b82f6 !important;
+}
+
+.dark button.theme-mode-btn.active,
+.dark button.table-density-btn.active,
+.dark button.animation-level-btn.active,
+.dark button.page-width-btn.active {
+    background-color: #3b82f6 !important;
+    color: white !important;
+    border-color: #3b82f6 !important;
+}
+
+/* Fix for button text contrast in all states */
+.theme-mode-btn,
+.table-density-btn,
+.animation-level-btn,
+.page-width-btn {
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+}
+
+/* Improve visibility of inactive buttons in light theme */
+:not(.dark) .theme-mode-btn:not(.active),
+:not(.dark) .table-density-btn:not(.active),
+:not(.dark) .animation-level-btn:not(.active),
+:not(.dark) .page-width-btn:not(.active) {
+    color: #4b5563 !important; /* gray-600 */
+}
+
+/* Additional specificity for button text color in dark theme */
+.dark .theme-mode-btn:not(.active),
+.dark .table-density-btn:not(.active),
+.dark .animation-level-btn:not(.active),
+.dark .page-width-btn:not(.active) {
+    color: #d1d5db !important; /* gray-300 */
+}
+
+/* Enhanced period button styles */
+.period-btn {
+    border: 2px solid transparent;
+    transition: all 0.3s ease;
+    font-weight: 500;
+}
+
+.period-btn:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+}
+
+.period-btn.active {
+    border-width: 2px;
+    font-weight: 600;
+    box-shadow: 0 4px 12px rgba(59, 130, 246, 0.2);
+}
+
+/* Dark theme active button */
+.dark .period-btn.active {
+    box-shadow: 0 4px 12px rgba(59, 130, 246, 0.3);
+}
+
+/* Light theme active button */
+.light .period-btn.active {
+    box-shadow: 0 4px 12px rgba(59, 130, 246, 0.15);
+}
