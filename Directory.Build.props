@@ -17,7 +17,7 @@
 		<!-- Central version surface. publish.ps1 -p:VersionPrefix overrides this for releases;
 		     the default below ensures the assembly version embedded in the binary is something
 		     other than the implicit 1.0.0.0 placeholder so the Service tab can distinguish
-		     runtime / installed / distribution binaries by version. Pinned to 1.4.4 for the
+		     runtime / installed / distribution binaries by version. Pinned to 1.5.0 for the
 		     current release stream — see RdpAuditVersionMetadataTests for the gate. The 1.3.9
 		     release finishes the live firewall matcher integration: the production scanner / parser /
 		     reconciler / FirewallPage / Repair paths now all route ownership through the pure
@@ -144,7 +144,15 @@
 		     LicenseStore.ActivateOnlineAsync POSTs key=[key] to https://activate.rdpaudit.com/ and maps
 		     the response to Activated ("1"), InvalidKey ("0"), EmptyResponse (no/unknown body) or
 		     NetworkError (unreachable), each surfaced with a distinct message. -->
-		<VersionPrefix Condition="'$(VersionPrefix)' == ''">1.4.4</VersionPrefix>
+		<!-- 1.5.0: RDP Activity per-login Auth Success export. Adds a right-click
+		     "Export Auth Success (per login)" submenu (JSON/TXT/Markdown/CSV) to the Attack
+		     Statistics grid. The report is a per-login roll-up (one row per account, never one
+		     row per attempt): per login it shows successful/failed/denied counts, the number of
+		     failed authentications before the first success, time-to-first-success, first/last
+		     event and success timestamps, the decoded success events the verdict is based on, and
+		     the attacker IP. Backed by a new append-only IPC command GetAuthSuccessSummaryForIp = 63
+		     with a bounded, fully SQL-grouped aggregation over AuthAttemptFacts. -->
+		<VersionPrefix Condition="'$(VersionPrefix)' == ''">1.5.0</VersionPrefix>
 		<FileVersion>$(VersionPrefix).0</FileVersion>
 		<AssemblyVersion>$(VersionPrefix).0</AssemblyVersion>
 		<!-- Build SHA surface: when the build/publish pipeline passes -p:SourceRevisionId=<short-sha>
