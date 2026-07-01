@@ -84,6 +84,7 @@ public sealed class AttackStatisticsPage : TabPage
 	private readonly ToolStripMenuItem _menuWhitelistIp;
 	private readonly ToolStripMenuItem _menuExportEvents;
 	private readonly ToolStripMenuItem _menuExportFacts;
+	private readonly ToolStripMenuItem _menuExportSuccessfulSessions;
 	private readonly ToolStripMenuItem _menuOpenRipeStat;
 	private readonly ToolStripMenuItem _menuOpenAbuseIpDb;
 
@@ -209,6 +210,7 @@ public sealed class AttackStatisticsPage : TabPage
 		_grid.RowPrePaint += OnRowPrePaint;
 		_grid.CellMouseDown += OnCellMouseDown;
 		_grid.CellFormatting += OnCellFormatting;
+		_grid.CellToolTipTextNeeded += OnCellToolTipTextNeeded;
 
 		// --- Context menu ----------------------------------------------------------------------
 		_menuCopyDetails = new ToolStripMenuItem("Copy Row Details", null, (_, _) => OnCopyDetails());
@@ -217,6 +219,7 @@ public sealed class AttackStatisticsPage : TabPage
 		_menuWhitelistIp = new ToolStripMenuItem("Whitelist IP…", null, async (_, _) => await OnWhitelistIpAsync().ConfigureAwait(true));
 		_menuExportEvents = BuildExportSubmenu();
 		_menuExportFacts = BuildExportFactsSubmenu();
+		_menuExportSuccessfulSessions = BuildExportSuccessfulSessionsSubmenu();
 		_menuOpenRipeStat = new ToolStripMenuItem(IpReputationBrowser.RipeStatMenuLabel, null, (_, _) => OnOpenRipeStat());
 		_menuOpenAbuseIpDb = new ToolStripMenuItem(IpReputationBrowser.AbuseIpDbMenuLabel, null, (_, _) => OnOpenAbuseIpDb());
 		_menu = new ContextMenuStrip();
@@ -231,6 +234,7 @@ public sealed class AttackStatisticsPage : TabPage
 		_menu.Items.Add(new ToolStripSeparator());
 		_menu.Items.Add(_menuExportEvents);
 		_menu.Items.Add(_menuExportFacts);
+		_menu.Items.Add(_menuExportSuccessfulSessions);
 		_menu.Opening += OnMenuOpening;
 		_grid.ContextMenuStrip = _menu;
 
@@ -328,6 +332,8 @@ public sealed class AttackStatisticsPage : TabPage
 			HeaderText = "IP",
 			DataPropertyName = nameof(AttackStatRow.Ip),
 			Width = 140,
+			ToolTipText = "Remote source IPv4/IPv6 address that originated the observed RDP logon-outcome events. "
+				+ "Rows are grouped per unique source address; a sentinel row may represent events with no resolvable IP.",
 		});
 		grid.Columns.Add(new DataGridViewTextBoxColumn
 		{
@@ -362,12 +368,16 @@ public sealed class AttackStatisticsPage : TabPage
 			HeaderText = "First Seen (local)",
 			DataPropertyName = nameof(AttackStatRow.FirstSeenUtcText),
 			Width = 150,
+			ToolTipText = "Timestamp of the earliest logon-outcome event observed for this IP within the selected range, "
+				+ "converted from UTC to the operator's local time for display.",
 		});
 		grid.Columns.Add(new DataGridViewTextBoxColumn
 		{
 			HeaderText = "Last Seen (local)",
 			DataPropertyName = nameof(AttackStatRow.LastSeenUtcText),
 			Width = 150,
+			ToolTipText = "Timestamp of the most recent logon-outcome event observed for this IP within the selected range, "
+				+ "converted from UTC to the operator's local time for display.",
 		});
 		grid.Columns.Add(new DataGridViewTextBoxColumn
 		{
@@ -381,18 +391,27 @@ public sealed class AttackStatisticsPage : TabPage
 			HeaderText = "Top 10 Attempted Logins",
 			DataPropertyName = nameof(AttackStatRow.TopLoginsText),
 			AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill,
+			ToolTipText = "The ten most frequently attempted account names targeted from this IP, most-frequent first. "
+				+ "Human user names indicate credential guessing; the entries below are built-in / service accounts "
+				+ "produced by Windows and the RDP stack itself, not attacker input:\n\n"
+				+ RdpServiceAccountCatalog.BuildLegend(),
 		});
 		grid.Columns.Add(new DataGridViewTextBoxColumn
 		{
 			HeaderText = "Last LogonType",
 			DataPropertyName = nameof(AttackStatRow.LastLoginTypeText),
 			Width = 110,
+			ToolTipText = "Windows Logon Type code from the most recent logon-outcome event for this IP "
+				+ "(Security 4624/4625 LogonType field). Hover a data cell to see the decoded meaning of that row's code. "
+				+ "Common values: 3 = Network, 10 = RemoteInteractive (classic RDP), 7 = Unlock, 2 = Interactive.",
 		});
 		grid.Columns.Add(new DataGridViewTextBoxColumn
 		{
 			HeaderText = "Blocked",
 			DataPropertyName = nameof(AttackStatRow.IsBlockedText),
 			Width = 80,
+			ToolTipText = "Whether this IP is currently blocked by a firewall rule created by RdpAudit "
+				+ "(manual Block action or automatic auto-block policy). 'yes' means inbound traffic is being denied.",
 		});
 
 		// --- Stage IP-E: fact-derived augmentation columns. Append-only, additive to the existing
@@ -409,16 +428,22 @@ public sealed class AttackStatisticsPage : TabPage
 			HeaderText = "Auth Failed",
 			DataPropertyName = nameof(AttackStatRow.FactFailedLogons),
 			Width = 100,
-			ToolTipText = "Authoritative failed-authentication count from RdpConnectionFacts for this IP "
-				+ "(preferred source of truth over the aggregator's Session Failed column).",
+			ToolTipText = "Authoritative count of FAILED authentication attempts from this IP, derived from AuthAttemptFact records "
+				+ "(Security 4625, plus Kerberos 4771/4768 failures). This counts authentication events at the credential layer "
+				+ "and is distinct from the 'Session Failed' column, which counts session-level logon-outcome events. "
+				+ "It aggregates ALL facts for the IP with no time window and is the preferred source of truth for failures.",
 		});
 		grid.Columns.Add(new DataGridViewTextBoxColumn
 		{
 			HeaderText = "Auth Success",
 			DataPropertyName = nameof(AttackStatRow.FactSuccessfulLogons),
 			Width = 100,
-			ToolTipText = "Authoritative successful-authentication count from RdpConnectionFacts for this IP "
-				+ "(preferred source of truth over the aggregator's RDP Session Success column).",
+			ToolTipText = "Authoritative count of SUCCESSFUL authentications from this IP, derived from AuthAttemptFact records: "
+				+ "Security 4624 (RDP-relevant logon types) OR Kerberos 4768/4769 ticket-grant successes. This measures the "
+				+ "CREDENTIAL/authentication layer, NOT established RDP desktop sessions. It is expected and normal to see a "
+				+ "high 'Auth Success' with 0 'RDP Session Success': an attacker performing high-volume network (LogonType 3) or "
+				+ "Kerberos probing can validate credentials or obtain tickets many times without ever completing an interactive "
+				+ "RDP session (LogonType 10 / TS-RCM 1149 / TS-LSM 21). The two columns measure different layers.",
 		});
 		grid.Columns.Add(new DataGridViewTextBoxColumn
 		{
@@ -701,6 +726,7 @@ public sealed class AttackStatisticsPage : TabPage
 		_menuWhitelistIp.Enabled = hasRow && !string.IsNullOrEmpty(_menuRow!.Ip) && !isSentinel;
 		_menuExportEvents.Enabled = hasValidIp;
 		_menuExportFacts.Enabled = hasValidIp;
+		_menuExportSuccessfulSessions.Enabled = hasValidIp;
 		_menuOpenRipeStat.Enabled = reputationEligible;
 		_menuOpenAbuseIpDb.Enabled = reputationEligible;
 	}
@@ -898,6 +924,59 @@ public sealed class AttackStatisticsPage : TabPage
 		}
 
 		await ConnectionFactsExportRunner.RunAsync(_ipc, _menuRow.Ip, format, SetStatus).ConfigureAwait(true);
+	}
+
+	// ---------------------------------------------------------------------------------------------
+	// Export Successful RDP Sessions — detailed report of only the established sessions for the IP,
+	// including the decision evidence (which event IDs proved the session was successful).
+	// ---------------------------------------------------------------------------------------------
+
+	private ToolStripMenuItem BuildExportSuccessfulSessionsSubmenu()
+	{
+		ToolStripMenuItem root = new("Export Successful RDP Sessions");
+		root.DropDownItems.Add(new ToolStripMenuItem("JSON…", null, async (_, _) => await OnExportSuccessfulSessionsAsync(SuccessfulSessionsExportFormat.Json).ConfigureAwait(true)));
+		root.DropDownItems.Add(new ToolStripMenuItem("TXT…", null, async (_, _) => await OnExportSuccessfulSessionsAsync(SuccessfulSessionsExportFormat.Txt).ConfigureAwait(true)));
+		root.DropDownItems.Add(new ToolStripMenuItem("Markdown…", null, async (_, _) => await OnExportSuccessfulSessionsAsync(SuccessfulSessionsExportFormat.Markdown).ConfigureAwait(true)));
+		root.DropDownItems.Add(new ToolStripMenuItem("CSV…", null, async (_, _) => await OnExportSuccessfulSessionsAsync(SuccessfulSessionsExportFormat.Csv).ConfigureAwait(true)));
+		return root;
+	}
+
+	private async Task OnExportSuccessfulSessionsAsync(SuccessfulSessionsExportFormat format)
+	{
+		if (_menuRow is null || string.IsNullOrEmpty(_menuRow.Ip) || !AddressListFilter.IsValidIp(_menuRow.Ip))
+		{
+			SetStatus("Export Successful RDP Sessions aborted: no valid IP in the selected row.");
+			return;
+		}
+
+		await SuccessfulSessionsExportRunner.RunAsync(_ipc, _menuRow.Ip, format, SetStatus).ConfigureAwait(true);
+	}
+
+	// ---------------------------------------------------------------------------------------------
+	// Per-cell tooltip provider. Decodes the numeric Last LogonType code into a human-readable
+	// meaning when the operator hovers a data cell in that column.
+	// ---------------------------------------------------------------------------------------------
+
+	private void OnCellToolTipTextNeeded(object? sender, DataGridViewCellToolTipTextNeededEventArgs e)
+	{
+		if (e.RowIndex < 0 || e.RowIndex >= _binding.Count || e.ColumnIndex < 0)
+		{
+			return;
+		}
+
+		DataGridViewColumn column = _grid.Columns[e.ColumnIndex];
+		if (!string.Equals(column.DataPropertyName, nameof(AttackStatRow.LastLoginTypeText), StringComparison.Ordinal))
+		{
+			return;
+		}
+
+		int? code = _binding[e.RowIndex].Source.LastLoginType;
+		if (code is null)
+		{
+			return;
+		}
+
+		e.ToolTipText = LogonTypeCatalog.DescribeInline(code);
 	}
 
 	private async Task<bool> SendMutationAsync(IpcCommand command, object payload)
