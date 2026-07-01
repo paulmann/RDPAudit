@@ -23,7 +23,7 @@ public static class RdpServiceAccountCatalog
 	// ── Data ─────────────────────────────────────────────────────────────────────
 
 	/// <summary>Exact, case-insensitive built-in / well-known security principals.</summary>
-	private static readonly IReadOnlyDictionary<string, string> ExactMatches =
+	private static readonly ReadOnlyDictionary<string, string> ExactMatches =
 		new ReadOnlyDictionary<string, string>(new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
 		{
 			["SYSTEM"] = "Local System (NT AUTHORITY\\SYSTEM) — the most privileged local account; "

@@ -29,7 +29,7 @@ public static class LogonTypeCatalog
 	// ── Data ─────────────────────────────────────────────────────────────────────
 	// Canonical Windows logon types. Codes 1 and 6 are intentionally reserved by Windows
 	// and are not emitted in practice; they are included so a raw code still decodes cleanly.
-	private static readonly IReadOnlyDictionary<int, LogonTypeInfo> Entries =
+	private static readonly ReadOnlyDictionary<int, LogonTypeInfo> Entries =
 		new ReadOnlyDictionary<int, LogonTypeInfo>(new Dictionary<int, LogonTypeInfo>
 		{
 			[0] = new(0, "System",
