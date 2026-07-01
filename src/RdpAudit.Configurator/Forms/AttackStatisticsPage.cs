@@ -85,6 +85,7 @@ public sealed class AttackStatisticsPage : TabPage
 	private readonly ToolStripMenuItem _menuExportEvents;
 	private readonly ToolStripMenuItem _menuExportFacts;
 	private readonly ToolStripMenuItem _menuExportSuccessfulSessions;
+	private readonly ToolStripMenuItem _menuExportAuthSuccess;
 	private readonly ToolStripMenuItem _menuOpenRipeStat;
 	private readonly ToolStripMenuItem _menuOpenAbuseIpDb;
 
@@ -220,6 +221,7 @@ public sealed class AttackStatisticsPage : TabPage
 		_menuExportEvents = BuildExportSubmenu();
 		_menuExportFacts = BuildExportFactsSubmenu();
 		_menuExportSuccessfulSessions = BuildExportSuccessfulSessionsSubmenu();
+		_menuExportAuthSuccess = BuildExportAuthSuccessSubmenu();
 		_menuOpenRipeStat = new ToolStripMenuItem(IpReputationBrowser.RipeStatMenuLabel, null, (_, _) => OnOpenRipeStat());
 		_menuOpenAbuseIpDb = new ToolStripMenuItem(IpReputationBrowser.AbuseIpDbMenuLabel, null, (_, _) => OnOpenAbuseIpDb());
 		_menu = new ContextMenuStrip();
@@ -235,6 +237,7 @@ public sealed class AttackStatisticsPage : TabPage
 		_menu.Items.Add(_menuExportEvents);
 		_menu.Items.Add(_menuExportFacts);
 		_menu.Items.Add(_menuExportSuccessfulSessions);
+		_menu.Items.Add(_menuExportAuthSuccess);
 		_menu.Opening += OnMenuOpening;
 		_grid.ContextMenuStrip = _menu;
 
@@ -727,6 +730,7 @@ public sealed class AttackStatisticsPage : TabPage
 		_menuExportEvents.Enabled = hasValidIp;
 		_menuExportFacts.Enabled = hasValidIp;
 		_menuExportSuccessfulSessions.Enabled = hasValidIp;
+		_menuExportAuthSuccess.Enabled = hasValidIp;
 		_menuOpenRipeStat.Enabled = reputationEligible;
 		_menuOpenAbuseIpDb.Enabled = reputationEligible;
 	}
@@ -950,6 +954,27 @@ public sealed class AttackStatisticsPage : TabPage
 		}
 
 		await SuccessfulSessionsExportRunner.RunAsync(_ipc, _menuRow.Ip, format, SetStatus).ConfigureAwait(true);
+	}
+
+	private ToolStripMenuItem BuildExportAuthSuccessSubmenu()
+	{
+		ToolStripMenuItem root = new("Export Auth Success (per login)");
+		root.DropDownItems.Add(new ToolStripMenuItem("JSON…", null, async (_, _) => await OnExportAuthSuccessAsync(AuthSuccessExportFormat.Json).ConfigureAwait(true)));
+		root.DropDownItems.Add(new ToolStripMenuItem("TXT…", null, async (_, _) => await OnExportAuthSuccessAsync(AuthSuccessExportFormat.Txt).ConfigureAwait(true)));
+		root.DropDownItems.Add(new ToolStripMenuItem("Markdown…", null, async (_, _) => await OnExportAuthSuccessAsync(AuthSuccessExportFormat.Markdown).ConfigureAwait(true)));
+		root.DropDownItems.Add(new ToolStripMenuItem("CSV…", null, async (_, _) => await OnExportAuthSuccessAsync(AuthSuccessExportFormat.Csv).ConfigureAwait(true)));
+		return root;
+	}
+
+	private async Task OnExportAuthSuccessAsync(AuthSuccessExportFormat format)
+	{
+		if (_menuRow is null || string.IsNullOrEmpty(_menuRow.Ip) || !AddressListFilter.IsValidIp(_menuRow.Ip))
+		{
+			SetStatus("Export Auth Success (per login) aborted: no valid IP in the selected row.");
+			return;
+		}
+
+		await AuthSuccessExportRunner.RunAsync(_ipc, _menuRow.Ip, format, SetStatus).ConfigureAwait(true);
 	}
 
 	// ---------------------------------------------------------------------------------------------

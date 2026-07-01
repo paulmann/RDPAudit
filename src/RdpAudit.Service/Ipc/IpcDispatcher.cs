@@ -298,6 +298,9 @@ public sealed class IpcDispatcher
 				// --- v1.3.4: RDP Activity rebuild ---
 				IpcCommand.RebuildAttackStats => await RebuildAttackStatsAsync(ct).ConfigureAwait(false),
 
+				// --- v1.4.1: Auth Success per-login summary (RDP Activity export) ---
+				IpcCommand.GetAuthSuccessSummaryForIp => await GetAuthSuccessSummaryForIpAsync(request.Payload, ct).ConfigureAwait(false),
+
 				_ => throw new IpcException(string.Format(CultureInfo.InvariantCulture, "Unknown command: {0}", request.Command)),
 			};
 
@@ -4680,6 +4683,242 @@ public sealed class IpcDispatcher
 		}
 
 		return result;
+	}
+
+	// ----------------------------------------------------------------------------------------------
+	// v1.4.1: Auth Success per-login summary (RDP Activity "Export Auth Success (per login)")
+	// ----------------------------------------------------------------------------------------------
+
+	/// <summary>Default cap on per-login rows returned by <c>GetAuthSuccessSummaryForIp</c>.</summary>
+	internal const int AuthSuccessSummaryDefaultLimit = 500;
+
+	/// <summary>Upper bound on per-login rows returned by <c>GetAuthSuccessSummaryForIp</c>.</summary>
+	internal const int AuthSuccessSummaryMaxLimit = 5000;
+
+	/// <summary>Cap on the number of distinct labels (event ids / logon types / auth packages /
+	/// failure reasons) collected per login so a pathological account cannot bloat the payload.</summary>
+	internal const int AuthSuccessLabelCapPerLogin = 50;
+
+	/// <summary>Builds a per-login (NormalizedUserName) authentication-success summary for one IP,
+	/// aggregated entirely from <c>AuthAttemptFacts</c> (the v3 atomic source of truth). Every counter
+	/// is a database-side aggregation, so no per-attempt rows ever cross the pipe — the report stays
+	/// compact even for IPs with tens of thousands of attempts.</summary>
+	private async Task<object?> GetAuthSuccessSummaryForIpAsync(string? payload, CancellationToken ct)
+	{
+		AuthSuccessSummaryRequest req = ParseAuthSuccessSummaryRequest(payload);
+		string ip = NormalizeAndValidateAddress(req.Ip);
+
+		int limit = req.Limit <= 0 ? AuthSuccessSummaryDefaultLimit : req.Limit;
+		if (limit > AuthSuccessSummaryMaxLimit)
+		{
+			limit = AuthSuccessSummaryMaxLimit;
+		}
+
+		DateTime nowUtc = DateTime.UtcNow;
+		AuthSuccessSummaryDto dto = new()
+		{
+			Status = IpcResultStatus.Success,
+			Ip = ip,
+			QueriedUtc = nowUtc,
+			SucceededLoginsOnly = req.SucceededLoginsOnly,
+		};
+
+		await using AuditDbContext db = await _factory.CreateDbContextAsync(ct).ConfigureAwait(false);
+
+		IQueryable<AuthAttemptFact> ipFacts = db.AuthAttemptFacts.AsNoTracking()
+			.Where(f => f.SourceIp == ip);
+
+		// IP-wide totals — one grouped aggregation, independent of the per-login page.
+		var ipTotals = await ipFacts
+			.GroupBy(_ => 1)
+			.Select(g => new
+			{
+				Total = g.LongCount(),
+				Succeeded = g.LongCount(f => f.Outcome == AuthAttemptOutcome.Succeeded),
+				Failed = g.LongCount(f => f.Outcome == AuthAttemptOutcome.Failed),
+				Denied = g.LongCount(f => f.Outcome == AuthAttemptOutcome.Denied),
+				FirstSeen = g.Min(f => (DateTime?)f.TimeUtc),
+				LastSeen = g.Max(f => (DateTime?)f.TimeUtc),
+			})
+			.FirstOrDefaultAsync(ct).ConfigureAwait(false);
+
+		if (ipTotals is not null)
+		{
+			dto.TotalAuthFacts = ipTotals.Total;
+			dto.TotalSuccessfulAuth = ipTotals.Succeeded;
+			dto.TotalFailedAuth = ipTotals.Failed;
+			dto.TotalDeniedAuth = ipTotals.Denied;
+			dto.FirstSeenUtc = ipTotals.FirstSeen;
+			dto.LastSeenUtc = ipTotals.LastSeen;
+		}
+
+		if (dto.TotalAuthFacts == 0)
+		{
+			dto.Message = string.Format(CultureInfo.InvariantCulture,
+				"no authentication facts recorded for {0}", ip);
+			return dto;
+		}
+
+		// Per-login roll-up. Group by the canonical join key; the display name / domain are pulled
+		// from the newest fact per login further below so the report shows a human-friendly label.
+		var grouped = await ipFacts
+			.Where(f => f.NormalizedUserName != null && f.NormalizedUserName != string.Empty)
+			.GroupBy(f => f.NormalizedUserName!)
+			.Select(g => new
+			{
+				Login = g.Key,
+				Total = g.LongCount(),
+				Succeeded = g.LongCount(f => f.Outcome == AuthAttemptOutcome.Succeeded),
+				Failed = g.LongCount(f => f.Outcome == AuthAttemptOutcome.Failed),
+				Denied = g.LongCount(f => f.Outcome == AuthAttemptOutcome.Denied),
+				FirstSeen = g.Min(f => (DateTime?)f.TimeUtc),
+				LastSeen = g.Max(f => (DateTime?)f.TimeUtc),
+				FirstSuccess = g.Where(f => f.Outcome == AuthAttemptOutcome.Succeeded)
+					.Min(f => (DateTime?)f.TimeUtc),
+				LastSuccess = g.Where(f => f.Outcome == AuthAttemptOutcome.Succeeded)
+					.Max(f => (DateTime?)f.TimeUtc),
+			})
+			.ToListAsync(ct).ConfigureAwait(false);
+
+		dto.DistinctLoginsObserved = grouped.Count;
+		dto.DistinctSucceededLogins = grouped.Count(x => x.Succeeded > 0);
+
+		// Keep only the logins the report is about, then order and page.
+		var selected = grouped
+			.Where(x => !req.SucceededLoginsOnly || x.Succeeded > 0)
+			.OrderBy(x => x.FirstSuccess ?? DateTime.MaxValue)
+			.ThenByDescending(x => x.Succeeded)
+			.ThenBy(x => x.Login, StringComparer.OrdinalIgnoreCase)
+			.Take(limit)
+			.ToList();
+
+		foreach (var row in selected)
+		{
+			ct.ThrowIfCancellationRequested();
+
+			AuthSuccessLoginDto login = new()
+			{
+				NormalizedUserName = row.Login,
+				SuccessfulAuthCount = row.Succeeded,
+				FailedAuthCount = row.Failed,
+				DeniedAuthCount = row.Denied,
+				TotalAuthCount = row.Total,
+				FirstSeenUtc = row.FirstSeen,
+				LastSeenUtc = row.LastSeen,
+				FirstSuccessUtc = row.FirstSuccess,
+				LastSuccessUtc = row.LastSuccess,
+				HasSuccess = row.Succeeded > 0,
+			};
+
+			if (row.FirstSuccess.HasValue && row.FirstSeen.HasValue)
+			{
+				login.SecondsToFirstSuccess = Math.Max(0,
+					(long)(row.FirstSuccess.Value - row.FirstSeen.Value).TotalSeconds);
+			}
+
+			// Display name / domain: newest fact wins.
+			var identity = await ipFacts
+				.Where(f => f.NormalizedUserName == row.Login)
+				.OrderByDescending(f => f.TimeUtc)
+				.Select(f => new { f.TargetUser, f.TargetDomain })
+				.FirstOrDefaultAsync(ct).ConfigureAwait(false);
+			if (identity is not null)
+			{
+				login.DisplayUserName = identity.TargetUser;
+				login.Domain = identity.TargetDomain;
+			}
+
+			// Failed / denied strictly before the first success — the "attempts to crack" number.
+			if (row.FirstSuccess.HasValue)
+			{
+				DateTime firstSuccess = row.FirstSuccess.Value;
+				login.FailedBeforeFirstSuccess = await ipFacts
+					.Where(f => f.NormalizedUserName == row.Login
+						&& f.TimeUtc < firstSuccess
+						&& (f.Outcome == AuthAttemptOutcome.Failed || f.Outcome == AuthAttemptOutcome.Denied))
+					.LongCountAsync(ct).ConfigureAwait(false);
+			}
+			else
+			{
+				// Never succeeded: every failure / denial counts as "before a success that never came".
+				login.FailedBeforeFirstSuccess = row.Failed + row.Denied;
+			}
+
+			// Distinct success event ids.
+			login.SuccessEventIds = await ipFacts
+				.Where(f => f.NormalizedUserName == row.Login && f.Outcome == AuthAttemptOutcome.Succeeded)
+				.Select(f => f.EvidenceEventId)
+				.Distinct()
+				.OrderBy(id => id)
+				.Take(AuthSuccessLabelCapPerLogin)
+				.ToListAsync(ct).ConfigureAwait(false);
+
+			// Distinct logon types on successful facts.
+			List<int?> logonTypes = await ipFacts
+				.Where(f => f.NormalizedUserName == row.Login
+					&& f.Outcome == AuthAttemptOutcome.Succeeded
+					&& f.LogonType != null)
+				.Select(f => f.LogonType)
+				.Distinct()
+				.OrderBy(t => t)
+				.Take(AuthSuccessLabelCapPerLogin)
+				.ToListAsync(ct).ConfigureAwait(false);
+			login.SuccessLogonTypes = logonTypes.Where(t => t.HasValue).Select(t => t!.Value).ToList();
+
+			// Distinct auth packages on successful facts.
+			List<string> authPackages = await ipFacts
+				.Where(f => f.NormalizedUserName == row.Login
+					&& f.Outcome == AuthAttemptOutcome.Succeeded
+					&& f.AuthPackage != null && f.AuthPackage != string.Empty)
+				.Select(f => f.AuthPackage!)
+				.Distinct()
+				.Take(AuthSuccessLabelCapPerLogin)
+				.ToListAsync(ct).ConfigureAwait(false);
+			login.SuccessAuthPackages = authPackages.OrderBy(p => p, StringComparer.OrdinalIgnoreCase).ToList();
+
+			// Distinct failure reasons (translated SubStatus) across failed / denied facts.
+			List<string> reasons = await ipFacts
+				.Where(f => f.NormalizedUserName == row.Login
+					&& (f.Outcome == AuthAttemptOutcome.Failed || f.Outcome == AuthAttemptOutcome.Denied)
+					&& f.SubStatusMeaning != null && f.SubStatusMeaning != string.Empty)
+				.Select(f => f.SubStatusMeaning!)
+				.Distinct()
+				.Take(AuthSuccessLabelCapPerLogin)
+				.ToListAsync(ct).ConfigureAwait(false);
+			login.FailureReasons = reasons.OrderBy(r => r, StringComparer.OrdinalIgnoreCase).ToList();
+
+			dto.Logins.Add(login);
+		}
+
+		dto.Message = string.Format(CultureInfo.InvariantCulture,
+			"auth-success summary for {0}: succeeded-logins={1} observed-logins={2} rows-returned={3} (successOnly={4})",
+			ip, dto.DistinctSucceededLogins, dto.DistinctLoginsObserved, dto.Logins.Count, req.SucceededLoginsOnly);
+		return dto;
+	}
+
+	private static AuthSuccessSummaryRequest ParseAuthSuccessSummaryRequest(string? payload)
+	{
+		if (string.IsNullOrWhiteSpace(payload))
+		{
+			throw new IpcException("GetAuthSuccessSummaryForIp requires a JSON payload with an Ip field.");
+		}
+
+		AuthSuccessSummaryRequest? parsed;
+		try
+		{
+			parsed = JsonSerializer.Deserialize<AuthSuccessSummaryRequest>(payload, JsonOptions.Default);
+		}
+		catch (JsonException ex)
+		{
+			throw new IpcException("GetAuthSuccessSummaryForIp payload is not valid JSON: " + ex.Message);
+		}
+
+		if (parsed is null || string.IsNullOrWhiteSpace(parsed.Ip))
+		{
+			throw new IpcException("GetAuthSuccessSummaryForIp requires an Ip field.");
+		}
+
+		return parsed;
 	}
 
 	// ----------------------------------------------------------------------------------------------

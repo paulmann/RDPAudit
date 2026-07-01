@@ -226,4 +226,15 @@ public enum IpcCommand
 	/// thumbprints and a last-probe result). Polled by the RdpAudit.Mikrotik wizard's Apply &amp; Sync step
 	/// to confirm the Service adopted the bootstrap. Never returns plaintext credentials.</summary>
 	GetMikroTikMtlsStatus = 62,
+
+	// --- v1.4.1 Auth Success per-login export (append-only). ---
+
+	/// <summary>Returns a per-login (NormalizedUserName) roll-up of AuthAttemptFacts for one attacker
+	/// IP: successful / failed / denied counts, first &amp; last seen, first &amp; last success, failed
+	/// attempts before the first success, seconds-to-first-success, and the distinct success event ids,
+	/// logon types, auth packages and failure reasons per login. Sourced entirely from AuthAttemptFacts
+	/// (the v3 atomic source of truth) so it matches the Auth Success / Auth Failed grid columns. Backs
+	/// the RDP Activity tab's "Export Auth Success (per login)" context action; the report is summary
+	/// only — one row per account, never one row per attempt.</summary>
+	GetAuthSuccessSummaryForIp = 63,
 }
