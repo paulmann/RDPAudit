@@ -12,7 +12,7 @@
 
 .NOTES
 	Author : Mikhail Deynekin — https://Deynekin.com — Mikhail@Deynekin.com
-	Version: 1.2.3
+	Version: 1.2.4
 
 .FEATURES
 	Detects and reports any previously installed RdpAudit version (with version number).
@@ -250,6 +250,46 @@ function Get-DotNetSdkInfo {
 	}
 }
 
+function Get-MoqInstalledVersion {
+	# Probes the NuGet global package cache for the highest installed Moq version.
+	# This works even before the repository is cloned and without running a restore,
+	# so the prerequisite table can report a real version number rather than just
+	# 'NOT FOUND'. Falls back gracefully to $null when dotnet or the cache is absent.
+	$dotnetCommand = Get-Command -Name 'dotnet' -ErrorAction SilentlyContinue
+	if ($null -eq $dotnetCommand) {
+		return $null
+	}
+
+	try {
+		# Resolve the NuGet global packages root (respects NUGET_PACKAGES env override).
+		$nugetRoot = $env:NUGET_PACKAGES
+		if ([string]::IsNullOrWhiteSpace($nugetRoot)) {
+			$nugetRoot = Join-Path -Path ([System.Environment]::GetFolderPath('UserProfile')) -ChildPath '.nuget\packages'
+		}
+
+		$moqRoot = Join-Path -Path $nugetRoot -ChildPath 'moq'
+		if (-not (Test-Path -Path $moqRoot -PathType Container)) {
+			return $null
+		}
+
+		# Each subdirectory name IS the package version (e.g. 4.20.72). Pick the highest.
+		$versionDirs = @(Get-ChildItem -Path $moqRoot -Directory -ErrorAction SilentlyContinue)
+		if ($versionDirs.Count -eq 0) {
+			return $null
+		}
+
+		$best = $versionDirs `
+			| ForEach-Object { ConvertTo-VersionOrNull -Value $_.Name } `
+			| Where-Object { $null -ne $_ } `
+			| Sort-Object -Descending `
+			| Select-Object -First 1
+
+		return $best
+	} catch {
+		return $null
+	}
+}
+
 function New-PrerequisiteRecord {
 	param(
 		[Parameter(Mandatory)]
@@ -339,6 +379,22 @@ function Get-PrerequisiteStatus {
 		-IsMandatory $true `
 		-WingetId 'Microsoft.DotNet.SDK.8'
 
+	# Moq is required by RdpAudit.Service.Tests. It is not a system-level tool but a
+	# NuGet package; dotnet restore / Install-MoqPackage handles automatic acquisition.
+	# We probe the NuGet global cache here so the operator can see at a glance whether
+	# Moq is already present before any restore runs. IsMandatory = $false because the
+	# package is automatically added by Install-MoqPackage during the build pipeline.
+	$moqVersion = Get-MoqInstalledVersion
+	$moqInstalled = $null -ne $moqVersion
+	$moqInstalledText = if ($moqInstalled) { $moqVersion.ToString() } else { 'NOT FOUND (auto-added)' }
+	$items += New-PrerequisiteRecord `
+		-Name 'Moq (NuGet)' `
+		-Required '4.x+ (NuGet cache)' `
+		-Installed $moqInstalledText `
+		-IsSatisfied $moqInstalled `
+		-IsMandatory $false `
+		-WingetId $null
+
 	$wingetVersionText = Get-CommandVersionText -CommandName 'winget' -Arguments @('--version')
 	$wingetInstalledText = if ([string]::IsNullOrWhiteSpace($wingetVersionText)) { 'NOT FOUND' } else { $wingetVersionText }
 	$items += New-PrerequisiteRecord `
@@ -365,7 +421,15 @@ function Show-PrerequisiteStatus {
 	Write-Host ($format -f '---------', '--------', '---------', '------') -ForegroundColor DarkGray
 
 	foreach ($item in $Items) {
-		$color = if ($item.IsSatisfied) { 'Green' } else { 'Red' }
+		$color = if ($item.IsSatisfied) {
+			'Green'
+		} elseif (-not $item.IsMandatory) {
+			# Optional components that are absent are shown in yellow, not red,
+			# to distinguish them from hard blockers.
+			'Yellow'
+		} else {
+			'Red'
+		}
 		Write-Host ($format -f $item.Name, $item.Required, $item.Installed, $item.Status) -ForegroundColor $color
 	}
 
