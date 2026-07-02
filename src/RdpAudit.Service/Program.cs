@@ -97,15 +97,6 @@ public static class Program
 		RdpAuditOptions effectiveOptions = host.Services.GetRequiredService<IOptions<RdpAuditOptions>>().Value;
 		crashGuard.LogStartupDiagnostics(effectiveOptions, configPath);
 
-		using (IServiceScope scope = host.Services.CreateScope())
-		{
-			AuditDbInitializer initializer = scope.ServiceProvider.GetRequiredService<AuditDbInitializer>();
-			await initializer.EnsureCreatedAsync().ConfigureAwait(false);
-
-			BookmarkStore store = scope.ServiceProvider.GetRequiredService<BookmarkStore>();
-			await store.LoadAllAsync().ConfigureAwait(false);
-		}
-
 		await host.RunAsync().ConfigureAwait(false);
 		return 0;
 	}
@@ -293,6 +284,7 @@ public static class Program
 		// absence of evidence (a missing "{Worker} starting" line in service-*.log), the log now shows
 		// exactly which worker's StartAsync is still running -- or how long each one took -- even if
 		// the process never gets far enough to accept an IPC connection.
+		services.AddTimedHostedService<DatabaseInitializationWorker>(nameof(DatabaseInitializationWorker));
 		services.AddTimedHostedService<IpcServerWorker>(nameof(IpcServerWorker));
 		services.AddTimedHostedService(sp => new EventCollectorWorker(
 			sp.GetRequiredService<EventChannel>(),
