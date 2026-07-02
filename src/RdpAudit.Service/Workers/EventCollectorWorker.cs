@@ -1,5 +1,5 @@
 /* Project: RDPAudit 2.0 | Author: Mikhail Deynekin | Site: Deynekin.com | Email: Mikhail@Deynekin.com */
-// Version: 2.0.0
+// Version: 2.0.1
 
 // File:    src/RdpAudit.Service/Workers/EventCollectorWorker.cs
 // Module:  RdpAudit.Service.Workers
@@ -10,6 +10,9 @@
 //          Application log is not spammed every 30s on hosts where an optional channel (e.g. the
 //          TS-Gateway channel on Win10 Pro) is unavailable, and to attempt one bookmark-reset
 //          recovery before disabling a channel.
+//          v2.0.1: SkippedUnavailable channel status now embeds the ChannelProbeResult.Reason via
+//          BuildSkippedUnavailableStatus, so the Diagnostic tab can distinguish "role not installed"
+//          (ChannelNotFound) from "access denied" or "disabled" without requiring log access.
 // Extends: Microsoft.Extensions.Hosting.BackgroundService
 
 using System.Collections.Concurrent;
@@ -34,7 +37,15 @@ namespace RdpAudit.Service.Workers;
 /// </summary>
 public sealed class EventCollectorWorker : BackgroundService
 {
+	// ── Fields & DI ──────────────────────────────────────────────────────────────
+
 	private const int FlushEventThreshold = 100;
+
+	/// <summary>Maximum length of the probe-reason fragment embedded into the
+	/// "SkippedUnavailable" channel status token before truncation. Bounds IPC payload
+	/// size when Windows returns a verbose exception message as the probe reason.</summary>
+	internal const int SkippedUnavailableReasonMaxLength = 120;
+
 	private static readonly TimeSpan FlushTimerPeriod = TimeSpan.FromSeconds(30);
 
 	private readonly EventChannel _channel;
@@ -58,6 +69,8 @@ public sealed class EventCollectorWorker : BackgroundService
 	private CancellationToken _stoppingToken;
 	private Timer? _bookmarkTimer;
 	private volatile bool _shuttingDown;
+
+	// ── Construction ─────────────────────────────────────────────────────────────
 
 	public EventCollectorWorker(
 		EventChannel channel,
@@ -90,6 +103,8 @@ public sealed class EventCollectorWorker : BackgroundService
 		_factory = factory;
 		_opLog = opLog;
 	}
+
+	// ── Public API ───────────────────────────────────────────────────────────────
 
 	protected override async Task ExecuteAsync(CancellationToken stoppingToken)
 	{
@@ -184,6 +199,66 @@ public sealed class EventCollectorWorker : BackgroundService
 		await base.StopAsync(cancellationToken).ConfigureAwait(false);
 	}
 
+	/// <summary>Build the XPath the channel watcher will use. Pure logic — extracted so tests can
+	/// pin the v1.2.0 contract that Security MUST always use the narrow auth XPath regardless of
+	/// whether the global EnabledEventIds filter is empty.</summary>
+	internal static (string Xpath, IReadOnlyList<int> Ids) BuildWatcherQuery(
+		string channel,
+		IReadOnlyCollection<int> globalFilter)
+	{
+		bool isSecurity = string.Equals(channel, EventCatalog.ChannelSecurity, StringComparison.OrdinalIgnoreCase);
+		IEnumerable<int> catalogIds = EventCatalog.EventIdsForChannel(channel);
+		List<int> ids = globalFilter.Count > 0
+			? catalogIds.Where(globalFilter.Contains).ToList()
+			: catalogIds.ToList();
+
+		if (isSecurity)
+		{
+			HashSet<int> auth = new(SecurityAuthQuery.AuthEventIds);
+			List<int> securityAuth = globalFilter.Count > 0
+				? ids.Where(auth.Contains).ToList()
+				: SecurityAuthQuery.AuthEventIds.ToList();
+
+			if (securityAuth.Count == 0)
+			{
+				securityAuth = SecurityAuthQuery.AuthEventIds.ToList();
+			}
+
+			return (SecurityAuthQuery.BuildXPath(securityAuth), securityAuth);
+		}
+
+		string nonSecurityXpath = ids.Count == 0
+			? "*"
+			: "*[System[(" + string.Join(" or ", ids.Select(id => "EventID=" + id)) + ")]]";
+		return (nonSecurityXpath, ids);
+	}
+
+	/// <summary>v2.0.1 — compose the "SkippedUnavailable" channel status token, appending a
+	/// bounded-length probe reason so the Diagnostic tab shows WHY an optional channel was
+	/// skipped (role not installed, access denied, disabled) instead of a bare status with no
+	/// context. Truncated defensively because <see cref="ChannelProbeResult.Reason"/> may embed
+	/// a full exception message on some Windows builds. Pure and side-effect free — safe to unit
+	/// test directly without a Windows host or EventLogWatcher.</summary>
+	/// <param name="reason">Human-readable probe failure reason from <see cref="ChannelCapability.Probe"/>.</param>
+	/// <returns>The composed status token, e.g. "SkippedUnavailable: Channel not found: ...".</returns>
+	internal static string BuildSkippedUnavailableStatus(string reason)
+	{
+		const string statusToken = "SkippedUnavailable";
+
+		if (string.IsNullOrEmpty(reason))
+		{
+			return statusToken;
+		}
+
+		string trimmed = reason.Length > SkippedUnavailableReasonMaxLength
+			? reason[..SkippedUnavailableReasonMaxLength] + "..."
+			: reason;
+
+		return statusToken + ": " + trimmed;
+	}
+
+	// ── Core Logic ───────────────────────────────────────────────────────────────
+
 	/// <summary>v1.2.0 stale-bookmark guard. If the service has never persisted a single
 	/// AuthAttemptFact, an existing Security bookmark pointing past the most recent auth event
 	/// will freeze the live watcher at zero events forever. Drop it before the watcher arms so
@@ -241,125 +316,66 @@ public sealed class EventCollectorWorker : BackgroundService
 		}
 	}
 
-// Version: 2.0.1
-[SupportedOSPlatform("windows")]
-private void ArmChannel(string channel)
-{
-	if (_shuttingDown || _stoppingToken.IsCancellationRequested)
+	[SupportedOSPlatform("windows")]
+	private void ArmChannel(string channel)
 	{
-		return;
-	}
-
-	// Capability probe — for optional channels this avoids the Invalid-Handle callback loop.
-	ChannelProbeResult probe = ChannelCapability.Probe(channel);
-	if (!probe.IsAvailable)
-	{
-		ChannelImportance importance = _health.ClassifyChannel(channel);
-		if (importance == ChannelImportance.Optional)
+		if (_shuttingDown || _stoppingToken.IsCancellationRequested)
 		{
-			_health.ReportUnavailable(channel, probe.Reason);
-
-			// v2.0.1: embed the probe reason into the channel status so the Diagnostic tab
-			// can distinguish "role not installed" (ChannelNotFound) from "access denied"
-			// or "disabled" without requiring log access. Previously the status collapsed
-			// to a bare "SkippedUnavailable" token that gave no root-cause context.
-			_metrics.SetChannelStatus(channel, BuildSkippedUnavailableStatus(probe.Reason));
-			_logger.LogWarning(
-				"Skipping optional channel {Channel}: {Reason}",
-				channel, probe.Reason);
 			return;
 		}
 
-		// Critical channel that failed capability check: log once at error, still try to arm —
-		// the EventLogWatcher will surface the real failure and the health policy will gate
-		// any restart loop.
-		_logger.LogError(
-			"Critical channel {Channel} failed capability probe: {Reason}. Attempting to arm anyway.",
-			channel, probe.Reason);
-	}
-
-	try
-	{
-		EventLogWatcher watcher = CreateWatcher(channel);
-		lock (_watcherLock)
+		// Capability probe — for optional channels this avoids the Invalid-Handle callback loop.
+		ChannelProbeResult probe = ChannelCapability.Probe(channel);
+		if (!probe.IsAvailable)
 		{
-			if (_watchers.TryRemove(channel, out EventLogWatcher? old))
+			ChannelImportance importance = _health.ClassifyChannel(channel);
+			if (importance == ChannelImportance.Optional)
 			{
-				SafeDisposeWatcher(old);
+				_health.ReportUnavailable(channel, probe.Reason);
+
+				// v2.0.1: embed the probe reason into the status so the Diagnostic tab shows
+				// WHY the channel was skipped without requiring log access.
+				_metrics.SetChannelStatus(channel, BuildSkippedUnavailableStatus(probe.Reason));
+				_logger.LogWarning(
+					"Skipping optional channel {Channel}: {Reason}",
+					channel, probe.Reason);
+				return;
 			}
 
-			watcher.Enabled = true;
-			_watchers[channel] = watcher;
+			// Critical channel that failed capability check: log once at error, still try to arm —
+			// the EventLogWatcher will surface the real failure and the health policy will gate
+			// any restart loop.
+			_logger.LogError(
+				"Critical channel {Channel} failed capability probe: {Reason}. Attempting to arm anyway.",
+				channel, probe.Reason);
 		}
 
-		_health.ReportSuccess(channel);
-		_metrics.SetChannelStatus(channel, "Armed");
-		if (string.Equals(channel, EventCatalog.ChannelSecurity, StringComparison.OrdinalIgnoreCase))
+		try
 		{
-			_metrics.SetSecurityWatcherEnabled(true);
-		}
-		_logger.LogInformation("Watcher armed for channel {Channel}", channel);
-	}
-	catch (Exception ex)
-	{
-		HandleWatcherFailure(channel, ex, isCallback: false);
-	}
-}
-
-/// <summary>v2.0.1 — compose the "SkippedUnavailable" channel status token, appending a
-/// bounded-length probe reason so the Diagnostic tab shows WHY an optional channel was
-/// skipped (role not installed, access denied, disabled) instead of a bare status with no
-/// context. Truncated defensively since <see cref="ChannelProbeResult.Reason"/> may embed a
-/// full exception message on some Windows builds.</summary>
-private static string BuildSkippedUnavailableStatus(string reason)
-{
-	const int maxReasonLength = 120;
-	const string prefix = "SkippedUnavailable: ";
-
-	if (string.IsNullOrEmpty(reason))
-	{
-		return "SkippedUnavailable";
-	}
-
-	string trimmed = reason.Length > maxReasonLength
-		? reason[..maxReasonLength] + "..."
-		: reason;
-
-	return prefix + trimmed;
-}
-
-	/// <summary>Build the XPath the channel watcher will use. Pure logic — extracted so tests can
-	/// pin the v1.2.0 contract that Security MUST always use the narrow auth XPath regardless of
-	/// whether the global EnabledEventIds filter is empty.</summary>
-	internal static (string Xpath, IReadOnlyList<int> Ids) BuildWatcherQuery(
-		string channel,
-		IReadOnlyCollection<int> globalFilter)
-	{
-		bool isSecurity = string.Equals(channel, EventCatalog.ChannelSecurity, StringComparison.OrdinalIgnoreCase);
-		IEnumerable<int> catalogIds = EventCatalog.EventIdsForChannel(channel);
-		List<int> ids = globalFilter.Count > 0
-			? catalogIds.Where(globalFilter.Contains).ToList()
-			: catalogIds.ToList();
-
-		if (isSecurity)
-		{
-			HashSet<int> auth = new(SecurityAuthQuery.AuthEventIds);
-			List<int> securityAuth = globalFilter.Count > 0
-				? ids.Where(auth.Contains).ToList()
-				: SecurityAuthQuery.AuthEventIds.ToList();
-
-			if (securityAuth.Count == 0)
+			EventLogWatcher watcher = CreateWatcher(channel);
+			lock (_watcherLock)
 			{
-				securityAuth = SecurityAuthQuery.AuthEventIds.ToList();
+				if (_watchers.TryRemove(channel, out EventLogWatcher? old))
+				{
+					SafeDisposeWatcher(old);
+				}
+
+				watcher.Enabled = true;
+				_watchers[channel] = watcher;
 			}
 
-			return (SecurityAuthQuery.BuildXPath(securityAuth), securityAuth);
+			_health.ReportSuccess(channel);
+			_metrics.SetChannelStatus(channel, "Armed");
+			if (string.Equals(channel, EventCatalog.ChannelSecurity, StringComparison.OrdinalIgnoreCase))
+			{
+				_metrics.SetSecurityWatcherEnabled(true);
+			}
+			_logger.LogInformation("Watcher armed for channel {Channel}", channel);
 		}
-
-		string nonSecurityXpath = ids.Count == 0
-			? "*"
-			: "*[System[(" + string.Join(" or ", ids.Select(id => "EventID=" + id)) + ")]]";
-		return (nonSecurityXpath, ids);
+		catch (Exception ex)
+		{
+			HandleWatcherFailure(channel, ex, isCallback: false);
+		}
 	}
 
 	[SupportedOSPlatform("windows")]
@@ -458,8 +474,8 @@ private static string BuildSkippedUnavailableStatus(string reason)
 		if (!_channel.Channel.TryWrite(dto))
 		{
 			_metrics.IncrementDropped();
-			_metrics.IncrementRingBufferOverflow(); // NEW METRIC
-			
+			_metrics.IncrementRingBufferOverflow();
+
 			if (_options.CurrentValue.Diagnostics.LogChannelDrops)
 			{
 				_logger.LogWarning("Event channel full — dropped EventID {EventId} channel={Channel}",
@@ -703,6 +719,8 @@ private static string BuildSkippedUnavailableStatus(string reason)
 			}
 		}
 	}
+
+	// ── Disposal & Pool Returns ──────────────────────────────────────────────────
 
 	[SupportedOSPlatform("windows")]
 	private void DisposeWatcher(string channel)
