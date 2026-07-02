@@ -87,14 +87,11 @@ public sealed class IpcServerWorker : BackgroundService
 					// and returns access-denied or a broken-pipe error before any client connects.
 					// Mark pipe banner as unlogged so next success re-emits it.
 					_pipeBannerLogged = false;
-					if (!IsDuplicateFault(ex))
-					{
-						_logger.LogWarning(ex,
-							"{Worker} CreatePipe FAILED [{ExType}]: {ExMsg} — possible AV/EDR pipe interception " +
-							"(Kaspersky?). Add RdpAudit.Service.exe to your AV trusted list. Retrying in 5 s.",
-							nameof(IpcServerWorker), ex.GetType().Name, ex.Message);
-						await TryLogOperationFaultAsync(ex, stoppingToken).ConfigureAwait(false);
-					}
+					_logger.LogWarning(ex,
+						"{Worker} CreatePipe FAILED [{ExType}]: {ExMsg} — possible AV/EDR pipe interception " +
+						"(Kaspersky?). Add RdpAudit.Service.exe to your AV trusted list. Retrying in 5 s.",
+						nameof(IpcServerWorker), ex.GetType().Name, ex.Message);
+					await TryLogOperationFaultAsync(ex, stoppingToken).ConfigureAwait(false);
 					try { await Task.Delay(TimeSpan.FromSeconds(5), stoppingToken).ConfigureAwait(false); }
 					catch (OperationCanceledException) { break; }
 					continue;
@@ -102,13 +99,10 @@ public sealed class IpcServerWorker : BackgroundService
 				catch (Exception ex)
 				{
 					_pipeBannerLogged = false;
-					if (!IsDuplicateFault(ex))
-					{
-						_logger.LogError(ex,
-							"{Worker} CreatePipe unexpected fault [{ExType}]: {ExMsg} — continuing",
-							nameof(IpcServerWorker), ex.GetType().Name, ex.Message);
-						await TryLogOperationFaultAsync(ex, stoppingToken).ConfigureAwait(false);
-					}
+					_logger.LogError(ex,
+						"{Worker} CreatePipe unexpected fault [{ExType}]: {ExMsg} — continuing",
+						nameof(IpcServerWorker), ex.GetType().Name, ex.Message);
+					await TryLogOperationFaultAsync(ex, stoppingToken).ConfigureAwait(false);
 					try { await Task.Delay(TimeSpan.FromSeconds(1), stoppingToken).ConfigureAwait(false); }
 					catch (OperationCanceledException) { break; }
 					continue;
@@ -132,13 +126,10 @@ public sealed class IpcServerWorker : BackgroundService
 				catch (Exception ex)
 				{
 					await pipe.DisposeAsync().ConfigureAwait(false);
-					if (!IsDuplicateFault(ex))
-					{
-						_logger.LogError(ex,
-							"{Worker} WaitForConnection fault [{ExType}]: {ExMsg} — continuing",
-							nameof(IpcServerWorker), ex.GetType().Name, ex.Message);
-						await TryLogOperationFaultAsync(ex, stoppingToken).ConfigureAwait(false);
-					}
+					_logger.LogError(ex,
+						"{Worker} WaitForConnection fault [{ExType}]: {ExMsg} — continuing",
+						nameof(IpcServerWorker), ex.GetType().Name, ex.Message);
+					await TryLogOperationFaultAsync(ex, stoppingToken).ConfigureAwait(false);
 					try { await Task.Delay(TimeSpan.FromSeconds(1), stoppingToken).ConfigureAwait(false); }
 					catch (OperationCanceledException) { break; }
 					continue;
