@@ -1,12 +1,18 @@
+/* Project: RDPAudit 2.0 | Author: Mikhail Deynekin | Site: Deynekin.com | Email: Mikhail@Deynekin.com */
+// Version: 2.0.0
+
 // File:    src/RdpAudit.Service/Workers/EventProcessorWorker.cs
 // Module:  RdpAudit.Service.Workers
 // Purpose: Drains the event channel in batches, normalises payloads, and persists to SQLite.
 //          Uses a single transaction with prefetched address map and a bulk AddRange/SaveChanges
 //          to avoid the original per-IP / per-event N+1 round-trips.
 // Extends: Microsoft.Extensions.Hosting.BackgroundService
-// Author:  Mikhail Deynekin
-// Site:    https://Deynekin.com
 
+using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.Threading;
+using System.Threading.Tasks;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Hosting;
@@ -17,6 +23,7 @@ using RdpAudit.Core.Data;
 using RdpAudit.Core.Events;
 using RdpAudit.Core.Models;
 using RdpAudit.Core.Util;
+using RdpAudit.Service.Infrastructure;
 using RdpAudit.Service.Processors;
 
 namespace RdpAudit.Service.Workers;
@@ -144,42 +151,51 @@ public sealed class EventProcessorWorker : BackgroundService
 		}
 	}
 
-	private async Task<List<RawEventDto>> DrainBatchAsync(CancellationToken stoppingToken)
+	/// <summary>
+	/// v2.0.0: Rewired to drain the lock-free SPSC Ring Buffer.
+	/// Uses SpinWait to achieve sub-microsecond latency when events are flowing, 
+	/// while automatically yielding to the OS scheduler during idle periods to prevent 100% CPU burn.
+	/// </summary>
+	private Task<List<RawEventDto>> DrainBatchAsync(CancellationToken stoppingToken)
 	{
 		MonitoringOptions monitoring = _options.CurrentValue.Monitoring;
 		int max = Math.Max(1, monitoring.BatchSize);
 		TimeSpan timeout = TimeSpan.FromMilliseconds(Math.Max(50, monitoring.BatchTimeoutMilliseconds));
 
 		List<RawEventDto> batch = new(max);
-		try
-		{
-			RawEventDto first = await _channel.Channel.Reader.ReadAsync(stoppingToken).ConfigureAwait(false);
-			batch.Add(first);
-		}
-		catch (OperationCanceledException)
-		{
-			return batch;
-		}
+		
+		SpinWait spinner = new();
+		long startTimestamp = Stopwatch.GetTimestamp();
+		long timeoutTicks = (long)(timeout.TotalSeconds * Stopwatch.Frequency);
 
-		using CancellationTokenSource linked = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
-		linked.CancelAfter(timeout);
+// 1. Wait for the first event
+while (!stoppingToken.IsCancellationRequested)
+{
+    // ИСПРАВЛЕНИЕ: Читаем сразу RawEventDto, а не RawEventSlot!
+    if (_channel.Channel.TryRead(out RawEventDto dto))
+    {
+        _metrics.IncrementRingBufferRead();
+        batch.Add(dto);
+        spinner.Reset();
+        break;
+    }
 
-		try
-		{
-			while (batch.Count < max
-				&& await _channel.Channel.Reader.WaitToReadAsync(linked.Token).ConfigureAwait(false))
-			{
-				while (batch.Count < max && _channel.Channel.Reader.TryRead(out RawEventDto? evt))
-				{
-					batch.Add(evt);
-				}
-			}
-		}
-		catch (OperationCanceledException)
-		{
-		}
+    if (Stopwatch.GetTimestamp() - startTimestamp >= timeoutTicks)
+    {
+        return Task.FromResult(batch); 
+    }
 
-		return batch;
+    spinner.SpinOnce();
+}
+
+// 2. Continue draining up to batch size
+while (batch.Count < max && _channel.Channel.TryRead(out RawEventDto nextDto))
+{
+    _metrics.IncrementRingBufferRead();
+    batch.Add(nextDto);
+}
+
+		return Task.FromResult(batch);
 	}
 
 	private async Task PersistBatchAsync(List<RawEventDto> dtos, CancellationToken ct)

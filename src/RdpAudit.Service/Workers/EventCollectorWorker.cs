@@ -1,3 +1,6 @@
+/* Project: RDPAudit 2.0 | Author: Mikhail Deynekin | Site: Deynekin.com | Email: Mikhail@Deynekin.com */
+// Version: 2.0.0
+
 // File:    src/RdpAudit.Service/Workers/EventCollectorWorker.cs
 // Module:  RdpAudit.Service.Workers
 // Purpose: Captures events from configured channels via EventLogWatcher and pushes RawEventDto into
@@ -8,8 +11,6 @@
 //          TS-Gateway channel on Win10 Pro) is unavailable, and to attempt one bookmark-reset
 //          recovery before disabling a channel.
 // Extends: Microsoft.Extensions.Hosting.BackgroundService
-// Author:  Mikhail Deynekin
-// Site:    https://Deynekin.com
 
 using System.Collections.Concurrent;
 using System.Diagnostics.Eventing.Reader;
@@ -412,9 +413,14 @@ public sealed class EventCollectorWorker : BackgroundService
 			return;
 		}
 
-		if (!_channel.Channel.Writer.TryWrite(dto))
+		// v2.0.0: Write to the lock-free SPSC Ring Buffer (Zero-Allocation Hot-Path).
+		// RingBufferEventChannel handles internal serialization to RawEventSlot.
+		// Returns false if the buffer was full and the oldest item was dropped (DropOldest policy).
+		if (!_channel.Channel.TryWrite(dto))
 		{
 			_metrics.IncrementDropped();
+			_metrics.IncrementRingBufferOverflow(); // NEW METRIC
+			
 			if (_options.CurrentValue.Diagnostics.LogChannelDrops)
 			{
 				_logger.LogWarning("Event channel full — dropped EventID {EventId} channel={Channel}",
