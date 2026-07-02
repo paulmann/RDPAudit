@@ -416,17 +416,22 @@ public sealed class EventCollectorWorker : BackgroundService
 		}
 	}
 
-	[SupportedOSPlatform("windows")]
-	private WatcherRegistration CreateWatcherRegistration(string channel)
-	{
-		EventLogWatcher watcher = CreateWatcher(channel);
-		EventRecordWrittenEventHandler handler = (_, args) => OnEventRecordWritten(channel, args);
+// Version: 2.1.1
+// Fix: EventLogWatcher.EventRecordWritten is typed as EventHandler<EventRecordWrittenEventArgs>
+//      in System.Diagnostics.Eventing.Reader — there is no EventRecordWrittenEventHandler
+//      delegate type in the BCL. Replaced the invented delegate name everywhere it was used.
 
-		watcher.EventRecordWritten += handler;
-		watcher.Enabled = true;
+[SupportedOSPlatform("windows")]
+private WatcherRegistration CreateWatcherRegistration(string channel)
+{
+	EventLogWatcher watcher = CreateWatcher(channel);
+	EventHandler<EventRecordWrittenEventArgs> handler = (_, args) => OnEventRecordWritten(channel, args);
 
-		return new WatcherRegistration(channel, watcher, handler);
-	}
+	watcher.EventRecordWritten += handler;
+	watcher.Enabled = true;
+
+	return new WatcherRegistration(channel, watcher, handler);
+}
 
 	[SupportedOSPlatform("windows")]
 	private EventLogWatcher CreateWatcher(string channel)
@@ -1073,19 +1078,19 @@ public sealed class EventCollectorWorker : BackgroundService
 		ResetBookmarkThenRestart = 1,
 	}
 
-	private sealed class WatcherRegistration
+private sealed class WatcherRegistration
+{
+	public WatcherRegistration(string channel, EventLogWatcher watcher, EventHandler<EventRecordWrittenEventArgs> handler)
 	{
-		public WatcherRegistration(string channel, EventLogWatcher watcher, EventRecordWrittenEventHandler handler)
-		{
-			Channel = channel;
-			Watcher = watcher;
-			Handler = handler;
-		}
-
-		public string Channel { get; }
-
-		public EventLogWatcher Watcher { get; }
-
-		public EventRecordWrittenEventHandler Handler { get; }
+		Channel = channel;
+		Watcher = watcher;
+		Handler = handler;
 	}
+
+	public string Channel { get; }
+
+	public EventLogWatcher Watcher { get; }
+
+	public EventHandler<EventRecordWrittenEventArgs> Handler { get; }
+}
 }
