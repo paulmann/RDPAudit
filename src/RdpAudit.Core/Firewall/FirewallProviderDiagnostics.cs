@@ -1,10 +1,19 @@
 /* Project: RDPAudit 2.0 | Author: Mikhail Deynekin | Site: Deynekin.com | Email: Mikhail@Deynekin.com */
-// Version: 1.1.0
+// Version: 1.2.0
 // File   : FirewallProviderDiagnostics.cs
 // Project: RdpAudit.Core (RdpAudit.Core.Firewall)
-// Purpose: Defines pure firewall diagnostics models and a stable English formatter shared by Configurator, Service, and tests without Win32 host dependencies.
+// Purpose: Pure detection / diagnostics models for the firewall environment surrounding the
+//          RDP listener: which Windows Firewall profiles are enabled, which third-party
+//          security products (Kaspersky in particular) appear to be present, and whether
+//          direct Windows Firewall rule management is expected to succeed. The detection
+//          providers live in the platform-specific hosts (Configurator touches Win32
+//          services/processes/WMI/filesystem; Service touches ServiceController); the pure
+//          result models and diagnostic-text formatter live here so both hosts and unit
+//          tests can consume the same shape without any Win32 dependency.
 // Depends: LocalRulePolicyRow, LocalRulePolicyHint, CultureInfo, StringBuilder
-// Extends: Add new diagnostic fields here when introducing a new provider signal or report section; preserve backward-compatible constructors and enum ordinals.
+// Extends: Add new diagnostic fields here when introducing a new provider signal or report
+//          section; preserve positional-record parameter names and enum ordinals for
+//          backward compatibility across Configurator, Service, and test call sites.
 
 using System.Globalization;
 using System.Text;
@@ -52,42 +61,24 @@ public sealed record FirewallServiceState(
 	bool IsRunning);
 
 /// <summary>State of one detected third-party CLI tool.</summary>
-public sealed record FirewallCliToolPresence
+/// <remarks>
+/// Kept as a positional record with parameter names <c>ToolName</c>, <c>Path</c>, <c>Present</c>
+/// so every existing call site across Configurator, Service, and unit tests that uses named
+/// arguments (<c>Present:</c>, <c>Path:</c>) continues to compile unchanged. <see cref="FullPath"/>
+/// is an additive, non-breaking extension populated via <see cref="WithFullPath"/> for probes
+/// that resolve a concrete on-disk location distinct from the legacy <see cref="Path"/> field.
+/// </remarks>
+public sealed record FirewallCliToolPresence(string ToolName, string? Path, bool Present)
 {
-	// ── Construction ─────────────────────────────────────────────────────────────
+	/// <summary>Concrete filesystem path, when known. Defaults to <see cref="Path"/> so existing
+	/// callers that never set it still get a sensible value.</summary>
+	public string FullPath { get; init; } = Path ?? string.Empty;
 
-	public FirewallCliToolPresence(string toolName, string? path, bool present)
-	{
-		ToolName = string.IsNullOrWhiteSpace(toolName) ? string.Empty : toolName;
-		Path = path;
-		Present = present;
-		FullPath = path ?? string.Empty;
-	}
-
-	/// <summary>Compatibility overload for callers that pass a concrete full path and expect
-	/// it to remain available even when the legacy <see cref="Path"/> name is used elsewhere.</summary>
-	public FirewallCliToolPresence(string toolName, string fullPath, bool present, bool preserveFullPath)
-	{
-		ToolName = string.IsNullOrWhiteSpace(toolName) ? string.Empty : toolName;
-		Path = present ? fullPath : null;
-		Present = present;
-		FullPath = fullPath ?? string.Empty;
-	}
-
-	// ── Public API ───────────────────────────────────────────────────────────────
-
-	/// <summary>Friendly tool name, e.g. kescli.exe, kavshell.exe, avp.exe.</summary>
-	public string ToolName { get; init; }
-
-	/// <summary>Legacy path property used by existing diagnostics rendering code.</summary>
-	public string? Path { get; init; }
-
-	/// <summary>True when the tool was positively found on disk.</summary>
-	public bool Present { get; init; }
-
-	/// <summary>Concrete filesystem path, when known. Preserved as a separate field so newer
-	/// probes can carry an exact location without breaking older consumers that only read Path.</summary>
-	public string FullPath { get; init; }
+	/// <summary>Factory for probes that resolved a concrete full path and want it mirrored into
+	/// both <see cref="Path"/> and <see cref="FullPath"/> without adding an ambiguous constructor
+	/// overload to the positional record above.</summary>
+	public static FirewallCliToolPresence WithFullPath(string toolName, string fullPath, bool present) =>
+		new(toolName, present ? fullPath : null, present) { FullPath = fullPath ?? string.Empty };
 }
 
 /// <summary>Snapshot of the firewall environment, suitable for UI display and clipboard export.</summary>
@@ -133,6 +124,14 @@ public sealed class FirewallProviderDiagnostics
 
 	/// <summary>Optional free-form notes appended by the probe (errors, fallback explanations).</summary>
 	public IReadOnlyList<string> Notes { get; init; } = Array.Empty<string>();
+
+	/// <summary>True when the detected provider kind implies a third-party firewall/security
+	/// stack is present and should be surfaced as a caveat in enforcement diagnostics. This is
+	/// the single source of truth consumed by both Configurator UI and Service IPC responses.</summary>
+	public bool ThirdPartyFirewallSuspected =>
+		ProviderKind is FirewallProviderDetectedKind.KasperskyDetected
+			or FirewallProviderDetectedKind.KasperskyManagedWindowsFirewall
+			or FirewallProviderDetectedKind.ThirdPartyFirewallUnknown;
 
 	/// <summary>True when at least one profile reports the GPO-store-only marker — direct local
 	/// firewall writes (<c>netsh ... add rule</c>) are expected to be rejected by policy.</summary>
