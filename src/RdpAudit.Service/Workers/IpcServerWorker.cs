@@ -5,6 +5,7 @@
 // Author:  Mikhail Deynekin
 // Site:    https://Deynekin.com
 
+using System.IO;
 using System.IO.Pipes;
 using System.Runtime.Versioning;
 using System.Security.AccessControl;
@@ -39,6 +40,13 @@ public sealed class IpcServerWorker : BackgroundService
 	/// <summary>Reset to false on CreatePipe failure so the "pipe accepting" banner re-emits after recovery.</summary>
 	private bool _pipeBannerLogged;
 
+	/// <summary>Counts consecutive IsExpectedAcceptDisconnect IOExceptions from WaitForConnectionAsync.
+	/// When this exceeds the threshold it suggests Kaspersky is killing the pipe immediately after creation
+	/// (CreatePipe succeeds, but the pipe is destroyed before a client can connect).
+	/// Escalate to Warning after threshold so the issue is visible without IPC.</summary>
+	private int _consecutiveWaitFailures;
+	private const int WaitFailureWarnThreshold = 5;
+
 	public IpcServerWorker(IServiceProvider services, ILogger<IpcServerWorker> logger)
 	{
 		_services = services;
@@ -72,9 +80,11 @@ public sealed class IpcServerWorker : BackgroundService
 					if (!_pipeBannerLogged)
 					{
 						_pipeBannerLogged = true;
+						_consecutiveWaitFailures = 0;
 						_logger.LogInformation(
 							"{Worker} named pipe \\\\.\\pipe\\{PipeName} created — accepting connections (ACL: Administrators + LocalSystem)",
 							nameof(IpcServerWorker), IpcConstants.PipeName);
+						WriteIpcDebugLine($"[{DateTime.UtcNow:O}] CreatePipe OK — \\\\.\\pipe\\{IpcConstants.PipeName} accepting connections");
 					}
 				}
 				catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
@@ -91,6 +101,7 @@ public sealed class IpcServerWorker : BackgroundService
 						"{Worker} CreatePipe FAILED [{ExType}]: {ExMsg} — possible AV/EDR pipe interception " +
 						"(Kaspersky?). Add RdpAudit.Service.exe to your AV trusted list. Retrying in 5 s.",
 						nameof(IpcServerWorker), ex.GetType().Name, ex.Message);
+					WriteIpcDebugLine($"[{DateTime.UtcNow:O}] CreatePipe FAILED [{ex.GetType().Name}]: {ex.Message}");
 					await TryLogOperationFaultAsync(ex, stoppingToken).ConfigureAwait(false);
 					try { await Task.Delay(TimeSpan.FromSeconds(5), stoppingToken).ConfigureAwait(false); }
 					catch (OperationCanceledException) { break; }
@@ -120,7 +131,23 @@ public sealed class IpcServerWorker : BackgroundService
 				catch (Exception ex) when (IsExpectedAcceptDisconnect(ex))
 				{
 					await pipe.DisposeAsync().ConfigureAwait(false);
-					_logger.LogDebug(ex, "{Worker} expected accept/disconnect transient — continuing", nameof(IpcServerWorker));
+					_consecutiveWaitFailures++;
+					if (_consecutiveWaitFailures >= WaitFailureWarnThreshold)
+					{
+						// Rapid consecutive failures suggest AV/EDR destroys the pipe immediately after
+						// creation. CreatePipe succeeds, but no client can ever connect (Kaspersky KLIF).
+						_logger.LogWarning(ex,
+							"{Worker} pipe destroyed {Count}x before any client connected [{ExType}]: {ExMsg} "
+							+ "— AV/EDR (Kaspersky?) may be intercepting the pipe. Add RdpAudit.Service.exe to AV trusted list.",
+							nameof(IpcServerWorker), _consecutiveWaitFailures, ex.GetType().Name, ex.Message);
+						WriteIpcDebugLine($"[{DateTime.UtcNow:O}] WaitForConnection fail #{_consecutiveWaitFailures} [{ex.GetType().Name}]: {ex.Message}");
+						await TryLogOperationFaultAsync(ex, stoppingToken).ConfigureAwait(false);
+						_consecutiveWaitFailures = 0;
+					}
+					else
+					{
+						_logger.LogDebug(ex, "{Worker} expected accept/disconnect transient — continuing", nameof(IpcServerWorker));
+					}
 					continue;
 				}
 				catch (Exception ex)
@@ -135,6 +162,7 @@ public sealed class IpcServerWorker : BackgroundService
 					continue;
 				}
 
+				_consecutiveWaitFailures = 0;
 				Task task = HandleConnectionAsync(pipe, stoppingToken);
 				connectionTasks.Add(task);
 				connectionTasks.RemoveAll(t => t.IsCompleted);
@@ -202,6 +230,29 @@ public sealed class IpcServerWorker : BackgroundService
 	}
 
 	[SupportedOSPlatform("windows")]
+	/// <summary>Appends one line to <c>%ProgramData%\RdpAudit\ipc-startup.log</c>.
+	/// Provides IPC-startup diagnostics that are readable WITHOUT a working IPC channel.
+	/// Silently swallows all I/O errors so a full disk never kills the accept loop.</summary>
+	private static void WriteIpcDebugLine(string line)
+	{
+		try
+		{
+			string dir = Path.Combine(
+				Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
+				"RdpAudit");
+			Directory.CreateDirectory(dir);
+			string logPath = Path.Combine(dir, "ipc-startup.log");
+			FileInfo fi = new(logPath);
+			if (fi.Exists && fi.Length > 512 * 1024)
+				File.Delete(logPath);
+			File.AppendAllText(logPath, line + Environment.NewLine);
+		}
+		catch
+		{
+			// Never let a debug write kill the accept loop.
+		}
+	}
+
 	private static NamedPipeServerStream CreatePipe()
 	{
 		PipeSecurity security = new();
