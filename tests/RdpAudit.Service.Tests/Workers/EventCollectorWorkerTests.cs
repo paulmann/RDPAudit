@@ -4,8 +4,9 @@
 // Project: RdpAudit.Service.Tests (RdpAudit.Service.Tests)
 // Purpose: Verifies EventCollectorWorker diagnostic status formatting for skipped optional channels.
 // Depends: EventCollectorWorker, Xunit
-// Extends: Add new tests here when channel-status rendering rules or optional-channel diagnostics change.
+// Extends: Add new tests here when channel-status rendering rules change.
 
+using Xunit;
 using RdpAudit.Service.Workers;
 
 namespace RdpAudit.Service.Tests.Workers;
@@ -33,6 +34,6 @@ public sealed class EventCollectorWorkerTests
 
 		Assert.StartsWith("SkippedUnavailable: ", actual);
 		Assert.EndsWith("...", actual);
-		Assert.True(actual.Length <= "SkippedUnavailable: ".Length + 123);
+		Assert.True(actual.Length <= "SkippedUnavailable: ".Length + EventCollectorWorker.SkippedUnavailableReasonMaxLength + 3);
 	}
 }
