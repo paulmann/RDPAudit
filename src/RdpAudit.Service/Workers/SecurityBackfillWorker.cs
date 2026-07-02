@@ -394,11 +394,21 @@ public sealed class SecurityBackfillWorker : BackgroundService
 				{
 					xml = record.ToXml();
 				}
-				catch (EventLogException ex)
-				{
-					_logger.LogDebug(ex, "Backfill could not read Security EventRecord (RecordId={RecordId})", recordId);
-					continue;
-				}
+// Version: 2.0.1
+// In ReadEventsForId catch (EventLogException ex) block — add Win32 error logging.
+catch (EventLogException ex)
+{
+	// v2.0.1: log the raw HResult so unexpected QueryFailed can be diagnosed
+	// without attaching a debugger. Marshal.GetLastPInvokeError() is not
+	// meaningful here (managed exception path), but ex.HResult is always set.
+	_logger.LogDebug(
+		"Security backfill EventLogException for EventID={EventId}: HResult=0x{HResult:X8} Message={Message}",
+		eventId,
+		unchecked((uint)ex.HResult),
+		ex.Message);
+	string outcome = ClassifyEventLogException(ex);
+	return new PerIdResult(read, forwarded, duplicate, ex.Message, outcome, false, ex.GetType().Name);
+}
 
 				if (xml.Length > 65_536)
 				{
@@ -497,41 +507,52 @@ if (!writtenWithoutOverflow)
 		return "QueryFailed";
 	}
 
-	/// <summary>True when the EventLogException message is Windows's canonical
-	/// "zero matches for this XPath" outcome — emitted for every event id the host has not
-	/// produced inside the lookback window. Matches the English message plus the localized
-	/// equivalents emitted on non-en-US Windows builds so a Russian / German server does
-	/// not light up the Diagnostic tab with bogus QueryFailed rows.</summary>
-	internal static bool IsNoEventsMessage(string? message)
+// Version: 2.0.1
+// Patch for SecurityBackfillWorker.cs — IsNoEventsMessage + Win32 error logging.
+
+/// <summary>v2.0.1: extended no-match pattern set. Added Windows HResult 0x80070490
+/// (ERROR_NOT_FOUND) and the message variant emitted when an audit sub-category has
+/// zero events in the lookback window but the channel itself is enabled and accessible.
+/// The Win32 error code variant is appended to EventLogException.Message by Windows on
+/// some SKUs when the query matches zero records via EvtQuery.</summary>
+internal static bool IsNoEventsMessage(string? message)
+{
+	if (string.IsNullOrWhiteSpace(message))
 	{
-		if (string.IsNullOrWhiteSpace(message))
-		{
-			return false;
-		}
-
-		// English: "No events were found that match the specified selection criteria."
-		if (message.Contains("No events were found", StringComparison.OrdinalIgnoreCase)
-			|| message.Contains("no matching events", StringComparison.OrdinalIgnoreCase)
-			|| message.Contains("no matches", StringComparison.OrdinalIgnoreCase))
-		{
-			return true;
-		}
-
-		// Russian: "Не найдено событий, соответствующих указанному критерию выбора."
-		if (message.Contains("Не найдено событий", StringComparison.OrdinalIgnoreCase)
-			|| message.Contains("не найдено", StringComparison.OrdinalIgnoreCase))
-		{
-			return true;
-		}
-
-		// German: "Es wurden keine Ereignisse gefunden ..."
-		if (message.Contains("keine Ereignisse", StringComparison.OrdinalIgnoreCase))
-		{
-			return true;
-		}
-
 		return false;
 	}
+
+	// English canonical
+	if (message.Contains("No events were found", StringComparison.OrdinalIgnoreCase)
+		|| message.Contains("no matching events", StringComparison.OrdinalIgnoreCase)
+		|| message.Contains("no matches", StringComparison.OrdinalIgnoreCase))
+	{
+		return true;
+	}
+
+	// v2.0.1: Win32 ERROR_NOT_FOUND (0x490 / 1168) appended by Windows on some builds.
+	if (message.Contains("ERROR_NOT_FOUND", StringComparison.OrdinalIgnoreCase)
+		|| message.Contains("0x490", StringComparison.OrdinalIgnoreCase)
+		|| message.Contains("Element not found", StringComparison.OrdinalIgnoreCase))
+	{
+		return true;
+	}
+
+	// Russian
+	if (message.Contains("Не найдено событий", StringComparison.OrdinalIgnoreCase)
+		|| message.Contains("не найдено", StringComparison.OrdinalIgnoreCase))
+	{
+		return true;
+	}
+
+	// German
+	if (message.Contains("keine Ereignisse", StringComparison.OrdinalIgnoreCase))
+	{
+		return true;
+	}
+
+	return false;
+}
 
 	/// <summary>v1.2.2 — classify an <see cref="System.Diagnostics.Eventing.Reader.EventLogException"/>
 	/// that escaped the <c>EventLogReader</c> read loop into one of the per-id outcome tokens.
