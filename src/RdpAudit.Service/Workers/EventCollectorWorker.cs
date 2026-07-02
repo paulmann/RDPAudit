@@ -1,23 +1,15 @@
 /* Project: RDPAudit 2.0 | Author: Mikhail Deynekin | Site: Deynekin.com | Email: Mikhail@Deynekin.com */
-// Version: 2.0.1
-
-// File:    src/RdpAudit.Service/Workers/EventCollectorWorker.cs
-// Module:  RdpAudit.Service.Workers
-// Purpose: Captures events from configured channels via EventLogWatcher and pushes RawEventDto into
-//          the in-memory channel for downstream processing. Saves the latest per-channel bookmark
-//          every 100 events AND every 30 seconds, whichever comes first, to bound recovery loss.
-//          Uses ChannelHealthPolicy to debounce repeated Invalid-Handle failures so the Windows
-//          Application log is not spammed every 30s on hosts where an optional channel (e.g. the
-//          TS-Gateway channel on Win10 Pro) is unavailable, and to attempt one bookmark-reset
-//          recovery before disabling a channel.
-//          v2.0.1: SkippedUnavailable channel status now embeds the ChannelProbeResult.Reason via
-//          BuildSkippedUnavailableStatus, so the Diagnostic tab can distinguish "role not installed"
-//          (ChannelNotFound) from "access denied" or "disabled" without requiring log access.
-// Extends: Microsoft.Extensions.Hosting.BackgroundService
+// Version: 2.1.0
+// File   : EventCollectorWorker.cs
+// Project: RdpAudit.Service (RdpAudit.Service)
+// Purpose: Collects Windows event records, manages watcher lifecycle, persists bookmarks, and recovers from stale Security bookmarks and channel faults without taking down the service.
+// Depends: EventChannel, BookmarkStore, ServiceMetrics, IOptionsMonitor<RdpAuditOptions>, ChannelHealthPolicy, AuditDbContext, IOperationLogWriter, EventLogWatcher
+// Extends: Adjust SecurityBookmarkStalenessThreshold, watcher query policy, and channel recovery behavior when adding a new event channel or ETW-backed source
 
 using System.Collections.Concurrent;
 using System.Diagnostics.Eventing.Reader;
 using System.Runtime.Versioning;
+using System.Text;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -31,22 +23,20 @@ using RdpAudit.Service.Collectors;
 namespace RdpAudit.Service.Workers;
 
 /// <summary>
-/// Captures events from configured channels via EventLogWatcher and pushes RawEventDto into the
-/// in-memory channel for downstream processing.  EventLogWatcher is a Windows-only API; on
-/// non-Windows hosts this worker logs and exits cleanly.
+/// Collects configured Windows Event Log channels via <see cref="EventLogWatcher"/>, writes
+/// normalised payload DTOs into the in-memory pipeline, persists per-channel bookmarks, and
+/// performs bounded self-healing when a watcher or bookmark becomes stale.
 /// </summary>
 public sealed class EventCollectorWorker : BackgroundService
 {
 	// ── Fields & DI ──────────────────────────────────────────────────────────────
 
 	private const int FlushEventThreshold = 100;
+	private const int MaxEventXmlLength = 65_536;
 
-	/// <summary>Maximum length of the probe-reason fragment embedded into the
-	/// "SkippedUnavailable" channel status token before truncation. Bounds IPC payload
-	/// size when Windows returns a verbose exception message as the probe reason.</summary>
 	internal const int SkippedUnavailableReasonMaxLength = 120;
-
-	private static readonly TimeSpan FlushTimerPeriod = TimeSpan.FromSeconds(30);
+	internal static readonly TimeSpan FlushTimerPeriod = TimeSpan.FromSeconds(30);
+	internal static readonly TimeSpan SecurityBookmarkStalenessThreshold = TimeSpan.FromMinutes(15);
 
 	private readonly EventChannel _channel;
 	private readonly BookmarkStore _bookmarks;
@@ -57,17 +47,19 @@ public sealed class EventCollectorWorker : BackgroundService
 	private readonly IDbContextFactory<AuditDbContext>? _factory;
 	private readonly IOperationLogWriter? _opLog;
 
-	private readonly ConcurrentDictionary<string, EventLogWatcher> _watchers = new(StringComparer.OrdinalIgnoreCase);
-	private readonly object _watcherLock = new();
-	private readonly object _bookmarkLock = new();
-	private readonly Dictionary<string, string> _pendingBookmarks = new(StringComparer.OrdinalIgnoreCase);
-	private readonly Dictionary<string, string> _flushedBookmarks = new(StringComparer.OrdinalIgnoreCase);
-	private readonly Dictionary<string, int> _eventCounters = new(StringComparer.OrdinalIgnoreCase);
+	private readonly ConcurrentDictionary<string, WatcherRegistration> _watchers = new(StringComparer.OrdinalIgnoreCase);
 	private readonly ConcurrentDictionary<string, byte> _restartInFlight = new(StringComparer.OrdinalIgnoreCase);
 
+	private readonly object _bookmarkGate = new();
+	private readonly Dictionary<string, string> _pendingBookmarks = new(StringComparer.OrdinalIgnoreCase);
+	private readonly Dictionary<string, string> _flushedBookmarks = new(StringComparer.OrdinalIgnoreCase);
+	private readonly Dictionary<string, int> _pendingBookmarkEventCounts = new(StringComparer.OrdinalIgnoreCase);
+
 	private CancellationTokenSource? _shutdownCts;
-	private CancellationToken _stoppingToken;
-	private Timer? _bookmarkTimer;
+	private CancellationToken _serviceToken;
+	private Task? _bookmarkFlushLoopTask;
+
+	private int _bookmarkFlushScheduled;
 	private volatile bool _shuttingDown;
 
 	// ── Construction ─────────────────────────────────────────────────────────────
@@ -94,6 +86,13 @@ public sealed class EventCollectorWorker : BackgroundService
 		IDbContextFactory<AuditDbContext>? factory = null,
 		IOperationLogWriter? opLog = null)
 	{
+		ArgumentNullException.ThrowIfNull(channel);
+		ArgumentNullException.ThrowIfNull(bookmarks);
+		ArgumentNullException.ThrowIfNull(metrics);
+		ArgumentNullException.ThrowIfNull(logger);
+		ArgumentNullException.ThrowIfNull(options);
+		ArgumentNullException.ThrowIfNull(health);
+
 		_channel = channel;
 		_bookmarks = bookmarks;
 		_metrics = metrics;
@@ -109,48 +108,48 @@ public sealed class EventCollectorWorker : BackgroundService
 	protected override async Task ExecuteAsync(CancellationToken stoppingToken)
 	{
 		_shutdownCts = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
-		_stoppingToken = _shutdownCts.Token;
+		_serviceToken = _shutdownCts.Token;
+
 		_logger.LogInformation("{Worker} starting", nameof(EventCollectorWorker));
 
 		if (!OperatingSystem.IsWindows())
 		{
 			_logger.LogWarning("EventLogWatcher requires Windows; collector will idle on this host");
-			await Task.Delay(Timeout.InfiniteTimeSpan, _stoppingToken).ConfigureAwait(false);
+			await Task.Delay(Timeout.InfiniteTimeSpan, _serviceToken).ConfigureAwait(false);
 			return;
 		}
 
 		try
 		{
-			await DropStaleSecurityBookmarkIfNoFactsAsync().ConfigureAwait(false);
-			StartWatchers();
-			_bookmarkTimer = new Timer(
-				_ => _ = FlushPendingBookmarksAsync(),
-				state: null,
-				dueTime: FlushTimerPeriod,
-				period: FlushTimerPeriod);
+			await ReconcileStartupStateAsync(_serviceToken).ConfigureAwait(false);
 
-			await Task.Delay(Timeout.InfiniteTimeSpan, _stoppingToken).ConfigureAwait(false);
+			ArmConfiguredChannels();
+
+			_bookmarkFlushLoopTask = RunBookmarkFlushLoopAsync(_serviceToken);
+
+			await Task.Delay(Timeout.InfiniteTimeSpan, _serviceToken).ConfigureAwait(false);
 		}
-		catch (OperationCanceledException) when (_stoppingToken.IsCancellationRequested)
+		catch (OperationCanceledException) when (_serviceToken.IsCancellationRequested)
 		{
 		}
 		catch (Exception ex)
 		{
-			// Collector startup / watcher faults must not take the service down: the IPC server and the
-			// rest of the pipeline stay useful even when event collection is degraded. Record the fault
-			// Critical and idle until shutdown instead of rethrowing (the original `throw` here let a
-			// collector fault stop the whole host). The operator sees the fault in the Logs tab.
-			_logger.LogCritical(ex, "{Worker} faulted — collection degraded; service stays up", nameof(EventCollectorWorker));
+			_logger.LogCritical(ex, "{Worker} faulted; collection is degraded but the host will stay up", nameof(EventCollectorWorker));
+
 			if (_opLog is not null)
 			{
-				await _opLog.ErrorAsync("EventCollector", "WatcherFault",
-					"Event collector faulted; collection degraded but service stays up.", ex,
-					OperationLogSeverity.Critical, _stoppingToken).ConfigureAwait(false);
+				await _opLog.ErrorAsync(
+					"EventCollector",
+					"WatcherFault",
+					"Event collector faulted; collection is degraded but the service host remains available.",
+					ex,
+					OperationLogSeverity.Critical,
+					_serviceToken).ConfigureAwait(false);
 			}
 
 			try
 			{
-				await Task.Delay(Timeout.InfiniteTimeSpan, _stoppingToken).ConfigureAwait(false);
+				await Task.Delay(Timeout.InfiniteTimeSpan, _serviceToken).ConfigureAwait(false);
 			}
 			catch (OperationCanceledException)
 			{
@@ -158,89 +157,72 @@ public sealed class EventCollectorWorker : BackgroundService
 		}
 		finally
 		{
-			_shuttingDown = true;
-			_shutdownCts?.Cancel();
-			DisposeAllWatchers();
-			if (_bookmarkTimer is not null)
-			{
-				await _bookmarkTimer.DisposeAsync().ConfigureAwait(false);
-			}
-
-			// Final best-effort flush so we never lose more than the latest bookmark per channel.
-			try
-			{
-				await FlushPendingBookmarksAsync().ConfigureAwait(false);
-			}
-			catch (Exception ex)
-			{
-				_logger.LogDebug(ex, "Final bookmark flush failed");
-			}
-
-			_shutdownCts?.Dispose();
-			_logger.LogInformation("{Worker} stopped", nameof(EventCollectorWorker));
+			await ShutdownAsync().ConfigureAwait(false);
 		}
 	}
 
 	public override async Task StopAsync(CancellationToken cancellationToken)
 	{
 		_shuttingDown = true;
+
 		try
 		{
 			_shutdownCts?.Cancel();
 		}
 		catch (ObjectDisposedException)
 		{
-			// ExecuteAsync's own finally block already disposed _shutdownCts because the collector
-			// loop had already exited on its own (e.g. the watcher-fault path) before the host called
-			// StopAsync. Cancelling a disposed CTS used to throw here and escape as an unhandled
-			// AppDomain exception, killing the whole process mid-shutdown -- swallow it, the loop is
-			// already stopped so there is nothing left to cancel.
 		}
+
 		await base.StopAsync(cancellationToken).ConfigureAwait(false);
 	}
 
-	/// <summary>Build the XPath the channel watcher will use. Pure logic — extracted so tests can
-	/// pin the v1.2.0 contract that Security MUST always use the narrow auth XPath regardless of
-	/// whether the global EnabledEventIds filter is empty.</summary>
 	internal static (string Xpath, IReadOnlyList<int> Ids) BuildWatcherQuery(
 		string channel,
 		IReadOnlyCollection<int> globalFilter)
 	{
+		ArgumentNullException.ThrowIfNull(channel);
+		ArgumentNullException.ThrowIfNull(globalFilter);
+
 		bool isSecurity = string.Equals(channel, EventCatalog.ChannelSecurity, StringComparison.OrdinalIgnoreCase);
-		IEnumerable<int> catalogIds = EventCatalog.EventIdsForChannel(channel);
-		List<int> ids = globalFilter.Count > 0
-			? catalogIds.Where(globalFilter.Contains).ToList()
-			: catalogIds.ToList();
+		List<int> channelIds = CollectChannelEventIds(channel, globalFilter);
 
 		if (isSecurity)
 		{
-			HashSet<int> auth = new(SecurityAuthQuery.AuthEventIds);
-			List<int> securityAuth = globalFilter.Count > 0
-				? ids.Where(auth.Contains).ToList()
-				: SecurityAuthQuery.AuthEventIds.ToList();
-
-			if (securityAuth.Count == 0)
+			List<int> securityIds = CollectSecurityAuthEventIds(channelIds, globalFilter.Count > 0);
+			if (securityIds.Count == 0)
 			{
-				securityAuth = SecurityAuthQuery.AuthEventIds.ToList();
+				for (int i = 0; i < SecurityAuthQuery.AuthEventIds.Count; i++)
+				{
+					securityIds.Add(SecurityAuthQuery.AuthEventIds[i]);
+				}
 			}
 
-			return (SecurityAuthQuery.BuildXPath(securityAuth), securityAuth);
+			return (SecurityAuthQuery.BuildXPath(securityIds), securityIds);
 		}
 
-		string nonSecurityXpath = ids.Count == 0
-			? "*"
-			: "*[System[(" + string.Join(" or ", ids.Select(id => "EventID=" + id)) + ")]]";
-		return (nonSecurityXpath, ids);
+		if (channelIds.Count == 0)
+		{
+			return ("*", channelIds);
+		}
+
+		StringBuilder xpath = new(64 + (channelIds.Count * 16));
+		xpath.Append("*[System[(");
+
+		for (int i = 0; i < channelIds.Count; i++)
+		{
+			if (i > 0)
+			{
+				xpath.Append(" or ");
+			}
+
+			xpath.Append("EventID=");
+			xpath.Append(channelIds[i]);
+		}
+
+		xpath.Append(")]]");
+		return (xpath.ToString(), channelIds);
 	}
 
-	/// <summary>v2.0.1 — compose the "SkippedUnavailable" channel status token, appending a
-	/// bounded-length probe reason so the Diagnostic tab shows WHY an optional channel was
-	/// skipped (role not installed, access denied, disabled) instead of a bare status with no
-	/// context. Truncated defensively because <see cref="ChannelProbeResult.Reason"/> may embed
-	/// a full exception message on some Windows builds. Pure and side-effect free — safe to unit
-	/// test directly without a Windows host or EventLogWatcher.</summary>
-	/// <param name="reason">Human-readable probe failure reason from <see cref="ChannelCapability.Probe"/>.</param>
-	/// <returns>The composed status token, e.g. "SkippedUnavailable: Channel not found: ...".</returns>
 	internal static string BuildSkippedUnavailableStatus(string reason)
 	{
 		const string statusToken = "SkippedUnavailable";
@@ -259,72 +241,137 @@ public sealed class EventCollectorWorker : BackgroundService
 
 	// ── Core Logic ───────────────────────────────────────────────────────────────
 
-	/// <summary>v1.2.0 stale-bookmark guard. If the service has never persisted a single
-	/// AuthAttemptFact, an existing Security bookmark pointing past the most recent auth event
-	/// will freeze the live watcher at zero events forever. Drop it before the watcher arms so
-	/// the new arm starts from the channel's actual tail.</summary>
-	private async Task DropStaleSecurityBookmarkIfNoFactsAsync()
+	private async Task ReconcileStartupStateAsync(CancellationToken ct)
 	{
 		if (_factory is null)
 		{
 			return;
 		}
 
+		string? existingSecurityBookmark = _bookmarks.GetBookmarkXml(EventCatalog.ChannelSecurity);
+		if (existingSecurityBookmark is null)
+		{
+			return;
+		}
+
 		try
 		{
-			bool anyFact;
-			await using (AuditDbContext db = await _factory.CreateDbContextAsync(_stoppingToken).ConfigureAwait(false))
-			{
-				anyFact = await db.AuthAttemptFacts.AsNoTracking().AnyAsync(_stoppingToken).ConfigureAwait(false);
-			}
+			(bool shouldReset, string reason, DateTime? lastSecurityAuthUtc, DateTime? lastRdpSignalUtc) =
+				await EvaluateStartupSecurityBookmarkAsync(ct).ConfigureAwait(false);
 
-			if (anyFact)
+			if (!shouldReset)
 			{
 				return;
 			}
 
-			string? existing = _bookmarks.GetBookmarkXml(EventCatalog.ChannelSecurity);
-			if (existing is null)
-			{
-				return;
-			}
+			await ResetBookmarkStateAsync(EventCatalog.ChannelSecurity, ct).ConfigureAwait(false);
 
-			await _bookmarks.DeleteBookmarkAsync(EventCatalog.ChannelSecurity, _stoppingToken).ConfigureAwait(false);
 			_logger.LogInformation(
-				"Dropped stale Security bookmark before arming watcher — no AuthAttemptFacts persisted yet, so the next arm rebuilds the bookmark from the channel tail.");
+				"Reset stale Security bookmark before arming watcher. Reason={Reason}; LastSecurityAuthUtc={LastSecurityAuthUtc}; LastRdpSignalUtc={LastRdpSignalUtc}",
+				reason,
+				lastSecurityAuthUtc,
+				lastRdpSignalUtc);
 		}
-		catch (OperationCanceledException) when (_stoppingToken.IsCancellationRequested)
+		catch (OperationCanceledException) when (ct.IsCancellationRequested)
 		{
 		}
 		catch (Exception ex)
 		{
-			_logger.LogDebug(ex, "Stale-bookmark guard probe failed; continuing with existing bookmark");
+			_logger.LogDebug(ex, "Startup Security bookmark reconciliation failed; continuing with current bookmark");
 		}
 	}
 
-	[SupportedOSPlatform("windows")]
-	private void StartWatchers()
+	private async Task<(bool ShouldReset, string Reason, DateTime? LastSecurityAuthUtc, DateTime? LastRdpSignalUtc)> EvaluateStartupSecurityBookmarkAsync(CancellationToken ct)
 	{
-		RdpAuditOptions opts = _options.CurrentValue;
-		IEnumerable<string> channels = opts.Monitoring.EnabledChannels.Count > 0
-			? opts.Monitoring.EnabledChannels
-			: EventCatalog.AllChannels();
+		await using AuditDbContext db = await _factory!.CreateDbContextAsync(ct).ConfigureAwait(false);
 
-		foreach (string channel in channels)
+		bool anyAuthAttemptFact = await db.AuthAttemptFacts
+			.AsNoTracking()
+			.AnyAsync(ct)
+			.ConfigureAwait(false);
+
+		if (!anyAuthAttemptFact)
 		{
-			ArmChannel(channel);
+			return (true, "NoAuthAttemptFactsPersisted", null, null);
+		}
+
+		DateTime? lastSecurityAuthUtc = await db.RawEvents
+			.AsNoTracking()
+			.Where(e =>
+				e.Channel == EventCatalog.ChannelSecurity &&
+				(e.EventId == 4624 || e.EventId == 4625 || e.EventId == 4648))
+			.OrderByDescending(e => e.TimeUtc)
+			.Select(e => (DateTime?)e.TimeUtc)
+			.FirstOrDefaultAsync(ct)
+			.ConfigureAwait(false);
+
+		DateTime? lastRdpSignalUtc = await db.RawEvents
+			.AsNoTracking()
+			.Where(e =>
+				(e.Channel == EventCatalog.ChannelTsRemote && (e.EventId == 1149 || e.EventId == 261)) ||
+				(e.Channel == EventCatalog.ChannelRdpCore && (e.EventId == 131 || e.EventId == 140)) ||
+				(e.Channel == EventCatalog.ChannelTsLocal && (e.EventId == 21 || e.EventId == 24 || e.EventId == 25 || e.EventId == 39 || e.EventId == 40)))
+			.OrderByDescending(e => e.TimeUtc)
+			.Select(e => (DateTime?)e.TimeUtc)
+			.FirstOrDefaultAsync(ct)
+			.ConfigureAwait(false);
+
+		if (lastRdpSignalUtc is null)
+		{
+			return (false, "NoRecentRdpSignalObserved", lastSecurityAuthUtc, null);
+		}
+
+		if (lastSecurityAuthUtc is null)
+		{
+			return (true, "NoPersistedSecurityAuthEvent", null, lastRdpSignalUtc);
+		}
+
+		TimeSpan lag = lastRdpSignalUtc.Value - lastSecurityAuthUtc.Value;
+		if (lag > SecurityBookmarkStalenessThreshold)
+		{
+			return (true, "SecurityAuthLagExceededThreshold", lastSecurityAuthUtc, lastRdpSignalUtc);
+		}
+
+		return (false, "SecurityAuthStreamHealthy", lastSecurityAuthUtc, lastRdpSignalUtc);
+	}
+
+	[SupportedOSPlatform("windows")]
+	private void ArmConfiguredChannels()
+	{
+		RdpAuditOptions options = _options.CurrentValue;
+		HashSet<string> seen = new(StringComparer.OrdinalIgnoreCase);
+
+		if (options.Monitoring.EnabledChannels.Count > 0)
+		{
+			for (int i = 0; i < options.Monitoring.EnabledChannels.Count; i++)
+			{
+				string channel = options.Monitoring.EnabledChannels[i];
+				if (seen.Add(channel))
+				{
+					ArmChannel(channel);
+				}
+			}
+
+			return;
+		}
+
+		foreach (string channel in EventCatalog.AllChannels())
+		{
+			if (seen.Add(channel))
+			{
+				ArmChannel(channel);
+			}
 		}
 	}
 
 	[SupportedOSPlatform("windows")]
 	private void ArmChannel(string channel)
 	{
-		if (_shuttingDown || _stoppingToken.IsCancellationRequested)
+		if (_shuttingDown || _serviceToken.IsCancellationRequested)
 		{
 			return;
 		}
 
-		// Capability probe — for optional channels this avoids the Invalid-Handle callback loop.
 		ChannelProbeResult probe = ChannelCapability.Probe(channel);
 		if (!probe.IsAvailable)
 		{
@@ -332,44 +379,35 @@ public sealed class EventCollectorWorker : BackgroundService
 			if (importance == ChannelImportance.Optional)
 			{
 				_health.ReportUnavailable(channel, probe.Reason);
-
-				// v2.0.1: embed the probe reason into the status so the Diagnostic tab shows
-				// WHY the channel was skipped without requiring log access.
 				_metrics.SetChannelStatus(channel, BuildSkippedUnavailableStatus(probe.Reason));
+
 				_logger.LogWarning(
 					"Skipping optional channel {Channel}: {Reason}",
-					channel, probe.Reason);
+					channel,
+					probe.Reason);
+
 				return;
 			}
 
-			// Critical channel that failed capability check: log once at error, still try to arm —
-			// the EventLogWatcher will surface the real failure and the health policy will gate
-			// any restart loop.
 			_logger.LogError(
-				"Critical channel {Channel} failed capability probe: {Reason}. Attempting to arm anyway.",
-				channel, probe.Reason);
+				"Critical channel {Channel} failed capability probe: {Reason}. Will attempt to arm anyway.",
+				channel,
+				probe.Reason);
 		}
 
 		try
 		{
-			EventLogWatcher watcher = CreateWatcher(channel);
-			lock (_watcherLock)
-			{
-				if (_watchers.TryRemove(channel, out EventLogWatcher? old))
-				{
-					SafeDisposeWatcher(old);
-				}
-
-				watcher.Enabled = true;
-				_watchers[channel] = watcher;
-			}
+			WatcherRegistration registration = CreateWatcherRegistration(channel);
+			ReplaceWatcherRegistration(channel, registration);
 
 			_health.ReportSuccess(channel);
 			_metrics.SetChannelStatus(channel, "Armed");
+
 			if (string.Equals(channel, EventCatalog.ChannelSecurity, StringComparison.OrdinalIgnoreCase))
 			{
 				_metrics.SetSecurityWatcherEnabled(true);
 			}
+
 			_logger.LogInformation("Watcher armed for channel {Channel}", channel);
 		}
 		catch (Exception ex)
@@ -379,11 +417,22 @@ public sealed class EventCollectorWorker : BackgroundService
 	}
 
 	[SupportedOSPlatform("windows")]
+	private WatcherRegistration CreateWatcherRegistration(string channel)
+	{
+		EventLogWatcher watcher = CreateWatcher(channel);
+		EventRecordWrittenEventHandler handler = (_, args) => OnEventRecordWritten(channel, args);
+
+		watcher.EventRecordWritten += handler;
+		watcher.Enabled = true;
+
+		return new WatcherRegistration(channel, watcher, handler);
+	}
+
+	[SupportedOSPlatform("windows")]
 	private EventLogWatcher CreateWatcher(string channel)
 	{
 		IReadOnlyCollection<int> filterSet = _options.CurrentValue.Monitoring.EnabledEventIds;
-		(string xpath, IReadOnlyList<int> ids) = BuildWatcherQuery(channel, filterSet);
-		_ = ids;
+		(string xpath, _) = BuildWatcherQuery(channel, filterSet);
 
 		EventLogQuery query = new(channel, PathType.LogName, xpath)
 		{
@@ -391,86 +440,52 @@ public sealed class EventCollectorWorker : BackgroundService
 		};
 
 		string? bookmarkXml = _bookmarks.GetBookmarkXml(channel);
-		EventLogWatcher watcher;
+
+		if (bookmarkXml is null)
+		{
+			return new EventLogWatcher(query);
+		}
+
 		try
 		{
-			watcher = bookmarkXml is null
-				? new EventLogWatcher(query)
-				: new EventLogWatcher(query, BookmarkSerializer.Deserialize(bookmarkXml));
-		}
-		catch (EventLogException) when (bookmarkXml is not null)
-		{
-			// Stale bookmark made the watcher constructor throw — fall back to no bookmark.
-			_logger.LogWarning(
-				"Stale bookmark rejected by EventLogWatcher constructor for {Channel}; arming without bookmark",
-				channel);
-			_ = Task.Run(async () =>
-			{
-				try { await _bookmarks.DeleteBookmarkAsync(channel, _stoppingToken).ConfigureAwait(false); }
-				catch (OperationCanceledException) { }
-				catch (Exception ex) { _logger.LogDebug(ex, "Failed to delete stale bookmark for {Channel}", channel); }
-			});
-			watcher = new EventLogWatcher(query);
-		}
-
-		watcher.EventRecordWritten += (sender, e) => OnEventRecordWritten(channel, e);
-		return watcher;
-	}
-
-	[SupportedOSPlatform("windows")]
-	private void OnEventRecordWritten(string channel, EventRecordWrittenEventArgs e)
-	{
-		if (e.EventException is not null)
-		{
-			HandleWatcherFailure(channel, e.EventException, isCallback: true);
-			return;
-		}
-
-		if (e.EventRecord is null)
-		{
-			_metrics.SetChannelStatus(channel, "Stalled");
-			ScheduleRestart(channel);
-			return;
-		}
-
-		RawEventDto dto;
-		string? bookmarkXml = null;
-		try
-		{
-			using EventRecord record = e.EventRecord;
-			string xml = record.ToXml();
-			if (xml.Length > 65_536)
-			{
-				_logger.LogWarning("Event XML truncated from {Len} to 65536", xml.Length);
-				xml = xml[..65_536];
-			}
-
-			dto = new RawEventDto
-			{
-				EventId = record.Id,
-				Channel = record.LogName ?? channel,
-				TimeUtc = record.TimeCreated?.ToUniversalTime() ?? DateTime.UtcNow,
-				XmlPayload = xml,
-			};
-
-			try
-			{
-				bookmarkXml = BookmarkSerializer.Serialize(record.Bookmark);
-			}
-			catch (Exception ex)
-			{
-				_logger.LogDebug(ex, "Bookmark capture failed for {Channel}", channel);
-			}
+			return new EventLogWatcher(query, BookmarkSerializer.Deserialize(bookmarkXml));
 		}
 		catch (EventLogException ex)
 		{
-			_logger.LogError(ex, "Failed reading EventRecord for {Channel}", channel);
+			_logger.LogWarning(
+				ex,
+				"Watcher constructor rejected bookmark for {Channel}; rearming without bookmark and scheduling bookmark deletion",
+				channel);
+
+			QueueBackgroundOperation(
+				"DeleteRejectedBookmark",
+				async token => await ResetBookmarkStateAsync(channel, token).ConfigureAwait(false));
+
+			return new EventLogWatcher(query);
+		}
+	}
+
+	[SupportedOSPlatform("windows")]
+	private void OnEventRecordWritten(string channel, EventRecordWrittenEventArgs args)
+	{
+		if (args.EventException is not null)
+		{
+			HandleWatcherFailure(channel, args.EventException, isCallback: true);
 			return;
 		}
 
-		// v2.0.0: Write to the lock-free SPSC Ring Buffer (Zero-Allocation Hot-Path).
-		// RingBufferEventChannel handles internal serialization to RawEventSlot.
-		// Returns false if the buffer was full and the oldest item was dropped (DropOldest policy).
+		if (args.EventRecord is null)
+		{
+			_metrics.SetChannelStatus(channel, "Stalled");
+			QueueRestart(channel, RestartMode.RestartOnly);
+			return;
+		}
+
+		if (!TryCaptureDto(channel, args.EventRecord, out RawEventDto? dto, out string? bookmarkXml))
+		{
+			return;
+		}
+
 		if (!_channel.Channel.TryWrite(dto))
 		{
 			_metrics.IncrementDropped();
@@ -478,8 +493,10 @@ public sealed class EventCollectorWorker : BackgroundService
 
 			if (_options.CurrentValue.Diagnostics.LogChannelDrops)
 			{
-				_logger.LogWarning("Event channel full — dropped EventID {EventId} channel={Channel}",
-					dto.EventId, dto.Channel);
+				_logger.LogWarning(
+					"Event channel full; dropped EventID {EventId} from {Channel}",
+					dto.EventId,
+					dto.Channel);
 			}
 		}
 		else
@@ -492,23 +509,60 @@ public sealed class EventCollectorWorker : BackgroundService
 			return;
 		}
 
-		bool flushNow;
-		lock (_bookmarkLock)
+		bool flushImmediately = TrackPendingBookmark(channel, bookmarkXml);
+		if (flushImmediately)
 		{
-			_pendingBookmarks[channel] = bookmarkXml;
-			_eventCounters.TryGetValue(channel, out int count);
-			count++;
-			_eventCounters[channel] = count;
-			flushNow = count >= FlushEventThreshold;
-			if (flushNow)
+			QueueBookmarkFlush();
+		}
+	}
+
+	[SupportedOSPlatform("windows")]
+	private bool TryCaptureDto(string channel, EventRecord record, out RawEventDto dto, out string? bookmarkXml)
+	{
+		dto = default!;
+		bookmarkXml = null;
+
+		try
+		{
+			using (record)
 			{
-				_eventCounters[channel] = 0;
+				string xml = record.ToXml();
+				if (xml.Length > MaxEventXmlLength)
+				{
+					_logger.LogWarning(
+						"Event XML for {Channel} EventID {EventId} truncated from {ActualLength} to {MaxLength}",
+						channel,
+						record.Id,
+						xml.Length,
+						MaxEventXmlLength);
+
+					xml = xml[..MaxEventXmlLength];
+				}
+
+				dto = new RawEventDto
+				{
+					EventId = record.Id,
+					Channel = record.LogName ?? channel,
+					TimeUtc = record.TimeCreated?.ToUniversalTime() ?? DateTime.UtcNow,
+					XmlPayload = xml,
+				};
+
+				try
+				{
+					bookmarkXml = BookmarkSerializer.Serialize(record.Bookmark);
+				}
+				catch (Exception ex)
+				{
+					_logger.LogDebug(ex, "Bookmark capture failed for {Channel}", channel);
+				}
+
+				return true;
 			}
 		}
-
-		if (flushNow)
+		catch (EventLogException ex)
 		{
-			_ = Task.Run(() => FlushPendingBookmarksAsync(), _stoppingToken);
+			_logger.LogError(ex, "Failed reading EventRecord for {Channel}", channel);
+			return false;
 		}
 	}
 
@@ -520,13 +574,13 @@ public sealed class EventCollectorWorker : BackgroundService
 			return;
 		}
 
-		bool invalidHandleLike = ex is EventLogException
-			|| ex is UnauthorizedAccessException
-			|| ex.HResult == unchecked((int)0x80070006); // E_HANDLE (Invalid handle)
+		bool invalidHandleLike =
+			ex is EventLogException ||
+			ex is UnauthorizedAccessException ||
+			ex.HResult == unchecked((int)0x80070006);
 
 		ChannelHealthOutcome outcome = _health.ReportFailure(channel, invalidHandleLike);
 
-		// Always dispose any current watcher for this channel before deciding.
 		DisposeWatcher(channel);
 
 		switch (outcome.Decision)
@@ -535,218 +589,413 @@ public sealed class EventCollectorWorker : BackgroundService
 				_metrics.SetChannelStatus(channel, "BookmarkReset");
 				_logger.LogWarning(
 					ex,
-					"Watcher fault on {Channel} ({Source}); {Reason}. Will reset bookmark and retry.",
+					"Watcher fault on {Channel} ({Source}); {Reason}. Resetting bookmark and restarting watcher.",
 					channel,
 					isCallback ? "callback" : "arm",
 					outcome.Reason);
-				_ = Task.Run(async () => await ResetBookmarkAndRestartAsync(channel).ConfigureAwait(false), _stoppingToken);
+				QueueRestart(channel, RestartMode.ResetBookmarkThenRestart);
 				break;
 
 			case ChannelDecision.Cooldown:
 				_metrics.SetChannelStatus(channel, "RestartScheduled");
-				// Log at Warning the first time per cooldown cycle only; subsequent failures inside the
-				// cooldown window are debug to avoid spamming the Application log every 30s.
 				_logger.LogDebug(
 					ex,
-					"Watcher fault on {Channel}; {Reason} (consecutive={Count})",
-					channel, outcome.Reason, _health.ConsecutiveFailures(channel));
-				ScheduleRestart(channel);
+					"Watcher fault on {Channel}; {Reason} (consecutiveFailures={ConsecutiveFailures})",
+					channel,
+					outcome.Reason,
+					_health.ConsecutiveFailures(channel));
+				QueueRestart(channel, RestartMode.RestartOnly);
 				break;
 
 			case ChannelDecision.DisablePermanently:
 				_metrics.SetChannelStatus(channel, "DisabledAfterFailures");
+
 				if (string.Equals(channel, EventCatalog.ChannelSecurity, StringComparison.OrdinalIgnoreCase))
 				{
 					_metrics.SetSecurityWatcherEnabled(false);
 					_metrics.SetLastSecurityChannelError("DisabledAfterFailures: " + outcome.Reason);
 				}
-				ChannelImportance importance = _health.ClassifyChannel(channel);
-				if (importance == ChannelImportance.Optional)
+
+				if (_health.ClassifyChannel(channel) == ChannelImportance.Optional)
 				{
 					_logger.LogWarning(
 						"Optional channel {Channel} disabled until service restart. {Reason}",
-						channel, outcome.Reason);
+						channel,
+						outcome.Reason);
 				}
 				else
 				{
 					_logger.LogError(
 						ex,
 						"Critical channel {Channel} disabled until service restart. {Reason}",
-						channel, outcome.Reason);
+						channel,
+						outcome.Reason);
 				}
+
 				break;
 
 			default:
 				_metrics.SetChannelStatus(channel, "RestartScheduled");
-				ScheduleRestart(channel);
+				QueueRestart(channel, RestartMode.RestartOnly);
 				break;
 		}
 	}
 
 	[SupportedOSPlatform("windows")]
-	private void ScheduleRestart(string channel)
+	private void QueueRestart(string channel, RestartMode mode)
 	{
-		if (_shuttingDown || _stoppingToken.IsCancellationRequested)
+		if (_shuttingDown || _serviceToken.IsCancellationRequested)
 		{
 			return;
 		}
 
-		// Single-flight per channel.
 		if (!_restartInFlight.TryAdd(channel, 0))
 		{
 			return;
 		}
 
-		_ = Task.Run(async () =>
+		QueueBackgroundOperation(
+			"RestartWatcher:" + channel,
+			async token =>
+			{
+				try
+				{
+					if (mode == RestartMode.RestartOnly)
+					{
+						await WaitForRestartGateAsync(channel, token).ConfigureAwait(false);
+					}
+					else
+					{
+						await ResetBookmarkStateAsync(channel, token).ConfigureAwait(false);
+					}
+
+					if (_shuttingDown || token.IsCancellationRequested || _health.IsDisabled(channel))
+					{
+						return;
+					}
+
+					ArmChannel(channel);
+
+					if (!_health.IsDisabled(channel))
+					{
+						_metrics.SetChannelStatus(channel, "RestartSucceeded");
+					}
+				}
+				finally
+				{
+					_restartInFlight.TryRemove(channel, out _);
+				}
+			});
+	}
+
+	private async Task WaitForRestartGateAsync(string channel, CancellationToken ct)
+	{
+		DateTime? nextAllowedUtc = _health.NextAllowedRestartUtc(channel);
+		if (nextAllowedUtc is null)
+		{
+			return;
+		}
+
+		TimeSpan delay = nextAllowedUtc.Value - DateTime.UtcNow;
+		if (delay > TimeSpan.Zero)
+		{
+			await Task.Delay(delay, ct).ConfigureAwait(false);
+		}
+	}
+
+	private bool TrackPendingBookmark(string channel, string bookmarkXml)
+	{
+		lock (_bookmarkGate)
+		{
+			_pendingBookmarks[channel] = bookmarkXml;
+
+			_pendingBookmarkEventCounts.TryGetValue(channel, out int eventCount);
+			eventCount++;
+			_pendingBookmarkEventCounts[channel] = eventCount;
+
+			if (eventCount < FlushEventThreshold)
+			{
+				return false;
+			}
+
+			_pendingBookmarkEventCounts[channel] = 0;
+			return true;
+		}
+	}
+
+	private void QueueBookmarkFlush()
+	{
+		if (_shuttingDown || _serviceToken.IsCancellationRequested)
+		{
+			return;
+		}
+
+		if (Interlocked.Exchange(ref _bookmarkFlushScheduled, 1) != 0)
+		{
+			return;
+		}
+
+		QueueBackgroundOperation(
+			"FlushBookmarks",
+			async token =>
+			{
+				try
+				{
+					await FlushPendingBookmarksAsync(token).ConfigureAwait(false);
+				}
+				finally
+				{
+					Interlocked.Exchange(ref _bookmarkFlushScheduled, 0);
+
+					if (HasUnflushedBookmarks())
+					{
+						QueueBookmarkFlush();
+					}
+				}
+			});
+	}
+
+	private async Task RunBookmarkFlushLoopAsync(CancellationToken ct)
+	{
+		try
+		{
+			using PeriodicTimer timer = new(FlushTimerPeriod);
+
+			while (await timer.WaitForNextTickAsync(ct).ConfigureAwait(false))
+			{
+				await FlushPendingBookmarksAsync(ct).ConfigureAwait(false);
+			}
+		}
+		catch (OperationCanceledException) when (ct.IsCancellationRequested)
+		{
+		}
+		catch (Exception ex)
+		{
+			_logger.LogError(ex, "Bookmark flush loop faulted");
+		}
+	}
+
+	private async Task FlushPendingBookmarksAsync(CancellationToken ct)
+	{
+		Dictionary<string, string> snapshot = CreateBookmarkFlushSnapshot();
+		if (snapshot.Count == 0)
+		{
+			return;
+		}
+
+		foreach (KeyValuePair<string, string> entry in snapshot)
 		{
 			try
 			{
-				DateTime? next = _health.NextAllowedRestartUtc(channel);
-				if (next is DateTime gate)
+				await _bookmarks.SaveBookmarkAsync(entry.Key, entry.Value, ct).ConfigureAwait(false);
+
+				lock (_bookmarkGate)
 				{
-					TimeSpan wait = gate - DateTime.UtcNow;
-					if (wait > TimeSpan.Zero)
-					{
-						await Task.Delay(wait, _stoppingToken).ConfigureAwait(false);
-					}
+					_flushedBookmarks[entry.Key] = entry.Value;
+					_pendingBookmarkEventCounts[entry.Key] = 0;
+				}
+			}
+			catch (OperationCanceledException) when (ct.IsCancellationRequested)
+			{
+				break;
+			}
+			catch (Exception ex)
+			{
+				_logger.LogDebug(ex, "Bookmark flush failed for {Channel}", entry.Key);
+			}
+		}
+	}
+
+	private Dictionary<string, string> CreateBookmarkFlushSnapshot()
+	{
+		lock (_bookmarkGate)
+		{
+			Dictionary<string, string> snapshot = new(StringComparer.OrdinalIgnoreCase);
+
+			foreach (KeyValuePair<string, string> entry in _pendingBookmarks)
+			{
+				if (_flushedBookmarks.TryGetValue(entry.Key, out string? previous) &&
+					string.Equals(previous, entry.Value, StringComparison.Ordinal))
+				{
+					continue;
 				}
 
-				if (_shuttingDown || _stoppingToken.IsCancellationRequested || _health.IsDisabled(channel))
-				{
-					return;
-				}
+				snapshot[entry.Key] = entry.Value;
+			}
 
-				ArmChannel(channel);
-				if (!_health.IsDisabled(channel))
+			return snapshot;
+		}
+	}
+
+	private bool HasUnflushedBookmarks()
+	{
+		lock (_bookmarkGate)
+		{
+			foreach (KeyValuePair<string, string> entry in _pendingBookmarks)
+			{
+				if (!_flushedBookmarks.TryGetValue(entry.Key, out string? previous) ||
+					!string.Equals(previous, entry.Value, StringComparison.Ordinal))
 				{
-					_metrics.SetChannelStatus(channel, "RestartSucceeded");
+					return true;
 				}
+			}
+
+			return false;
+		}
+	}
+
+	private async Task ResetBookmarkStateAsync(string channel, CancellationToken ct)
+	{
+		ForgetBookmarkState(channel);
+
+		try
+		{
+			await _bookmarks.DeleteBookmarkAsync(channel, ct).ConfigureAwait(false);
+			_logger.LogInformation("Bookmark reset for {Channel}", channel);
+		}
+		catch (OperationCanceledException) when (ct.IsCancellationRequested)
+		{
+			throw;
+		}
+		catch (Exception ex)
+		{
+			_logger.LogWarning(
+				ex,
+				"Bookmark delete failed for {Channel}; watcher rearm will continue without persisted bookmark cleanup",
+				channel);
+		}
+	}
+
+	private void ForgetBookmarkState(string channel)
+	{
+		lock (_bookmarkGate)
+		{
+			_pendingBookmarks.Remove(channel);
+			_flushedBookmarks.Remove(channel);
+			_pendingBookmarkEventCounts.Remove(channel);
+		}
+	}
+
+	private void QueueBackgroundOperation(string name, Func<CancellationToken, Task> operation)
+	{
+		if (_shuttingDown || _serviceToken.IsCancellationRequested)
+		{
+			return;
+		}
+
+		_ = Task.Run(
+			async () =>
+			{
+				try
+				{
+					await operation(_serviceToken).ConfigureAwait(false);
+				}
+				catch (OperationCanceledException) when (_serviceToken.IsCancellationRequested)
+				{
+				}
+				catch (Exception ex)
+				{
+					_logger.LogDebug(ex, "Background operation {OperationName} faulted", name);
+				}
+			},
+			_serviceToken);
+	}
+
+	// ── Error Handling & Retry ───────────────────────────────────────────────────
+
+	[SupportedOSPlatform("windows")]
+	private void ReplaceWatcherRegistration(string channel, WatcherRegistration registration)
+	{
+		if (_watchers.TryRemove(channel, out WatcherRegistration? existing))
+		{
+			SafeDisposeWatcher(existing);
+		}
+
+		_watchers[channel] = registration;
+	}
+
+	[SupportedOSPlatform("windows")]
+	private void DisposeWatcher(string channel)
+	{
+		if (_watchers.TryRemove(channel, out WatcherRegistration? registration))
+		{
+			SafeDisposeWatcher(registration);
+		}
+	}
+
+	// ── Disposal & Pool Returns ──────────────────────────────────────────────────
+
+	private async Task ShutdownAsync()
+	{
+		_shuttingDown = true;
+
+		try
+		{
+			_shutdownCts?.Cancel();
+		}
+		catch (ObjectDisposedException)
+		{
+		}
+
+		DisposeAllWatchers();
+
+		if (_bookmarkFlushLoopTask is not null)
+		{
+			try
+			{
+				await _bookmarkFlushLoopTask.ConfigureAwait(false);
 			}
 			catch (OperationCanceledException)
 			{
 			}
-			catch (Exception ex)
-			{
-				_logger.LogDebug(ex, "ScheduleRestart task crashed for {Channel}", channel);
-			}
-			finally
-			{
-				_restartInFlight.TryRemove(channel, out _);
-			}
-		}, _stoppingToken);
+		}
+
+		try
+		{
+			await FlushPendingBookmarksAsync(CancellationToken.None).ConfigureAwait(false);
+		}
+		catch (Exception ex)
+		{
+			_logger.LogDebug(ex, "Final bookmark flush failed");
+		}
+
+		_shutdownCts?.Dispose();
+		_shutdownCts = null;
+
+		_logger.LogInformation("{Worker} stopped", nameof(EventCollectorWorker));
 	}
 
 	[SupportedOSPlatform("windows")]
-	private async Task ResetBookmarkAndRestartAsync(string channel)
+	private static void SafeDisposeWatcher(WatcherRegistration? registration)
 	{
-		if (!_restartInFlight.TryAdd(channel, 0))
+		if (registration is null)
 		{
 			return;
 		}
 
 		try
 		{
-			// Forget any pending in-memory bookmark for this channel so the next flush cannot
-			// resurrect the stale value.
-			lock (_bookmarkLock)
-			{
-				_pendingBookmarks.Remove(channel);
-				_flushedBookmarks.Remove(channel);
-				_eventCounters.Remove(channel);
-			}
-
-			try
-			{
-				await _bookmarks.DeleteBookmarkAsync(channel, _stoppingToken).ConfigureAwait(false);
-				_logger.LogInformation("Bookmark reset for {Channel}", channel);
-			}
-			catch (OperationCanceledException)
-			{
-				return;
-			}
-			catch (Exception ex)
-			{
-				_logger.LogWarning(ex, "Bookmark delete failed for {Channel}; will still try to rearm without it", channel);
-			}
-
-			if (_shuttingDown || _stoppingToken.IsCancellationRequested)
-			{
-				return;
-			}
-
-			ArmChannel(channel);
+			registration.Watcher.EventRecordWritten -= registration.Handler;
 		}
-		finally
+		catch
 		{
-			_restartInFlight.TryRemove(channel, out _);
 		}
-	}
 
-	private async Task FlushPendingBookmarksAsync()
-	{
-		Dictionary<string, string> snapshot;
-		lock (_bookmarkLock)
+		try
 		{
-			snapshot = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-			foreach (KeyValuePair<string, string> kv in _pendingBookmarks)
-			{
-				if (!_flushedBookmarks.TryGetValue(kv.Key, out string? prev) || !string.Equals(prev, kv.Value, StringComparison.Ordinal))
-				{
-					snapshot[kv.Key] = kv.Value;
-				}
-			}
+			registration.Watcher.Enabled = false;
 		}
-
-		foreach (KeyValuePair<string, string> kv in snapshot)
+		catch
 		{
-			try
-			{
-				await _bookmarks.SaveBookmarkAsync(kv.Key, kv.Value, _stoppingToken).ConfigureAwait(false);
-				lock (_bookmarkLock)
-				{
-					_flushedBookmarks[kv.Key] = kv.Value;
-					// Reset counter on successful flush.
-					_eventCounters[kv.Key] = 0;
-				}
-			}
-			catch (OperationCanceledException) when (_stoppingToken.IsCancellationRequested)
-			{
-				break;
-			}
-			catch (Exception ex)
-			{
-				_logger.LogDebug(ex, "Bookmark flush failed for {Channel}", kv.Key);
-			}
 		}
-	}
 
-	// ── Disposal & Pool Returns ──────────────────────────────────────────────────
-
-	[SupportedOSPlatform("windows")]
-	private void DisposeWatcher(string channel)
-	{
-		lock (_watcherLock)
+		try
 		{
-			if (_watchers.TryRemove(channel, out EventLogWatcher? old))
-			{
-				SafeDisposeWatcher(old);
-			}
+			registration.Watcher.Dispose();
 		}
-	}
-
-	[SupportedOSPlatform("windows")]
-	private static void SafeDisposeWatcher(EventLogWatcher? w)
-	{
-		if (w is null)
+		catch
 		{
-			return;
 		}
-
-		try { w.Enabled = false; }
-		catch { /* best effort */ }
-
-		try { w.Dispose(); }
-		catch { /* best effort */ }
 	}
 
 	private void DisposeAllWatchers()
@@ -756,14 +1005,87 @@ public sealed class EventCollectorWorker : BackgroundService
 			return;
 		}
 
-		lock (_watcherLock)
+		foreach (KeyValuePair<string, WatcherRegistration> entry in _watchers)
 		{
-			foreach (EventLogWatcher w in _watchers.Values)
+			if (_watchers.TryRemove(entry.Key, out WatcherRegistration? registration))
 			{
-				SafeDisposeWatcher(w);
+				SafeDisposeWatcher(registration);
+			}
+		}
+	}
+
+	private static List<int> CollectChannelEventIds(string channel, IReadOnlyCollection<int> globalFilter)
+	{
+		List<int> ids = new();
+
+		if (globalFilter.Count == 0)
+		{
+			foreach (int eventId in EventCatalog.EventIdsForChannel(channel))
+			{
+				ids.Add(eventId);
 			}
 
-			_watchers.Clear();
+			return ids;
 		}
+
+		HashSet<int> filter = new(globalFilter);
+		foreach (int eventId in EventCatalog.EventIdsForChannel(channel))
+		{
+			if (filter.Contains(eventId))
+			{
+				ids.Add(eventId);
+			}
+		}
+
+		return ids;
+	}
+
+	private static List<int> CollectSecurityAuthEventIds(List<int> channelIds, bool useFilteredChannelIds)
+	{
+		HashSet<int> authIds = new(SecurityAuthQuery.AuthEventIds);
+		List<int> result = new();
+
+		if (!useFilteredChannelIds)
+		{
+			for (int i = 0; i < SecurityAuthQuery.AuthEventIds.Count; i++)
+			{
+				result.Add(SecurityAuthQuery.AuthEventIds[i]);
+			}
+
+			return result;
+		}
+
+		for (int i = 0; i < channelIds.Count; i++)
+		{
+			int candidate = channelIds[i];
+			if (authIds.Contains(candidate))
+			{
+				result.Add(candidate);
+			}
+		}
+
+		return result;
+	}
+
+	private enum RestartMode : byte
+	{
+		RestartOnly = 0,
+		ResetBookmarkThenRestart = 1,
+	}
+
+	private sealed class WatcherRegistration
+	{
+		public WatcherRegistration(string channel, EventLogWatcher watcher, EventRecordWrittenEventHandler handler)
+		{
+			Channel = channel;
+			Watcher = watcher;
+			Handler = handler;
+		}
+
+		public string Channel { get; }
+
+		public EventLogWatcher Watcher { get; }
+
+		public EventRecordWrittenEventHandler Handler { get; }
 	}
 }
