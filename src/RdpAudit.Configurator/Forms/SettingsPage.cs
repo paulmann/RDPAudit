@@ -591,7 +591,14 @@ public sealed class SettingsPage : TabPage
 		}
 	}
 
-	private void OnDebugToggleChanged()
+	/// <summary>Applies the DEBUG checkbox instantly instead of requiring a separate Save click:
+	/// updates the in-editor JSON, then immediately pushes the full document to the service over
+	/// IPC (same path as the Save button), falling back to DirectSettingsWriter's narrow-scope
+	/// on-disk write when the service is unreachable. Unlike other fields, DebugMode is a pure
+	/// diagnostics switch with no risk of losing in-progress secret edits by round-tripping the
+	/// document, so auto-apply is safe here even though the rest of the editor still requires an
+	/// explicit Save.</summary>
+	private async void OnDebugToggleChanged()
 	{
 		if (_suppressEditorEvents)
 		{
@@ -619,8 +626,47 @@ public sealed class SettingsPage : TabPage
 		};
 		SetEditorText(wrapped.ToJsonString(JsonOptions.Indented), rebuildTree: false);
 		RefreshDebugIndicator(section);
-		_dirty = true;
-		UpdateStatus("DEBUG toggled — Save to apply. " + DebugWarningText);
+
+		await ApplyDebugToggleImmediatelyAsync().ConfigureAwait(true);
+	}
+
+	/// <summary>Pushes the current editor document (which at this point already reflects the new
+	/// DebugMode value) to the service over IPC, exactly like the Save button, so the checkbox takes
+	/// effect the instant it is (un)checked. Falls back to DirectSettingsWriter's DebugMode-only write
+	/// when the pipe cannot be reached, mirroring SaveViaIpcAsync's ConnectFailed handling.</summary>
+	private async Task ApplyDebugToggleImmediatelyAsync()
+	{
+		_save.Enabled = false;
+		UpdateStatus("Applying DEBUG toggle...");
+		try
+		{
+			IpcCallResult<object> result = await _ipc.SendDetailedAsync<object>(IpcCommand.SaveSettings, _editor.Text).ConfigureAwait(true);
+			if (result.IsSuccess)
+			{
+				_dirty = false;
+				UpdateStatus("DEBUG applied — service will hot-reload from disk. " + DebugWarningText);
+			}
+			else if (result.Outcome == IpcCallOutcome.ConnectFailed && TryFallbackSaveDebugMode())
+			{
+				_dirty = false;
+				UpdateStatus("Service unreachable — DebugMode written directly to appsettings.json. " +
+					"Other changes in this document were NOT saved; retry once the service is running. " + DebugWarningText);
+			}
+			else
+			{
+				_dirty = true;
+				UpdateStatus("Service unreachable (" + result.Headline() + "). DEBUG toggle NOT applied — Save to retry.");
+			}
+		}
+		catch (Exception ex)
+		{
+			_dirty = true;
+			UpdateStatus("DEBUG toggle apply failed: " + ex.GetType().Name);
+		}
+		finally
+		{
+			_save.Enabled = true;
+		}
 	}
 
 	/// <summary>Resolves the persistent DEBUG log path the service writes to when
