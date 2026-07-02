@@ -413,19 +413,22 @@ public sealed class SecurityBackfillWorker : BackgroundService
 					XmlPayload = xml,
 				};
 
-				if (_channel.Channel.Writer.TryWrite(dto))
-				{
-					forwarded++;
-					_metrics.IncrementCaptured();
-				}
-				else
-				{
-					_metrics.IncrementDropped();
-					if (_options.CurrentValue.Diagnostics.LogChannelDrops)
-					{
-						_logger.LogWarning("Security backfill: channel full — dropped EventID {EventId}", dto.EventId);
-					}
-				}
+// v2.0.0: RingBufferEventChannel API migration
+// TryWrite returns false ONLY when DropOldest overflow occurs.
+bool writtenWithoutOverflow = _channel.Channel.TryWrite(dto);
+
+forwarded++;
+_metrics.IncrementCaptured();
+
+if (!writtenWithoutOverflow)
+{
+    _metrics.IncrementDropped();
+    _metrics.IncrementRingBufferOverflow(); // NEW METRIC
+    if (_options.CurrentValue.Diagnostics.LogChannelDrops)
+    {
+        _logger.LogWarning("Security backfill: channel full — dropped EventID {EventId}", dto.EventId);
+    }
+}
 			}
 		}
 		catch (UnauthorizedAccessException ex)

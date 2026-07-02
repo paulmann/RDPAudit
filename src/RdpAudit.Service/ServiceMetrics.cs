@@ -1,9 +1,10 @@
+/* Project: RDPAudit 2.0 | Author: Mikhail Deynekin | Site: Deynekin.com | Email: Mikhail@Deynekin.com */
+// Version: 2.0.0
+
 // File:    src/RdpAudit.Service/ServiceMetrics.cs
 // Module:  RdpAudit.Service
 // Purpose: Thread-safe runtime counters surfaced via the IPC GetStatus command.
 // Extends: System.Object
-// Author:  Mikhail Deynekin
-// Site:    https://Deynekin.com
 
 using RdpAudit.Service.Workers;
 
@@ -56,6 +57,13 @@ public sealed class ServiceMetrics
 	private DateTime? _statsWorkerLastCompletedUtc;
 	private bool _statsWorkerLastRunFullRebuild;
 	private bool _statsWorkerEnabled;
+
+	// --- v2.0.0: Lock-Free SPSC Ring Buffer Telemetry ---
+	private long _ringBufferCapacity;
+	private long _ringBufferUtilization;
+	private long _ringBufferOverflowCount;
+	private long _ringBufferReadCount;
+	private long _ringBufferWriteCount;
 
 	public long EventsCaptured => Interlocked.Read(ref _captured);
 
@@ -218,6 +226,23 @@ public sealed class ServiceMetrics
 	{
 		get { lock (_diagGate) { return _statsWorkerEnabled; } }
 	}
+
+	// --- v2.0.0: Lock-Free SPSC Ring Buffer Telemetry Properties ---
+
+	/// <summary>Total capacity of the lock-free SPSC Ring Buffer (number of slots).</summary>
+	public long RingBufferCapacity => Interlocked.Read(ref _ringBufferCapacity);
+
+	/// <summary>Current utilization of the Ring Buffer (head - tail).</summary>
+	public long RingBufferUtilization => Interlocked.Read(ref _ringBufferUtilization);
+
+	/// <summary>Cumulative count of Ring Buffer overflow events (DropOldest policy triggers).</summary>
+	public long RingBufferOverflowCount => Interlocked.Read(ref _ringBufferOverflowCount);
+
+	/// <summary>Cumulative count of successful Ring Buffer reads by the EventProcessorWorker.</summary>
+	public long RingBufferReadCount => Interlocked.Read(ref _ringBufferReadCount);
+
+	/// <summary>Cumulative count of successful Ring Buffer writes by the EventCollectorWorker.</summary>
+	public long RingBufferWriteCount => Interlocked.Read(ref _ringBufferWriteCount);
 
 	public void IncrementCaptured() => Interlocked.Increment(ref _captured);
 
@@ -482,4 +507,26 @@ public sealed class ServiceMetrics
 			return new Dictionary<string, string>(ChannelStatus, StringComparer.OrdinalIgnoreCase);
 		}
 	}
+
+	// --- v2.0.0: Lock-Free SPSC Ring Buffer Telemetry Methods ---
+
+	/// <summary>Sets the total capacity of the Ring Buffer.</summary>
+	public void SetRingBufferCapacity(long capacity) => 
+		Interlocked.Exchange(ref _ringBufferCapacity, capacity);
+
+	/// <summary>Sets the current utilization of the Ring Buffer.</summary>
+	public void SetRingBufferUtilization(long utilization) => 
+		Interlocked.Exchange(ref _ringBufferUtilization, utilization);
+
+	/// <summary>Increments the Ring Buffer overflow counter.</summary>
+	public void IncrementRingBufferOverflow() => 
+		Interlocked.Increment(ref _ringBufferOverflowCount);
+
+	/// <summary>Increments the Ring Buffer read counter.</summary>
+	public void IncrementRingBufferRead() => 
+		Interlocked.Increment(ref _ringBufferReadCount);
+
+	/// <summary>Increments the Ring Buffer write counter.</summary>
+	public void IncrementRingBufferWrite() => 
+		Interlocked.Increment(ref _ringBufferWriteCount);
 }
