@@ -58,6 +58,8 @@ public sealed class EventProcessorWorker : BackgroundService
 		TimeSpan.FromMilliseconds(2000),
 	};
 
+	private static readonly List<RawEventDto> EmptyBatch = new(capacity: 0);
+
 	private const int MaxConsecutiveFailures = 5;
 	private const string TsLsmChannelName = "Microsoft-Windows-TerminalServices-LocalSessionManager/Operational";
 	private const string TsRcmChannelName = "Microsoft-Windows-TerminalServices-RemoteConnectionManager/Operational";
@@ -132,8 +134,8 @@ public sealed class EventProcessorWorker : BackgroundService
 			{
 				try
 				{
-					List<RawEventDto>? batch = await DrainBatchAsync(stoppingToken).ConfigureAwait(false);
-					if (batch is null || batch.Count == 0)
+					List<RawEventDto> batch = await DrainBatchAsync(stoppingToken).ConfigureAwait(false);
+					if (batch.Count == 0)
 					{
 						continue;
 					}
@@ -221,43 +223,56 @@ public sealed class EventProcessorWorker : BackgroundService
 	/// <c>EventProcessorWorkerRingBufferTests</c> invokes this method via reflection and casts
 	/// the result to <c>Task&lt;List&lt;RawEventDto&gt;&gt;</c>.
 	/// </summary>
-	private Task<List<RawEventDto>?> DrainBatchAsync(CancellationToken stoppingToken)
+// Version: 2.1.5
+// Fix: DrainBatchAsync_EmptyBuffer_ReturnsEmptyListAfterTimeout asserts Assert.Empty(result) —
+// it expects an empty List<RawEventDto>, not null. Returning null on timeout (2.1.0-2.1.4)
+// threw ArgumentNullException inside the test's own assertion. Contract corrected: the method
+// now ALWAYS returns a non-null List<RawEventDto> (possibly empty on timeout/cancellation) — it
+// never returns null. Return type changed from Task<List<RawEventDto>?> to
+// Task<List<RawEventDto>>. ExecuteAsync's null-check on the result is now redundant but kept
+// harmless via `batch.Count == 0` alone.
+
+private Task<List<RawEventDto>> DrainBatchAsync(CancellationToken stoppingToken)
+{
+	MonitoringOptions monitoring = _options.CurrentValue.Monitoring;
+	int max = Math.Max(1, monitoring.BatchSize);
+	TimeSpan timeout = TimeSpan.FromMilliseconds(Math.Max(50, monitoring.BatchTimeoutMilliseconds));
+
+	SpinWait spinner = default;
+	long startTimestamp = Stopwatch.GetTimestamp();
+	long timeoutTicks = (long)(timeout.TotalSeconds * Stopwatch.Frequency);
+
+	while (!stoppingToken.IsCancellationRequested)
 	{
-		MonitoringOptions monitoring = _options.CurrentValue.Monitoring;
-		int max = Math.Max(1, monitoring.BatchSize);
-		TimeSpan timeout = TimeSpan.FromMilliseconds(Math.Max(50, monitoring.BatchTimeoutMilliseconds));
-
-		SpinWait spinner = default;
-		long startTimestamp = Stopwatch.GetTimestamp();
-		long timeoutTicks = (long)(timeout.TotalSeconds * Stopwatch.Frequency);
-
-		while (!stoppingToken.IsCancellationRequested)
+		if (_channel.Channel.TryRead(out RawEventDto first))
 		{
-			if (_channel.Channel.TryRead(out RawEventDto first))
+			_metrics.IncrementRingBufferRead();
+
+			List<RawEventDto> batch = new(max) { first };
+			while (batch.Count < max && _channel.Channel.TryRead(out RawEventDto next))
 			{
 				_metrics.IncrementRingBufferRead();
-
-				List<RawEventDto> batch = new(max) { first };
-				while (batch.Count < max && _channel.Channel.TryRead(out RawEventDto next))
-				{
-					_metrics.IncrementRingBufferRead();
-					batch.Add(next);
-				}
-
-				return Task.FromResult<List<RawEventDto>?>(batch);
+				batch.Add(next);
 			}
 
-			if (Stopwatch.GetTimestamp() - startTimestamp >= timeoutTicks)
-			{
-				return Task.FromResult<List<RawEventDto>?>(null);
-			}
-
-			spinner.SpinOnce();
+			return Task.FromResult(batch);
 		}
 
-		stoppingToken.ThrowIfCancellationRequested();
-		return Task.FromResult<List<RawEventDto>?>(null);
+		if (Stopwatch.GetTimestamp() - startTimestamp >= timeoutTicks)
+		{
+			return Task.FromResult(EmptyBatch);
+		}
+
+		spinner.SpinOnce();
 	}
+
+	return Task.FromResult(EmptyBatch);
+}
+
+// Shared immutable empty-batch instance — avoids allocating a new empty List<RawEventDto> on
+// every idle drain tick (this was the original 2.1.0 fix's intent; a shared readonly empty list
+// is safe here because ExecuteAsync only ever reads Count on this path, never mutates it).
+private static readonly List<RawEventDto> EmptyBatch = new(capacity: 0);
 
 	private async Task PersistBatchAsync(List<RawEventDto> dtos, CancellationToken ct)
 	{
