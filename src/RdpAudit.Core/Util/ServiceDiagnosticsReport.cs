@@ -69,10 +69,12 @@ public sealed record ServiceDiagnosticsInput(
 	RunningProcessFingerprint Running,
 	string? IpcRuntimeVersion,
 	bool IpcConnected,
-	/// <summary>Optional deep-diagnostics bundle (IPC round-trip detail, DebugMode-on-disk vs UI,
-	/// log-file tails, crash folder listing). Null for callers that only need the legacy
-	/// SCM/binary/IPC-connected summary (e.g. existing unit tests) — the report simply omits the
-	/// extra sections in that case.</summary>
+	// Optional deep-diagnostics bundle (IPC round-trip detail, DebugMode-on-disk vs UI, log-file
+	// tails, crash folder listing). Null for callers that only need the legacy
+	// SCM/binary/IPC-connected summary (e.g. existing unit tests) — the report simply omits the
+	// extra sections in that case. (XML <param> doc comments are not valid on individual positional
+	// record parameters in C#, hence plain // comments here; see the <summary> on
+	// ServiceDiagnosticsExtras below for the documented type.)
 	ServiceDiagnosticsExtras? Extras = null);
 
 /// <summary>Deep-diagnostics bundle collected alongside the legacy <see cref="ServiceDiagnosticsInput"/>
@@ -80,40 +82,49 @@ public sealed record ServiceDiagnosticsInput(
 /// responding" reports without a second round of back-and-forth: the exact IPC failure mode
 /// (SendDetailedAsync outcome), whether DebugMode on disk actually matches what the Settings tab
 /// checkbox shows (the two can disagree when Save failed because IPC was already down), and the
-/// tail of every log artifact IpcServerWorker / Program.ConfigureSerilog / CrashGuard produce.</summary>
+/// tail of every log artifact IpcServerWorker / Program.ConfigureSerilog / CrashGuard produce.
+/// Field notes (plain comments, not XML doc, since C# does not allow /// on individual positional
+/// record parameters):
+///   DiskDebugModeEnabled  - RdpAudit:Diagnostics:DebugMode read directly from appsettings.json on
+///                           disk, independent of IPC, so it stays trustworthy even when the
+///                           service cannot be reached.
+///   IpcOutcome            - IpcCallOutcome.ToString() from the GetStatus probe (e.g.
+///                           "ConnectFailed", "Timeout", "ServiceError", "Success"); null when no
+///                           probe was attempted.
+///   IpcErrorDetail        - Curated error text from IpcCallResult (service-supplied or transport
+///                           description).
+///   IpcErrorType          - Exception / category name for the IPC failure (e.g. "TimeoutException").
+///   IpcPipeConnected      - True once NamedPipeClientStream.ConnectAsync succeeded -- distinguishes
+///                           a stopped service (pipe refuses connections) from one that connected
+///                           but did not answer in time.
+///   IpcStartupLogTail     - Last lines of %ProgramData%\RdpAudit\logs\ipc-startup.log
+///                           (IpcServerWorker startup / fatal breadcrumbs), oldest first. Empty
+///                           when the file does not exist yet.
+///   DebugLogTail          - Last lines of %ProgramData%\RdpAudit\RDPAudit_DEBUG_Log.txt (root,
+///                           NOT logs\ -- matches Program.ConfigureSerilog). Empty when DEBUG mode
+///                           has never actually been persisted to disk (see DiskDebugModeEnabled)
+///                           or the service has not restarted since it was enabled.
+///   ServiceLogTail        - Last lines of the day-rolling structured Serilog file under
+///                           %ProgramData%\RdpAudit\logs\service-*.log -- present even when DEBUG
+///                           mode is off, so a worker-fault / unhandled-exception entry is visible
+///                           without enabling DEBUG first.
+///   CrashFiles            - File names under %ProgramData%\RdpAudit\crash\ (CrashGuard's
+///                           last-resort dump folder), most recent first.
+///   LastCrashExcerpt      - Full text of the most recent crash file, if any.
+/// </summary>
 public sealed record ServiceDiagnosticsExtras(
-	/// <summary>RdpAudit:Diagnostics:DebugMode as read directly from appsettings.json on disk —
-	/// independent of IPC, so it is trustworthy even when the service cannot be reached.</summary>
 	bool? DiskDebugModeEnabled,
-	/// <summary>IpcCallOutcome.ToString() from the GetStatus probe (e.g. "ConnectFailed", "Timeout",
-	/// "ServiceError", "Success"). Null when no probe was attempted.</summary>
 	string? IpcOutcome,
-	/// <summary>Curated error text from IpcCallResult (service-supplied or transport description).</summary>
 	string? IpcErrorDetail,
-	/// <summary>Exception / category name for the IPC failure (e.g. "TimeoutException").</summary>
 	string? IpcErrorType,
 	long IpcDurationMs,
 	int IpcTimeoutMs,
-	/// <summary>True once NamedPipeClientStream.ConnectAsync succeeded — distinguishes a stopped
-	/// service (pipe refuses connections) from one that connected but did not answer in time.</summary>
 	bool IpcPipeConnected,
 	bool IpcResponseReceived,
-	/// <summary>Last lines of %ProgramData%\RdpAudit\logs\ipc-startup.log (IpcServerWorker startup /
-	/// fatal breadcrumbs), oldest first. Empty when the file does not exist yet.</summary>
 	IReadOnlyList<string> IpcStartupLogTail,
-	/// <summary>Last lines of %ProgramData%\RdpAudit\RDPAudit_DEBUG_Log.txt (root, not logs\ --
-	/// matches Program.ConfigureSerilog). Empty when DEBUG mode has never actually been persisted
-	/// to disk (see <see cref="DiskDebugModeEnabled"/>) or the service has not restarted since it
-	/// was enabled.</summary>
 	IReadOnlyList<string> DebugLogTail,
-	/// <summary>Last lines of the day-rolling structured Serilog file under
-	/// %ProgramData%\RdpAudit\logs\service-*.log — present even when DEBUG mode is off, so a
-	/// worker-fault / unhandled-exception entry is visible without enabling DEBUG first.</summary>
 	IReadOnlyList<string> ServiceLogTail,
-	/// <summary>File names under %ProgramData%\RdpAudit\crash\ (CrashGuard's last-resort dump
-	/// folder), most recent first.</summary>
 	IReadOnlyList<string> CrashFiles,
-	/// <summary>Full text of the most recent crash file, if any.</summary>
 	string? LastCrashExcerpt);
 
 /// <summary>The diagnostics report. <see cref="Verdict"/> drives the "OK / not installed /
