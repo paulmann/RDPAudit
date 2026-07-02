@@ -4,6 +4,7 @@
 // Extends: Microsoft.Extensions.Hosting.BackgroundService
 // Author:  Mikhail Deynekin
 // Site:    https://Deynekin.com
+// Version: 1.6.2
 
 using System.IO;
 using System.IO.Pipes;
@@ -33,7 +34,7 @@ public sealed class IpcServerWorker : BackgroundService
 	private readonly IServiceProvider _services;
 	private readonly ILogger<IpcServerWorker> _logger;
 
-	// Dedupe state for repeated accept-loop faults (single accept loop → no cross-thread contention).
+	// Dedupe state for repeated accept-loop faults (single accept loop -> no cross-thread contention).
 	private string? _lastFaultSignature;
 	private DateTime _lastFaultDurableLogUtc = DateTime.MinValue;
 
@@ -68,7 +69,7 @@ public sealed class IpcServerWorker : BackgroundService
 			List<Task> connectionTasks = new();
 			while (!stoppingToken.IsCancellationRequested)
 			{
-				// ── CreatePipe is intentionally OUTSIDE the accept-try so that failures from the
+				// -- CreatePipe is intentionally OUTSIDE the accept-try so that failures from the
 				//    OS or AV/EDR interceptors (UnauthorizedAccessException, IOException from
 				//    Kaspersky KLIF etc.) are caught and logged at Warning level, NOT silently
 				//    swallowed as IsExpectedAcceptDisconnect (which treats all IOException as a
@@ -82,9 +83,9 @@ public sealed class IpcServerWorker : BackgroundService
 						_pipeBannerLogged = true;
 						_consecutiveWaitFailures = 0;
 						_logger.LogInformation(
-							"{Worker} named pipe \\\\.\\pipe\\{PipeName} created — accepting connections (ACL: Administrators + LocalSystem)",
+							"{Worker} named pipe \\\\.\\pipe\\{PipeName} created -- accepting connections (ACL: Administrators + LocalSystem)",
 							nameof(IpcServerWorker), IpcConstants.PipeName);
-						WriteIpcDebugLine($"[{DateTime.UtcNow:O}] CreatePipe OK — \\\\.\\pipe\\{IpcConstants.PipeName} accepting connections");
+						WriteIpcDebugLine($"[{DateTime.UtcNow:O}] CreatePipe OK -- \\\\.\\pipe\\{IpcConstants.PipeName} accepting connections");
 					}
 				}
 				catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
@@ -98,7 +99,7 @@ public sealed class IpcServerWorker : BackgroundService
 					// Mark pipe banner as unlogged so next success re-emits it.
 					_pipeBannerLogged = false;
 					_logger.LogWarning(ex,
-						"{Worker} CreatePipe FAILED [{ExType}]: {ExMsg} — possible AV/EDR pipe interception " +
+						"{Worker} CreatePipe FAILED [{ExType}]: {ExMsg} -- possible AV/EDR pipe interception " +
 						"(Kaspersky?). Add RdpAudit.Service.exe to your AV trusted list. Retrying in 5 s.",
 						nameof(IpcServerWorker), ex.GetType().Name, ex.Message);
 					WriteIpcDebugLine($"[{DateTime.UtcNow:O}] CreatePipe FAILED [{ex.GetType().Name}]: {ex.Message}");
@@ -111,7 +112,7 @@ public sealed class IpcServerWorker : BackgroundService
 				{
 					_pipeBannerLogged = false;
 					_logger.LogError(ex,
-						"{Worker} CreatePipe unexpected fault [{ExType}]: {ExMsg} — continuing",
+						"{Worker} CreatePipe unexpected fault [{ExType}]: {ExMsg} -- continuing",
 						nameof(IpcServerWorker), ex.GetType().Name, ex.Message);
 					await TryLogOperationFaultAsync(ex, stoppingToken).ConfigureAwait(false);
 					try { await Task.Delay(TimeSpan.FromSeconds(1), stoppingToken).ConfigureAwait(false); }
@@ -138,7 +139,7 @@ public sealed class IpcServerWorker : BackgroundService
 						// creation. CreatePipe succeeds, but no client can ever connect (Kaspersky KLIF).
 						_logger.LogWarning(ex,
 							"{Worker} pipe destroyed {Count}x before any client connected [{ExType}]: {ExMsg} "
-							+ "— AV/EDR (Kaspersky?) may be intercepting the pipe. Add RdpAudit.Service.exe to AV trusted list.",
+							+ "-- AV/EDR (Kaspersky?) may be intercepting the pipe. Add RdpAudit.Service.exe to AV trusted list.",
 							nameof(IpcServerWorker), _consecutiveWaitFailures, ex.GetType().Name, ex.Message);
 						WriteIpcDebugLine($"[{DateTime.UtcNow:O}] WaitForConnection fail #{_consecutiveWaitFailures} [{ex.GetType().Name}]: {ex.Message}");
 						await TryLogOperationFaultAsync(ex, stoppingToken).ConfigureAwait(false);
@@ -146,21 +147,22 @@ public sealed class IpcServerWorker : BackgroundService
 					}
 					else
 					{
-						_logger.LogDebug(ex, "{Worker} expected accept/disconnect transient — continuing", nameof(IpcServerWorker));
+						_logger.LogDebug(ex, "{Worker} expected accept/disconnect transient -- continuing", nameof(IpcServerWorker));
 					}
-					            // Back-off to prevent tight-loop CPU spin when AV/EDR repeatedly destroys the pipe.
-								            if (_consecutiveWaitFailures > 0)
-											            {
-														                try { await Task.Delay(TimeSpan.FromMilliseconds(500), stoppingToken).ConfigureAwait(false); }
-																		                catch (OperationCanceledException) { break; }
-																						            }
+
+					// Back-off to prevent tight-loop CPU spin when AV/EDR repeatedly destroys the pipe.
+					if (_consecutiveWaitFailures > 0)
+					{
+						try { await Task.Delay(TimeSpan.FromMilliseconds(500), stoppingToken).ConfigureAwait(false); }
+						catch (OperationCanceledException) { break; }
+					}
 					continue;
 				}
 				catch (Exception ex)
 				{
 					await pipe.DisposeAsync().ConfigureAwait(false);
 					_logger.LogError(ex,
-						"{Worker} WaitForConnection fault [{ExType}]: {ExMsg} — continuing",
+						"{Worker} WaitForConnection fault [{ExType}]: {ExMsg} -- continuing",
 						nameof(IpcServerWorker), ex.GetType().Name, ex.Message);
 					await TryLogOperationFaultAsync(ex, stoppingToken).ConfigureAwait(false);
 					try { await Task.Delay(TimeSpan.FromSeconds(1), stoppingToken).ConfigureAwait(false); }
@@ -231,7 +233,7 @@ public sealed class IpcServerWorker : BackgroundService
 		}
 		catch
 		{
-			// ignored — logger already captured it; the operation log is best-effort
+			// ignored -- logger already captured it; the operation log is best-effort
 		}
 	}
 
@@ -284,14 +286,14 @@ public sealed class IpcServerWorker : BackgroundService
 
 	private async Task HandleConnectionAsync(NamedPipeServerStream pipe, CancellationToken ct)
 	{
-		_logger.LogDebug("{Worker} client connected — dispatching", nameof(IpcServerWorker));
+		_logger.LogDebug("{Worker} client connected -- dispatching", nameof(IpcServerWorker));
 		await using (pipe)
 		{
 			// Read the request frame first under the short default deadline (a connected client must send
 			// promptly), then widen the deadline to the per-command budget before dispatching. This keeps
 			// the server and client agreeing on how long a long-running command (firewall repair / verify /
 			// Tools Diag) is allowed to take, so the service is not cancelled mid-operation while the client
-			// still waits — the historic cause of "service unreachable" right after a Repair.
+			// still waits -- the historic cause of "service unreachable" right after a Repair.
 			using CancellationTokenSource cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
 			cts.CancelAfter(TimeSpan.FromMilliseconds(IpcConstants.OperationTimeoutMs));
 			CancellationToken token = cts.Token;
