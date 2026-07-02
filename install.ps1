@@ -12,7 +12,7 @@
 
 .NOTES
 	Author : Mikhail Deynekin — https://Deynekin.com — Mikhail@Deynekin.com
-	Version: 1.2.4
+	Version: 1.2.5
 
 .FEATURES
 	Detects and reports any previously installed RdpAudit version (with version number).
@@ -23,6 +23,9 @@
 	Prints a final installation Summary describing what was done, installed, fixed and
 	to which version the software was upgraded — including next-step guidance for a
 	fresh, clean installation.
+	Sync-Repository (v1.2.5) now verifies/repairs the remote origin URL, performs a
+	full-refspec fetch to break --single-branch limitations, and uses a safe
+	'checkout -B' so a missing local branch no longer aborts the installer.
 
 .REQUIREMENTS
 	PowerShell 7+
@@ -847,6 +850,14 @@ function Initialize-Workspace {
 }
 
 function Sync-Repository {
+	# Version: 1.2.5
+	# Fix 1 — verify and repair the remote origin URL before any fetch so stale clones
+	#          (e.g. previously pointing at 1st-RDPMon) are silently corrected.
+	# Fix 2 — fetch with a full refspec (+refs/heads/*:refs/remotes/origin/*) to unlock
+	#          --single-branch clones that only carry one branch in their refspec.
+	# Fix 3 — use 'checkout -B <branch> origin/<branch>' instead of a bare checkout
+	#          so a missing local branch is created rather than failing with
+	#          "pathspec did not match any file(s) known to git".
 	Write-Section 'Repository'
 
 	if (-not (Test-Path -Path (Join-Path -Path $script:RepositoryDirectory -ChildPath '.git'))) {
@@ -862,15 +873,42 @@ function Sync-Repository {
 			) `
 			-FailureMessage 'git clone failed.'
 	} else {
-		Write-Info 'Repository already exists. Fetching and resetting to remote branch.'
+		Write-Info 'Repository already exists. Verifying remote origin URL ...'
+
+		# ── Fix 1: ensure origin points at the correct repository ─────────────
+		$currentOrigin = (& git -C $script:RepositoryDirectory remote get-url origin 2>$null | Select-Object -First 1)
+		if ($currentOrigin -ne $RepositoryUrl) {
+			Write-WarningMessage ("Remote origin mismatch — found: '{0}', expected: '{1}'. Correcting ..." -f $currentOrigin, $RepositoryUrl)
+			Invoke-CheckedCommand `
+				-FilePath 'git' `
+				-Arguments @('-C', $script:RepositoryDirectory, 'remote', 'set-url', 'origin', $RepositoryUrl) `
+				-FailureMessage 'git remote set-url failed.'
+			Write-Ok "Remote origin corrected to: $RepositoryUrl"
+			Add-InstallFix ("Corrected remote origin from '{0}' to '{1}'" -f $currentOrigin, $RepositoryUrl)
+		} else {
+			Write-Ok "Remote origin is correct: $RepositoryUrl"
+		}
+
+		# ── Fix 2: full refspec fetch (breaks --single-branch limitation) ─────
+		Write-Info 'Fetching all remote branches ...'
 		Invoke-CheckedCommand `
 			-FilePath 'git' `
-			-Arguments @('-C', $script:RepositoryDirectory, 'fetch', 'origin', $RepositoryBranch) `
+			-Arguments @(
+				'-C', $script:RepositoryDirectory,
+				'fetch', 'origin',
+				'+refs/heads/*:refs/remotes/origin/*'
+			) `
 			-FailureMessage 'git fetch failed.'
 
+		# ── Fix 3: safe branch checkout (creates local branch when absent) ────
+		Write-Info "Checking out branch '$RepositoryBranch' ..."
 		Invoke-CheckedCommand `
 			-FilePath 'git' `
-			-Arguments @('-C', $script:RepositoryDirectory, 'checkout', $RepositoryBranch) `
+			-Arguments @(
+				'-C', $script:RepositoryDirectory,
+				'checkout', '-B', $RepositoryBranch,
+				"origin/$RepositoryBranch"
+			) `
 			-FailureMessage 'git checkout failed.'
 
 		Invoke-CheckedCommand `
