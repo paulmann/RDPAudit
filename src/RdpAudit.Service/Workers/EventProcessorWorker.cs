@@ -200,50 +200,48 @@ public sealed class EventProcessorWorker : BackgroundService
 
 	// ── Core Logic ───────────────────────────────────────────────────────────────
 
-	/// <summary>
-	/// Drains the lock-free ring buffer up to <c>Monitoring.BatchSize</c> items or until the
-	/// batch timeout elapses. v2.1.0: returns <c>null</c> instead of allocating an empty
-	/// <see cref="List{T}"/> when no event arrived before the timeout — the previous
-	/// implementation allocated a fresh list on every idle tick, which is pure GC pressure on a
-	/// quiet system with no RDP traffic.
-	/// </summary>
-	private async ValueTask<List<RawEventDto>?> DrainBatchAsync(CancellationToken stoppingToken)
+// Version: 2.1.1
+// Fix: CS1998 — method had no await inside an async body. DrainBatchAsync is fully
+// synchronous (SpinWait + TryRead), so drop the async keyword and wrap the result
+// directly with ValueTask.FromResult / new ValueTask<T>(value).
+
+private ValueTask<List<RawEventDto>?> DrainBatchAsync(CancellationToken stoppingToken)
+{
+	MonitoringOptions monitoring = _options.CurrentValue.Monitoring;
+	int max = Math.Max(1, monitoring.BatchSize);
+	TimeSpan timeout = TimeSpan.FromMilliseconds(Math.Max(50, monitoring.BatchTimeoutMilliseconds));
+
+	SpinWait spinner = default;
+	long startTimestamp = Stopwatch.GetTimestamp();
+	long timeoutTicks = (long)(timeout.TotalSeconds * Stopwatch.Frequency);
+
+	while (!stoppingToken.IsCancellationRequested)
 	{
-		MonitoringOptions monitoring = _options.CurrentValue.Monitoring;
-		int max = Math.Max(1, monitoring.BatchSize);
-		TimeSpan timeout = TimeSpan.FromMilliseconds(Math.Max(50, monitoring.BatchTimeoutMilliseconds));
-
-		SpinWait spinner = default;
-		long startTimestamp = Stopwatch.GetTimestamp();
-		long timeoutTicks = (long)(timeout.TotalSeconds * Stopwatch.Frequency);
-
-		while (!stoppingToken.IsCancellationRequested)
+		if (_channel.Channel.TryRead(out RawEventDto first))
 		{
-			if (_channel.Channel.TryRead(out RawEventDto first))
+			_metrics.IncrementRingBufferRead();
+
+			List<RawEventDto> batch = new(max) { first };
+			while (batch.Count < max && _channel.Channel.TryRead(out RawEventDto next))
 			{
 				_metrics.IncrementRingBufferRead();
-
-				List<RawEventDto> batch = new(max) { first };
-				while (batch.Count < max && _channel.Channel.TryRead(out RawEventDto next))
-				{
-					_metrics.IncrementRingBufferRead();
-					batch.Add(next);
-				}
-
-				return batch;
+				batch.Add(next);
 			}
 
-			if (Stopwatch.GetTimestamp() - startTimestamp >= timeoutTicks)
-			{
-				return null;
-			}
-
-			spinner.SpinOnce();
+			return new ValueTask<List<RawEventDto>?>(batch);
 		}
 
-		stoppingToken.ThrowIfCancellationRequested();
-		return null;
+		if (Stopwatch.GetTimestamp() - startTimestamp >= timeoutTicks)
+		{
+			return new ValueTask<List<RawEventDto>?>(result: null);
+		}
+
+		spinner.SpinOnce();
 	}
+
+	stoppingToken.ThrowIfCancellationRequested();
+	return new ValueTask<List<RawEventDto>?>(result: null);
+}
 
 	private async Task PersistBatchAsync(List<RawEventDto> dtos, CancellationToken ct)
 	{
