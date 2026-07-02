@@ -62,6 +62,12 @@ public sealed record FirewallCliToolPresence(
 	string? Path,
 	bool Present);
 
+public FirewallCliToolPresence(string toolName, string fullPath, bool present)
+    : this(toolName, present)
+{
+    FullPath = fullPath;
+}
+
 /// <summary>Snapshot of the firewall environment, suitable for UI display and clipboard export.</summary>
 /// <remarks>
 /// All collections are non-null. Missing data points should be represented as <c>null</c>
