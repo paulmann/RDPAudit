@@ -38,27 +38,30 @@ public sealed class AuthAttemptFactUpserter
 
 	private const string SecurityChannel = "Security";
 
-	private readonly RdpTransportIpCache _transportIpCache;
-	private readonly ILogger<AuthAttemptFactUpserter> _logger;
-	private readonly IOptionsMonitor<RdpAuditOptions> _options;
+// Version: 2.1.2
+// Fix: CS7036 in existing test call sites — logger/options restored as optional parameters
+// with null-safe defaults, matching production DI while keeping legacy test constructors
+// (new AuthAttemptFactUpserter(transportIpCache)) compiling unchanged.
+
+private readonly RdpTransportIpCache _transportIpCache;
+private readonly ILogger<AuthAttemptFactUpserter>? _logger;
+private readonly IOptionsMonitor<RdpAuditOptions>? _options;
 
 	// ── Construction ─────────────────────────────────────────────────────────────
 
-	public AuthAttemptFactUpserter(
-		RdpTransportIpCache transportIpCache,
-		ILogger<AuthAttemptFactUpserter> logger,
-		IOptionsMonitor<RdpAuditOptions> options)
-	{
-		ArgumentNullException.ThrowIfNull(transportIpCache);
-		ArgumentNullException.ThrowIfNull(logger);
-		ArgumentNullException.ThrowIfNull(options);
+public AuthAttemptFactUpserter(
+	RdpTransportIpCache transportIpCache,
+	ILogger<AuthAttemptFactUpserter>? logger = null,
+	IOptionsMonitor<RdpAuditOptions>? options = null)
+{
+	ArgumentNullException.ThrowIfNull(transportIpCache);
 
-		_transportIpCache = transportIpCache;
-		_logger = logger;
-		_options = options;
-	}
+	_transportIpCache = transportIpCache;
+	_logger = logger;
+	_options = options;
+}
 
-	private bool DebugEnabled => _options.CurrentValue.Diagnostics.DebugMode;
+private bool DebugEnabled => _options?.CurrentValue.Diagnostics.DebugMode == true;
 
 	// ── Public API ───────────────────────────────────────────────────────────────
 
