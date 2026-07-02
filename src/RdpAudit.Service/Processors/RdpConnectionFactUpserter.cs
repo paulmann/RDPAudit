@@ -1,13 +1,16 @@
 /* Project: RDPAudit 2.0 | Author: Mikhail Deynekin | Site: Deynekin.com | Email: Mikhail@Deynekin.com */
-// Version: 2.1.0
+// Version: 2.1.1
 // File   : RdpConnectionFactUpserter.cs
 // Project: RdpAudit.Service (RdpAudit.Service.Processors)
 // Purpose: Batched merge layer that turns normalised RawEvent rows into idempotent upserts
-//          against RdpConnectionFacts. Fixes the "strong-key events with no direct IP yet are
-//          silently dropped forever" defect that left RDP Activity empty even when identity
-//          (LogonId / WtsSessionId+UserName) was fully known. Adds DEBUG-mode structured tracing
-//          for every candidate that is rejected, so a missing field can be diagnosed from logs
-//          without re-instrumenting the binary.
+//          against RdpConnectionFacts. Fixes two defects: (1) strong-key events (LogonId, or
+//          WtsSessionId+UserName) with no direct IP yet were silently dropped forever, leaving
+//          RDP Activity empty even when identity was fully known; (2) CS8601 — RdpConnectionFact.Ip
+//          is a non-nullable string (empty string is the model's "no IP yet" sentinel, per
+//          RdpAudit.Core/Models/RdpConnectionFact.cs), but the previous version assigned a
+//          nullable Candidate.Ip directly and null-checked existing.Ip as if it were nullable.
+//          All IP presence checks now use string.IsNullOrEmpty(...) against the non-nullable
+//          model contract instead of null comparisons.
 // Depends: AuditDbContext, RawEvent, RdpConnectionFact, ILogger<RdpConnectionFactUpserter>,
 //          IOptionsMonitor<RdpAuditOptions>
 // Extends: Add a new EventKind branch + ClassifyEvent case when a new channel/event needs to
@@ -31,24 +34,17 @@ namespace RdpAudit.Service.Processors;
 /// identity key (LogonId, or WtsSessionId+UserName) is always materialised into a fact row —
 /// IP presence only controls whether the IP column is populated immediately or backfilled by a
 /// later observation in the same logon chain. A weak key (username-only) still requires a
-/// direct or sentinel IP to avoid seeding unanchored noise rows.
+/// direct or sentinel IP to avoid seeding unanchored noise rows. Note: <see cref="RdpConnectionFact.Ip"/>
+/// is a non-nullable string whose "no IP yet" sentinel value is <see cref="string.Empty"/> —
+/// never null — matching the model's documented contract.
 /// </summary>
 public sealed class RdpConnectionFactUpserter
 {
 	// ── Fields & DI ──────────────────────────────────────────────────────────────
 
-	/// <summary>Hard cap on the number of comma-separated event ids retained in
-	/// <see cref="RdpConnectionFact.ObservedEventIds"/>.</summary>
 	internal const int MaxObservedEventIds = 32;
-
-	/// <summary>Maximum width of <see cref="RdpConnectionFact.ObservedEventIds"/> on disk.</summary>
 	internal const int ObservedEventIdsMaxLength = 256;
-
-	/// <summary>Maximum number of unique usernames retained in
-	/// <see cref="RdpConnectionFact.UserNamesAttempted"/>.</summary>
 	internal const int MaxAttemptedUserNames = 32;
-
-	/// <summary>Maximum width of <see cref="RdpConnectionFact.UserNamesAttempted"/>.</summary>
 	internal const int UserNamesAttemptedMaxLength = 1024;
 
 	internal const string TsLsmChannel = "Microsoft-Windows-TerminalServices-LocalSessionManager/Operational";
@@ -57,10 +53,7 @@ public sealed class RdpConnectionFactUpserter
 
 	/// <summary>
 	/// Sentinel IP used to preserve forensic evidence of a failed logon (Security 4625) when the
-	/// payload carried no parseable IP and session correlation could not supply one either. The
-	/// row is keyed by the attempted username and grouped under "0.0.0.0" in the
-	/// connection-facts table. Consumers must treat this as "unresolved attacker IP" — it is
-	/// NOT real traffic from 0.0.0.0.
+	/// payload carried no parseable IP and session correlation could not supply one either.
 	/// </summary>
 	internal const string UnresolvedIpSentinel = "0.0.0.0";
 
@@ -84,12 +77,6 @@ public sealed class RdpConnectionFactUpserter
 
 	// ── Public API ───────────────────────────────────────────────────────────────
 
-	/// <summary>
-	/// Apply a batch of normalised <see cref="RawEvent"/> rows to <see cref="RdpConnectionFact"/>.
-	/// Reads only the matching existing fact rows (single round-trip per key family), then either
-	/// updates them in place or queues a new entity. Caller must commit the surrounding
-	/// transaction and call <see cref="DbContext.SaveChangesAsync(CancellationToken)"/>.
-	/// </summary>
 	public async Task ApplyAsync(AuditDbContext db, IReadOnlyList<RawEvent> entities, CancellationToken ct)
 	{
 		ArgumentNullException.ThrowIfNull(db);
@@ -102,13 +89,13 @@ public sealed class RdpConnectionFactUpserter
 
 		bool debugEnabled = DebugEnabled;
 
-		// 1) Build per-event candidates and group by strongest available key. Order each group
-		// by time so lifecycle timestamps are applied in chronological order.
 		List<Candidate> candidates = new(entities.Count);
 		int rejected = 0;
 
 		foreach (RawEvent e in entities)
 		{
+			ct.ThrowIfCancellationRequested();
+
 			Candidate? c = BuildCandidate(e);
 			if (c is null)
 			{
@@ -153,7 +140,6 @@ public sealed class RdpConnectionFactUpserter
 			list.Sort(static (a, b) => a.TimeUtc.CompareTo(b.TimeUtc));
 		}
 
-		// 2) Fetch existing facts that may match any candidate. Selective on indexed keys.
 		HashSet<string> logonIds = new(StringComparer.OrdinalIgnoreCase);
 		HashSet<(int Wts, string User)> wtsUserPairs = new();
 
@@ -214,7 +200,6 @@ public sealed class RdpConnectionFactUpserter
 			}
 		}
 
-		// 3) Merge per-key candidate chains.
 		int created = 0;
 		int updated = 0;
 		int droppedOnMerge = 0;
@@ -262,8 +247,6 @@ public sealed class RdpConnectionFactUpserter
 
 	// ── Core Logic ───────────────────────────────────────────────────────────────
 
-	/// <summary>Build a candidate from a single normalised event. Returns null when the event has
-	/// no useful key for the connection-facts table.</summary>
 	internal static Candidate? BuildCandidate(RawEvent e)
 	{
 		string channel = e.Channel ?? string.Empty;
@@ -279,9 +262,6 @@ public sealed class RdpConnectionFactUpserter
 		int? wts = e.SessionId;
 		string? user = string.IsNullOrWhiteSpace(e.UserName) ? null : e.UserName.Trim();
 
-		// Sentinel routing: a failed-logon (Security 4625) whose source IP was never parseable
-		// AND could not be supplied by session correlation must still be preserved as failed
-		// evidence, anchored to the attempted username under Ip="0.0.0.0".
 		bool unresolvedSentinel = false;
 		string? resolvedIp = hasValidIp ? e.SourceIp!.Trim() : null;
 
@@ -341,8 +321,6 @@ public sealed class RdpConnectionFactUpserter
 			switch (eventId)
 			{
 				case 4624:
-					// Only count remote/RDP-relevant logon types as connection-fact successes.
-					// 2=Interactive, 3=Network, 7=Unlock, 10=RemoteInteractive, 11=CachedInteractive.
 					return logonType is 2 or 3 or 7 or 10 or 11
 						? EventKind.SuccessfulLogon
 						: EventKind.Unrelated;
@@ -354,11 +332,8 @@ public sealed class RdpConnectionFactUpserter
 				case 4648:
 					return EventKind.ExplicitCreds;
 				case 4672:
-					// Special Logon (privileged token assignment). Deliberately excluded from
-					// connection-fact lifecycle tracking: 4672 fires for SYSTEM/service logons
+					// Special Logon — deliberately excluded: fires for SYSTEM/service logons
 					// unrelated to an RDP session and would pollute Activity with non-RDP rows.
-					// Classified explicitly (rather than falling through to default) so the
-					// DEBUG trace names the real reason instead of a silent "Unrelated" catch-all.
 					return EventKind.Unrelated;
 				case 4778:
 					return EventKind.Reconnect;
@@ -379,19 +354,19 @@ public sealed class RdpConnectionFactUpserter
 		string key,
 		bool debugEnabled)
 	{
+		bool candidateHasIp = !string.IsNullOrEmpty(c.Ip);
+
 		if (existing is null)
 		{
 			KeyStrength strength = ClassifyKeyStrength(key);
-			bool hasAnchorIp = c.Ip is not null && (!c.IpIsDerived || c.IsUnresolvedSentinel);
+			bool hasAnchorIp = candidateHasIp && (!c.IpIsDerived || c.IsUnresolvedSentinel);
 
 			// v2.1.0 fix: a strong identity key (LogonId, or WtsSessionId+UserName) is
-			// sufficient to seed a new fact row on its own. Requiring a direct IP before a
-			// row could even exist meant every identity-first event (very common — session
-			// correlation frequently resolves the IP a few events LATER in the same logon
-			// chain) was silently discarded and could never be recovered, leaving RDP
-			// Activity empty even when Live Events showed a fully healthy pipeline. A weak
-			// (username-only) key still requires a direct or sentinel IP so we never seed an
-			// unanchored noise row keyed purely by username.
+			// sufficient to seed a new fact row on its own — requiring a direct IP up front
+			// meant identity-first events (very common — session correlation frequently
+			// resolves the IP a few events LATER in the same logon chain) were silently
+			// discarded and could never be recovered. A weak (username-only) key still
+			// requires a direct or sentinel IP to avoid seeding an unanchored noise row.
 			bool canCreate = strength == KeyStrength.Strong || hasAnchorIp;
 
 			if (!canCreate)
@@ -406,9 +381,11 @@ public sealed class RdpConnectionFactUpserter
 				return null;
 			}
 
+			// RdpConnectionFact.Ip is a non-nullable string; string.Empty is the model's
+			// documented "no IP yet" sentinel (see RdpConnectionFact.cs), never null.
 			RdpConnectionFact row = new()
 			{
-				Ip = c.Ip,
+				Ip = c.Ip ?? string.Empty,
 				UserName = c.UserName,
 				Domain = c.Domain,
 				WtsSessionId = c.WtsSessionId,
@@ -429,13 +406,12 @@ public sealed class RdpConnectionFactUpserter
 			{
 				_logger.LogDebug(
 					"RdpConnectionFactUpserter Merge CREATE: Key={Key} EventId={EventId} Kind={Kind} Ip={Ip} IpIsDerived={IpIsDerived} LogonId={LogonId} WtsSessionId={WtsSessionId} UserName={UserName}",
-					key, c.EventId, c.Kind, c.Ip, c.IpIsDerived, c.LogonId, c.WtsSessionId, c.UserName);
+					key, c.EventId, c.Kind, row.Ip, c.IpIsDerived, c.LogonId, c.WtsSessionId, c.UserName);
 			}
 
 			return row;
 		}
 
-		// Refresh windowing.
 		if (c.TimeUtc > existing.LastSeenUtc)
 		{
 			existing.LastSeenUtc = c.TimeUtc;
@@ -446,17 +422,19 @@ public sealed class RdpConnectionFactUpserter
 			existing.FirstSeenUtc = c.TimeUtc;
 		}
 
+		bool existingHasIp = !string.IsNullOrEmpty(existing.Ip);
+
 		// Update IP only for direct, non-sentinel observations. Never let an unresolved-IP
 		// sentinel overwrite a real IP that was already recorded.
-		if (c.Ip is not null && !c.IpIsDerived && !c.IsUnresolvedSentinel)
+		if (candidateHasIp && !c.IpIsDerived && !c.IsUnresolvedSentinel)
 		{
-			existing.Ip = c.Ip;
+			existing.Ip = c.Ip!;
 		}
-		else if (existing.Ip is null && c.Ip is not null)
+		else if (!existingHasIp && candidateHasIp)
 		{
 			// Backfill: the row was seeded without an IP (strong-key fast path) and this
 			// observation — even if derived — is the first IP information available.
-			existing.Ip = c.Ip;
+			existing.Ip = c.Ip!;
 		}
 
 		if (string.IsNullOrWhiteSpace(existing.Domain) && !string.IsNullOrWhiteSpace(c.Domain))
@@ -491,8 +469,7 @@ public sealed class RdpConnectionFactUpserter
 			case EventKind.AuthenticatedConnection:
 			case EventKind.SessionLogon:
 				// NLA hosts almost never emit Security 4624 for the RDP logon flow, so TS-RCM
-				// 1149 (AuthenticatedConnection) and TS-LSM 21 (SessionLogon) are the only
-				// authoritative proof of a successful RDP session on such hosts.
+				// 1149 and TS-LSM 21 are often the only authoritative proof of success.
 				existing.SuccessfulLogons++;
 				break;
 		}
@@ -625,11 +602,6 @@ public sealed class RdpConnectionFactUpserter
 		_ => false,
 	};
 
-	// ── SIMD & Zero-Alloc Parsers ────────────────────────────────────────────────
-	// (Not applicable: this class operates on already-batched, EF-tracked entities in the cold
-	// database-write path — see the project's Cold/Hot Database Split directive. Zero-allocation
-	// constraints apply to ingestion/normalization, not to this merge layer.)
-
 	internal static string? BuildKey(string? logonId, int? wtsSessionId, string? userName)
 	{
 		if (!string.IsNullOrWhiteSpace(logonId))
@@ -653,11 +625,6 @@ public sealed class RdpConnectionFactUpserter
 	internal static string? BuildKeyFromRow(RdpConnectionFact row)
 		=> BuildKey(row.LogonId, row.WtsSessionId, row.UserName);
 
-	/// <summary>Classifies key strength for the "create without IP" fast path. Strong keys
-	/// (LogonId, WtsSessionId+UserName) uniquely anchor a Windows logon session even before an
-	/// IP is known; a weak (username-only) key does not, and must wait for a direct or sentinel
-	/// IP before a row is seeded — otherwise unrelated attempts by the same username could
-	/// collapse into a single misleading row.</summary>
 	private static KeyStrength ClassifyKeyStrength(string key)
 		=> key.StartsWith("L:", StringComparison.Ordinal) || key.StartsWith("S:", StringComparison.Ordinal)
 			? KeyStrength.Strong
@@ -780,7 +747,7 @@ public sealed class RdpConnectionFactUpserter
 		if (kind == EventKind.Unrelated)
 		{
 			_logger.LogDebug(
-				"RdpConnectionFactUpserter BuildCandidate DROP: EventId={EventId} Channel={Channel} LogonType={LogonType} classified as Unrelated (not part of the RDP connection lifecycle) — no fact row will ever be produced for this event shape.",
+				"RdpConnectionFactUpserter BuildCandidate DROP: EventId={EventId} Channel={Channel} LogonType={LogonType} classified as Unrelated — no fact row will ever be produced for this event shape.",
 				e.EventId, e.Channel, e.LogonType);
 			return;
 		}
@@ -794,7 +761,6 @@ public sealed class RdpConnectionFactUpserter
 	// ── Disposal & Pool Returns ──────────────────────────────────────────────────
 	// (No unmanaged resources or pooled objects owned by this class.)
 
-	/// <summary>Internal classification of an event's lifecycle role for the connection fact.</summary>
 	internal enum EventKind
 	{
 		Unrelated,
@@ -806,30 +772,19 @@ public sealed class RdpConnectionFactUpserter
 		Disconnect,
 		Reconnect,
 		LogOff,
-
-		/// <summary>Pre-authentication listener observation (TS-RCM 261). Updates LastSeen /
-		/// ObservedEventIds only — does not move any lifecycle timestamp or increment
-		/// success/failure counters. Almost never carries LogonId/UserName, so it typically
-		/// cannot seed a new fact row on its own; it correlates onto a row created by a later,
-		/// identity-bearing event in the same logon chain.</summary>
 		PreAuthListener,
-
-		/// <summary>Explicit-credentials use (Security 4648). Appends the attempted username and
-		/// updates LastSeen/ObservedEventIds. NOT counted as a successful logon by itself.</summary>
 		ExplicitCreds,
 	}
 
-	/// <summary>Distinguishes identity keys strong enough to uniquely anchor a Windows logon
-	/// session (LogonId, WtsSessionId+UserName) from weak, username-only keys that require IP
-	/// corroboration before a fact row is seeded.</summary>
 	private enum KeyStrength
 	{
 		Weak,
 		Strong,
 	}
 
-	/// <summary>Per-event candidate the upserter consumes. Carries only the fields needed to
-	/// merge a single observation into the fact table.</summary>
+	/// <summary>Per-event candidate. Note <see cref="Ip"/> stays nullable at this stage — the
+	/// non-null/empty-string contract only applies once the value is written into
+	/// <see cref="RdpConnectionFact.Ip"/>.</summary>
 	internal readonly record struct Candidate(
 		string Key,
 		string? LogonId,
