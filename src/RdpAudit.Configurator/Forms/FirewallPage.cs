@@ -9,7 +9,7 @@
 // Extends: System.Windows.Forms.TabPage
 // Author:  Mikhail Deynekin
 // Site:    https://Deynekin.com
-// Version: 1.4.2
+// Version: 1.4.3
 
 using System.ComponentModel;
 using System.Globalization;
@@ -120,6 +120,7 @@ public sealed class FirewallPage : TabPage
 	private readonly ServiceReachabilityProbe _reachability = new();
 	private bool _lastRefreshStale;
 	private bool _operationInFlight;
+	private const int DefaultBlockDurationMinutes = 3 * 24 * 60;
 
 	public FirewallPage(IpcClient ipc)
 	{
@@ -289,6 +290,7 @@ public sealed class FirewallPage : TabPage
 		_durationDays = MakeCompactDurationInput(0, 365);
 		_durationHours = MakeCompactDurationInput(0, 23);
 		_durationMinutes = MakeCompactDurationInput(0, 59);
+		SetDurationFromMinutes(DefaultBlockDurationMinutes);
 
 		// Compact FlowLayoutPanel grouping the three spinners with their unit labels so the
 		// default-block-duration row stays tight (~260 px) no matter how wide the parent column
@@ -1087,9 +1089,9 @@ public sealed class FirewallPage : TabPage
 
 	private void SetDurationFromMinutes(int totalMinutes)
 	{
-		if (totalMinutes < 0)
+		if (totalMinutes < 1)
 		{
-			totalMinutes = 0;
+			totalMinutes = DefaultBlockDurationMinutes;
 		}
 
 		int days = totalMinutes / (24 * 60);
@@ -1102,10 +1104,15 @@ public sealed class FirewallPage : TabPage
 		_durationMinutes.Value = Math.Min(minutes, (int)_durationMinutes.Maximum);
 	}
 
-	private int ComputeDurationMinutes() =>
-		(int)_durationDays.Value * 24 * 60
-		+ (int)_durationHours.Value * 60
-		+ (int)_durationMinutes.Value;
+	private int ComputeDurationMinutes()
+	{
+		int totalMinutes =
+			(int)_durationDays.Value * 24 * 60
+			+ (int)_durationHours.Value * 60
+			+ (int)_durationMinutes.Value;
+
+		return totalMinutes < 1 ? 1 : totalMinutes;
+	}
 
 	// ---------------------------------------------------------------------------------------------
 	// Blocklist actions
