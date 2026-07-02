@@ -1,15 +1,10 @@
-// File:    src/RdpAudit.Core/Firewall/FirewallProviderDiagnostics.cs
-// Module:  RdpAudit.Core.Firewall
-// Purpose: Pure detection / diagnostics models for the firewall environment surrounding the
-//          RDP listener: which Windows Firewall profiles are enabled, which third-party
-//          security products (Kaspersky in particular) appear to be present, and whether
-//          direct Windows Firewall rule management is expected to succeed. The detection
-//          provider lives in the Configurator host (it touches Win32 services / processes /
-//          WMI / filesystem); the pure result + diagnostic-text formatter live here so the
-//          UI and tests can consume the model without taking a WinForms or Win32 dependency.
-// Extends: System.Object
-// Author:  Mikhail Deynekin
-// Site:    [https://Deynekin.com](https://Deynekin.com)
+/* Project: RDPAudit 2.0 | Author: Mikhail Deynekin | Site: Deynekin.com | Email: Mikhail@Deynekin.com */
+// Version: 1.1.0
+// File   : FirewallProviderDiagnostics.cs
+// Project: RdpAudit.Core (RdpAudit.Core.Firewall)
+// Purpose: Defines pure firewall diagnostics models and a stable English formatter shared by Configurator, Service, and tests without Win32 host dependencies.
+// Depends: LocalRulePolicyRow, LocalRulePolicyHint, CultureInfo, StringBuilder
+// Extends: Add new diagnostic fields here when introducing a new provider signal or report section; preserve backward-compatible constructors and enum ordinals.
 
 using System.Globalization;
 using System.Text;
@@ -57,21 +52,42 @@ public sealed record FirewallServiceState(
 	bool IsRunning);
 
 /// <summary>State of one detected third-party CLI tool.</summary>
-public sealed record FirewallCliToolPresence(
-	string ToolName,
-	string? Path,
-	bool Present)
+public sealed record FirewallCliToolPresence
 {
-	/// <summary>Absolute filesystem path, when known. Preserved for compatibility with probes
-	/// that want to surface a concrete install location.</summary>
-	public string FullPath { get; init; } = Path ?? string.Empty;
+	// ── Construction ─────────────────────────────────────────────────────────────
 
-	/// <summary>Convenience constructor for callers that already have a concrete full path.</summary>
-	public FirewallCliToolPresence(string toolName, string fullPath, bool present, bool _ = true)
-		: this(toolName, present ? fullPath : null, present)
+	public FirewallCliToolPresence(string toolName, string? path, bool present)
 	{
+		ToolName = string.IsNullOrWhiteSpace(toolName) ? string.Empty : toolName;
+		Path = path;
+		Present = present;
+		FullPath = path ?? string.Empty;
+	}
+
+	/// <summary>Compatibility overload for callers that pass a concrete full path and expect
+	/// it to remain available even when the legacy <see cref="Path"/> name is used elsewhere.</summary>
+	public FirewallCliToolPresence(string toolName, string fullPath, bool present, bool preserveFullPath)
+	{
+		ToolName = string.IsNullOrWhiteSpace(toolName) ? string.Empty : toolName;
+		Path = present ? fullPath : null;
+		Present = present;
 		FullPath = fullPath ?? string.Empty;
 	}
+
+	// ── Public API ───────────────────────────────────────────────────────────────
+
+	/// <summary>Friendly tool name, e.g. kescli.exe, kavshell.exe, avp.exe.</summary>
+	public string ToolName { get; init; }
+
+	/// <summary>Legacy path property used by existing diagnostics rendering code.</summary>
+	public string? Path { get; init; }
+
+	/// <summary>True when the tool was positively found on disk.</summary>
+	public bool Present { get; init; }
+
+	/// <summary>Concrete filesystem path, when known. Preserved as a separate field so newer
+	/// probes can carry an exact location without breaking older consumers that only read Path.</summary>
+	public string FullPath { get; init; }
 }
 
 /// <summary>Snapshot of the firewall environment, suitable for UI display and clipboard export.</summary>
@@ -82,6 +98,8 @@ public sealed record FirewallCliToolPresence(
 /// </remarks>
 public sealed class FirewallProviderDiagnostics
 {
+	// ── Public API ───────────────────────────────────────────────────────────────
+
 	/// <summary>Detection classification — see <see cref="FirewallProviderDetectedKind"/>.</summary>
 	public FirewallProviderDetectedKind ProviderKind { get; init; } = FirewallProviderDetectedKind.Unknown;
 
@@ -117,7 +135,7 @@ public sealed class FirewallProviderDiagnostics
 	public IReadOnlyList<string> Notes { get; init; } = Array.Empty<string>();
 
 	/// <summary>True when at least one profile reports the GPO-store-only marker — direct local
-	/// firewall writes (`netsh ... add rule`) are expected to be rejected by policy.</summary>
+	/// firewall writes (<c>netsh ... add rule</c>) are expected to be rejected by policy.</summary>
 	public bool LocalRulesAreGpoStoreOnly
 	{
 		get
@@ -129,103 +147,157 @@ public sealed class FirewallProviderDiagnostics
 					return true;
 				}
 			}
+
 			return false;
 		}
 	}
+
+	// ── Core Logic ───────────────────────────────────────────────────────────────
 
 	/// <summary>Builds a single, copy-paste-friendly diagnostics text block summarising every
 	/// captured field. Stable English output; never localised.</summary>
 	public string BuildDiagnosticsText()
 	{
 		StringBuilder sb = new();
-		sb.Append("Firewall provider: ").Append(ProviderName)
-			.Append(" (kind=").Append(ProviderKind).Append(')').Append('\n');
+
+		sb.Append("Firewall provider: ")
+			.Append(ProviderName)
+			.Append(" (kind=")
+			.Append(ProviderKind)
+			.Append(')')
+			.Append('\n');
 
 		if (ConfiguredRdpPort is int port)
 		{
 			sb.Append("Configured RDP port: ")
-				.Append(port.ToString(CultureInfo.InvariantCulture)).Append('\n');
+				.Append(port.ToString(CultureInfo.InvariantCulture))
+				.Append('\n');
 		}
 
 		if (LocalRuleManagementAllowed is bool allowed)
 		{
 			sb.Append("Local Windows Firewall rule management allowed: ")
-				.Append(allowed ? "yes" : "no").Append('\n');
+				.Append(allowed ? "yes" : "no")
+				.Append('\n');
 		}
 
 		if (LocalRulePolicyRows.Count > 0)
 		{
-			sb.Append("LocalFirewallRules policy (per profile):").Append('\n');
+			sb.Append("LocalFirewallRules policy (per profile):")
+				.Append('\n');
+
 			foreach (LocalRulePolicyRow row in LocalRulePolicyRows)
 			{
 				sb.Append("  - ")
 					.Append(string.IsNullOrEmpty(row.ProfileLabel) ? "(profile)" : row.ProfileLabel)
-					.Append(": ").Append(row.Hint);
+					.Append(": ")
+					.Append(row.Hint);
+
 				if (!string.IsNullOrEmpty(row.RawValue))
 				{
-					sb.Append(" [").Append(row.RawValue).Append(']');
+					sb.Append(" [")
+						.Append(row.RawValue)
+						.Append(']');
 				}
+
 				sb.Append('\n');
 			}
 
 			if (LocalRulesAreGpoStoreOnly)
 			{
-				sb.Append("Note: at least one profile reports LocalFirewallRules N/A (GPO-store only) — direct local netsh writes are blocked by Group Policy.\n");
+				sb.Append("Note: at least one profile reports LocalFirewallRules N/A (GPO-store only) — direct local netsh writes are blocked by Group Policy.")
+					.Append('\n');
 			}
 		}
 
 		if (ProviderServices.Count > 0)
 		{
-			sb.Append("Services:").Append('\n');
+			sb.Append("Services:")
+				.Append('\n');
+
 			foreach (FirewallServiceState svc in ProviderServices)
 			{
-				sb.Append("  - ").Append(svc.ServiceName);
+				sb.Append("  - ")
+					.Append(svc.ServiceName);
+
 				if (!string.IsNullOrEmpty(svc.DisplayName) &&
 					!string.Equals(svc.DisplayName, svc.ServiceName, StringComparison.Ordinal))
 				{
-					sb.Append(" (").Append(svc.DisplayName).Append(')');
+					sb.Append(" (")
+						.Append(svc.DisplayName)
+						.Append(')');
 				}
-				sb.Append(": ").Append(svc.Status).Append('\n');
+
+				sb.Append(": ")
+					.Append(string.IsNullOrEmpty(svc.Status)
+						? (svc.IsRunning ? "Running" : "Stopped")
+						: svc.Status)
+					.Append('\n');
 			}
 		}
 
 		if (DetectedCliTools.Count > 0)
 		{
-			sb.Append("Detected CLI tools:").Append('\n');
+			sb.Append("Detected CLI tools:")
+				.Append('\n');
+
 			foreach (FirewallCliToolPresence tool in DetectedCliTools)
 			{
-				sb.Append("  - ").Append(tool.ToolName).Append(": ");
-				string path = tool.Path ?? tool.FullPath;
-				sb.Append(tool.Present ? (string.IsNullOrEmpty(path) ? "(present, path unknown)" : path) : "not present").Append('\n');
+				sb.Append("  - ")
+					.Append(tool.ToolName)
+					.Append(": ");
+
+				if (tool.Present)
+				{
+					string? displayPath = !string.IsNullOrEmpty(tool.Path)
+						? tool.Path
+						: (!string.IsNullOrEmpty(tool.FullPath) ? tool.FullPath : null);
+
+					sb.Append(displayPath ?? "(present, path unknown)");
+				}
+				else
+				{
+					sb.Append("not present");
+				}
+
+				sb.Append('\n');
 			}
 		}
 
 		if (WindowsFirewallProfiles.Count > 0)
 		{
-			sb.Append("Windows Firewall profiles:").Append('\n');
+			sb.Append("Windows Firewall profiles:")
+				.Append('\n');
+
 			foreach (FirewallProfileState profile in WindowsFirewallProfiles)
 			{
-				sb.Append("  - ").Append(profile.ProfileName)
-					.Append(": enabled=").Append(profile.Enabled ? "yes" : "no");
+				sb.Append("  - ")
+					.Append(profile.ProfileName)
+					.Append(": enabled=")
+					.Append(profile.Enabled ? "yes" : "no");
 
 				if (profile.DefaultInboundAction is not null)
 				{
-					sb.Append(", inbound=").Append(profile.DefaultInboundAction);
+					sb.Append(", inbound=")
+						.Append(profile.DefaultInboundAction);
 				}
 
 				if (profile.DefaultOutboundAction is not null)
 				{
-					sb.Append(", outbound=").Append(profile.DefaultOutboundAction);
+					sb.Append(", outbound=")
+						.Append(profile.DefaultOutboundAction);
 				}
 
 				if (profile.AllowLocalFirewallRules is bool localRules)
 				{
-					sb.Append(", allowLocalRules=").Append(localRules ? "yes" : "no");
+					sb.Append(", allowLocalRules=")
+						.Append(localRules ? "yes" : "no");
 				}
 
 				if (!string.IsNullOrEmpty(profile.PolicySource))
 				{
-					sb.Append(", policy=").Append(profile.PolicySource);
+					sb.Append(", policy=")
+						.Append(profile.PolicySource);
 				}
 
 				sb.Append('\n');
@@ -234,10 +306,14 @@ public sealed class FirewallProviderDiagnostics
 
 		if (Notes.Count > 0)
 		{
-			sb.Append("Notes:").Append('\n');
+			sb.Append("Notes:")
+				.Append('\n');
+
 			foreach (string note in Notes)
 			{
-				sb.Append("  - ").Append(note).Append('\n');
+				sb.Append("  - ")
+					.Append(note)
+					.Append('\n');
 			}
 		}
 
