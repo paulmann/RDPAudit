@@ -787,19 +787,7 @@ public sealed class IpcDispatcher
 			}
 		}
 
-thirdPartyNote = thirdPartySuspected
-	? string.Format(
-		System.Globalization.CultureInfo.InvariantCulture,
-		"Detected: {0} (kind={1}). " +
-		"IMPORTANT: detection confirms the product is installed and its NDIS LWF " +
-		"driver (e.g. klim6) is running. It does NOT verify whether packet filtering " +
-		"at the NDIS layer will silently drop RdpAudit's Windows Firewall rules. " +
-		"A separate live traffic-blocking verification (out of scope for this probe) " +
-		"is required to confirm end-to-end enforcement.",
-		tpName,
-		tpKind)
-	: null;
-		string? thirdPartyNote = null;
+
 		string scannerBackend = "None";
 		string? scannerNote = null;
 		if (_reconciliation is not null)
