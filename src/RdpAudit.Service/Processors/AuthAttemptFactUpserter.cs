@@ -1,5 +1,5 @@
 /* Project: RDPAudit 2.0 | Author: Mikhail Deynekin | Site: Deynekin.com | Email: Mikhail@Deynekin.com */
-// Version: 2.1.0
+// Version: 2.1.2
 // File   : AuthAttemptFactUpserter.cs
 // Project: RdpAudit.Service (RdpAudit.Service.Processors)
 // Purpose: Translates v3 authentication-outcome events into AuthAttemptFact rows — the atomic
@@ -9,12 +9,16 @@
 //          4624/4625 > 4776/4771 > (1149 + LSM 21) > LSM alone > RdpCoreTS/TCP (never).
 //          A 4625 with no IpAddress is still persisted (NeedsCorrelation=true) so the failure
 //          counter is preserved even when NLA strips the address.
-//          v2.1.0: honors CancellationToken in the batch loop, adds constructor guard clauses,
-//          and adds DEBUG-mode structured tracing for every rejected event and every
-//          transport-IP correlation outcome, so an empty AuthAttemptFacts table can be
-//          diagnosed from logs alone without re-instrumenting the binary.
+//          v2.1.0: honors CancellationToken in the batch loop and adds DEBUG-mode structured
+//          tracing for every rejected event and every transport-IP correlation outcome.
+//          v2.1.2: logger/options restored as OPTIONAL constructor parameters. Existing unit
+//          tests (AuthAttemptFactUpserterTests.cs, Security4625RealHostIngestionTests.cs)
+//          construct this type directly as `new AuthAttemptFactUpserter(transportIpCache)` with
+//          no logger/options — making them mandatory broke 8+ call sites with CS7036. Production
+//          DI still resolves and injects real ILogger/IOptionsMonitor instances; tests get a
+//          fully functional upserter with diagnostics silently disabled (DebugEnabled=false).
 // Depends: AuditDbContext, RawEvent, AuthAttemptFact, RdpTransportIpCache,
-//          ILogger<AuthAttemptFactUpserter>, IOptionsMonitor<RdpAuditOptions>
+//          ILogger<AuthAttemptFactUpserter>?, IOptionsMonitor<RdpAuditOptions>?
 // Extends: Add a new case to IsAuthoritativeAuthEvent + ClassifyOutcome when a new Security
 //          event id becomes an authoritative outcome carrier; keep both switches in sync.
 
@@ -38,30 +42,31 @@ public sealed class AuthAttemptFactUpserter
 
 	private const string SecurityChannel = "Security";
 
-// Version: 2.1.2
-// Fix: CS7036 in existing test call sites — logger/options restored as optional parameters
-// with null-safe defaults, matching production DI while keeping legacy test constructors
-// (new AuthAttemptFactUpserter(transportIpCache)) compiling unchanged.
-
-private readonly RdpTransportIpCache _transportIpCache;
-private readonly ILogger<AuthAttemptFactUpserter>? _logger;
-private readonly IOptionsMonitor<RdpAuditOptions>? _options;
+	private readonly RdpTransportIpCache _transportIpCache;
+	private readonly ILogger<AuthAttemptFactUpserter>? _logger;
+	private readonly IOptionsMonitor<RdpAuditOptions>? _options;
 
 	// ── Construction ─────────────────────────────────────────────────────────────
 
-public AuthAttemptFactUpserter(
-	RdpTransportIpCache transportIpCache,
-	ILogger<AuthAttemptFactUpserter>? logger = null,
-	IOptionsMonitor<RdpAuditOptions>? options = null)
-{
-	ArgumentNullException.ThrowIfNull(transportIpCache);
+	/// <summary>
+	/// <paramref name="logger"/> and <paramref name="options"/> are optional: production DI
+	/// always supplies real instances, enabling DEBUG-mode structured tracing; unit tests may
+	/// construct this type with only <paramref name="transportIpCache"/>, in which case all
+	/// diagnostic logging is a no-op via the null-conditional operator.
+	/// </summary>
+	public AuthAttemptFactUpserter(
+		RdpTransportIpCache transportIpCache,
+		ILogger<AuthAttemptFactUpserter>? logger = null,
+		IOptionsMonitor<RdpAuditOptions>? options = null)
+	{
+		ArgumentNullException.ThrowIfNull(transportIpCache);
 
-	_transportIpCache = transportIpCache;
-	_logger = logger;
-	_options = options;
-}
+		_transportIpCache = transportIpCache;
+		_logger = logger;
+		_options = options;
+	}
 
-private bool DebugEnabled => _options?.CurrentValue.Diagnostics.DebugMode == true;
+	private bool DebugEnabled => _options?.CurrentValue.Diagnostics.DebugMode == true;
 
 	// ── Public API ───────────────────────────────────────────────────────────────
 
@@ -102,11 +107,11 @@ private bool DebugEnabled => _options?.CurrentValue.Diagnostics.DebugMode == tru
 
 			if (IsTransportIpSource(e))
 			{
-				_transportIpCache.Record(e.SourceIp, e.TimeUtc, e.EventId);
+				_transportIpCache.Record(e.SourceIp!, e.TimeUtc, e.EventId);
 
 				if (debugEnabled)
 				{
-					_logger.LogDebug(
+					_logger?.LogDebug(
 						"AuthAttemptFactUpserter TRANSPORT-IP SEED: EventId={EventId} Channel={Channel} Ip={Ip} TimeUtc={TimeUtc}",
 						e.EventId, e.Channel, e.SourceIp, e.TimeUtc);
 				}
@@ -125,7 +130,7 @@ private bool DebugEnabled => _options?.CurrentValue.Diagnostics.DebugMode == tru
 				{
 					// Only trace Security-channel misses; TS-RCM/TS-LSM/RdpCoreTS events are
 					// expected to never produce an AuthAttemptFact and would flood the log.
-					_logger.LogDebug(
+					_logger?.LogDebug(
 						"AuthAttemptFactUpserter DROP: EventId={EventId} Channel={Channel} is on the Security channel but is not in the authoritative outcome carrier list (4624/4625/4648/4768/4769/4771/4776/4825). No AuthAttemptFact row created.",
 						e.EventId, e.Channel);
 				}
@@ -140,7 +145,7 @@ private bool DebugEnabled => _options?.CurrentValue.Diagnostics.DebugMode == tru
 
 				if (debugEnabled)
 				{
-					_logger.LogDebug(
+					_logger?.LogDebug(
 						"AuthAttemptFactUpserter DROP: EventId={EventId} Channel={Channel} is authoritative but ClassifyOutcome returned Unknown — check that ClassifyOutcome and IsAuthoritativeAuthEvent stay in sync.",
 						e.EventId, e.Channel);
 				}
@@ -179,7 +184,7 @@ private bool DebugEnabled => _options?.CurrentValue.Diagnostics.DebugMode == tru
 
 		if (debugEnabled)
 		{
-			_logger.LogDebug(
+			_logger?.LogDebug(
 				"AuthAttemptFactUpserter.ApplyAsync BATCH SUMMARY: total={Total} createdFacts={Created} (failed={Failed}, succeeded={Succeeded}) notAuthoritative={NotAuthoritative} unknownOutcome={UnknownOutcome} needsCorrelation={NeedsCorrelation}",
 				entities.Count, created.Count, failedCount, succeededCount, notAuthoritative, unknownOutcome, needsCorrelationCount);
 		}
@@ -209,9 +214,7 @@ private bool DebugEnabled => _options?.CurrentValue.Diagnostics.DebugMode == tru
 		// v1.2.1: re-run normalisation defensively. RawEvent.SourceIp is normally already
 		// canonical (PerEventIpResolver runs IpNormalizer), but AuthAttemptFact rows are the
 		// single source of truth that Attack-Statistics / RDP-Clients aggregates derive from —
-		// if a punctuation-wrapped value ever slips through (legacy rows, SessionCorrelationCache
-		// seed paths, tests that pre-date the normalizer), reject it here rather than persist it
-		// into the aggregate join key.
+		// reject a punctuation-wrapped value here rather than persist it into the join key.
 		string? ip = IpNormalizer.Normalize(e.SourceIp);
 		bool ipFromCorrelation = e.SourceIpDerived;
 		string enrichmentSource = e.SourceIpDerived ? "LogonIdChain" : "DirectXml";
@@ -236,7 +239,7 @@ private bool DebugEnabled => _options?.CurrentValue.Diagnostics.DebugMode == tru
 
 				if (debugEnabled)
 				{
-					_logger.LogDebug(
+					_logger?.LogDebug(
 						"AuthAttemptFactUpserter TRANSPORT-IP MATCH: EventId={EventId} at {TimeUtc} resolved to Ip={Ip} via {Source} (UniqueHighConfidence)",
 						e.EventId, e.TimeUtc, ip, enrichmentSource);
 				}
@@ -251,7 +254,7 @@ private bool DebugEnabled => _options?.CurrentValue.Diagnostics.DebugMode == tru
 
 				if (debugEnabled)
 				{
-					_logger.LogDebug(
+					_logger?.LogDebug(
 						"AuthAttemptFactUpserter TRANSPORT-IP AMBIGUOUS: EventId={EventId} at {TimeUtc} matched Ip={Ip} with AmbiguousMediumConfidence — multiple transport candidates in window, flagged NeedsCorrelation=true",
 						e.EventId, e.TimeUtc, ip);
 				}
@@ -263,7 +266,7 @@ private bool DebugEnabled => _options?.CurrentValue.Diagnostics.DebugMode == tru
 
 				if (debugEnabled)
 				{
-					_logger.LogDebug(
+					_logger?.LogDebug(
 						"AuthAttemptFactUpserter TRANSPORT-IP MISS: EventId={EventId} at {TimeUtc} has no direct IP and RdpTransportIpCache found no candidate within the correlation window. Fact will be persisted with SourceIp=null and NeedsCorrelation=true — verify TS-RCM 261 / RdpCoreTS 131 watchers are armed and forwarding events for this time window.",
 						e.EventId, e.TimeUtc);
 				}
@@ -300,7 +303,7 @@ private bool DebugEnabled => _options?.CurrentValue.Diagnostics.DebugMode == tru
 
 		if (debugEnabled)
 		{
-			_logger.LogDebug(
+			_logger?.LogDebug(
 				"AuthAttemptFactUpserter BUILD: EventId={EventId} Outcome={Outcome} Ip={Ip} IpFromCorrelation={IpFromCorrelation} EnrichmentSource={EnrichmentSource} EnrichmentConfidence={EnrichmentConfidence} NeedsCorrelation={NeedsCorrelation} User={User}",
 				e.EventId, outcome, ip, ipFromCorrelation, enrichmentSource, enrichmentConfidence, needsCorrelation, normalizedUser);
 		}
@@ -318,26 +321,14 @@ private bool DebugEnabled => _options?.CurrentValue.Diagnostics.DebugMode == tru
 
 		return e.EventId switch
 		{
-			// LSA: most authoritative.
 			4624 => AuthAttemptOutcome.Succeeded,
 			4625 => AuthAttemptOutcome.Failed,
-
-			// Explicit credential use: success when the OS records the row (no failure variant).
 			4648 => AuthAttemptOutcome.Succeeded,
-
-			// Kerberos pre-auth failed (4771) — failure with IpAddress.
 			4771 => AuthAttemptOutcome.Failed,
-
-			// NTLM credential validation — Status field encodes success vs failure.
 			4776 => IsZeroStatus(e.Status) ? AuthAttemptOutcome.Succeeded : AuthAttemptOutcome.Failed,
-
-			// Kerberos TGT / service ticket — successes.
 			4768 => AuthAttemptOutcome.Succeeded,
 			4769 => AuthAttemptOutcome.Succeeded,
-
-			// RDP access denied — authorization failure, distinct from credential failure.
 			4825 => AuthAttemptOutcome.Denied,
-
 			_ => AuthAttemptOutcome.Unknown,
 		};
 	}
@@ -401,18 +392,12 @@ private bool DebugEnabled => _options?.CurrentValue.Diagnostics.DebugMode == tru
 
 	private static bool IsZeroStatus(string? status)
 	{
-		// NtStatusFormatter handles hex (0x0 / 0x00000000), signed decimal (0 / -0), and
-		// unsigned decimal (0). Blank/null is treated as "no failure indicator" — equivalent
-		// to a zero status — so 4776 events without an explicit Status field are classified as
-		// Succeeded (matches Windows semantics: present-but-zero == success).
+		// Blank/null is treated as "no failure indicator" — equivalent to a zero status — so
+		// 4776 events without an explicit Status field are classified as Succeeded (matches
+		// Windows semantics: present-but-zero == success).
 		return NtStatusFormatter.IsZero(status);
 	}
 
-	/// <summary>Extract the SubStatus field from the normalized Details JSON if EventNormalizer
-	/// captured it there. EventNormalizer surfaces every EventData/Data child into the JSON map
-	/// and canonicalizes NTSTATUS-bearing fields to 0xXXXXXXXX; re-canonicalize here as a
-	/// defensive belt-and-braces against pre-Stage-3 rows whose Details still carry the raw
-	/// signed-decimal form Windows wrote.</summary>
 	private static string? ExtractSubStatus(RawEvent e)
 	{
 		string? raw = ExtractDetailsField(e.Details, "SubStatus");
