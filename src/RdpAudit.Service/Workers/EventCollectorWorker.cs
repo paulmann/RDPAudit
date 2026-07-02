@@ -169,7 +169,18 @@ public sealed class EventCollectorWorker : BackgroundService
 	public override async Task StopAsync(CancellationToken cancellationToken)
 	{
 		_shuttingDown = true;
-		_shutdownCts?.Cancel();
+		try
+		{
+			_shutdownCts?.Cancel();
+		}
+		catch (ObjectDisposedException)
+		{
+			// ExecuteAsync's own finally block already disposed _shutdownCts because the collector
+			// loop had already exited on its own (e.g. the watcher-fault path) before the host called
+			// StopAsync. Cancelling a disposed CTS used to throw here and escape as an unhandled
+			// AppDomain exception, killing the whole process mid-shutdown -- swallow it, the loop is
+			// already stopped so there is nothing left to cancel.
+		}
 		await base.StopAsync(cancellationToken).ConfigureAwait(false);
 	}
 
