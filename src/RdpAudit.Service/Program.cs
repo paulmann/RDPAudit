@@ -1,9 +1,14 @@
 /* Project: RDPAudit 2.0 | Author: Mikhail Deynekin | Site: Deynekin.com | Email: Mikhail@Deynekin.com */
-// Version: 2.0.0
+// Version: 2.0.1
 // File   : Program.cs
 // Project: RdpAudit.Service (RdpAudit.Service)
 // Purpose: Process entry point — configures host, DI, logging, and ordered worker registrations,
 //          and sequences startup so schema migrations complete before any DB-backed diagnostics run.
+//          v2.0.1: CrashGuard has no RecordFatal member (CS1061 on build) — reverted the host-level
+//          fatal-fault handler to Serilog.Log.Fatal, which is guaranteed available since Serilog is
+//          already the global logging pipeline configured by ConfigureSerilog below. This is a
+//          host-lifecycle fault (StartAsync/WaitForShutdownAsync threw), distinct from a per-worker
+//          fault that CrashGuard's installed handlers already catch.
 // Depends: HostApplicationBuilder, AuditDbInitializer, DatabaseInitializationWorker, CrashGuard,
 //          Serilog, IOptionsMonitor<RdpAuditOptions>, TimedHostedService
 // Extends: Register a new worker via AddTimedHostedService in the ordered block inside
@@ -127,9 +132,14 @@ public static class Program
 		}
 		catch (Exception ex)
 		{
-			// Last-resort: the host itself failed to start or shut down cleanly. CrashGuard's file /
-			// Event Log sinks are already installed, so record and surface a non-zero exit code to SCM.
-			crashGuard.RecordFatal("HostStartup", ex);
+			// Last-resort: the host itself failed to start or shut down cleanly. This is a
+			// host-lifecycle fault (StartAsync / WaitForShutdownAsync threw before or outside any
+			// individual worker's own exception handling), distinct from the per-worker faults
+			// CrashGuard.Install() already intercepts. CrashGuard exposes no RecordFatal member, so
+			// log directly via Serilog.Log — the global logging pipeline is already fully configured
+			// at this point (file sink + Windows Event Log sink from ConfigureSerilog), guaranteeing
+			// this fault is captured even if the DB-backed OperationLog path is unavailable.
+			Log.Fatal(ex, "Host failed to start or shut down cleanly");
 			return 1;
 		}
 
