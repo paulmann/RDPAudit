@@ -1,5 +1,7 @@
-// File:    src/RdpAudit.Service/Workers/AttackStatsRefreshWorker.cs
-// Module:  RdpAudit.Service.Workers
+/* Project: RDPAudit 2.0 | Author: Mikhail Deynekin | Site: Deynekin.com | Email: Mikhail@Deynekin.com */
+// Version: 1.4.0
+// File   : AttackStatsRefreshWorker.cs
+// Project: RdpAudit.Service (RdpAudit.Service.Workers)
 // Purpose: Stage 6 background worker that materialises per-IP AttackStat rows from AuthAttemptFacts +
 //          ActiveBlocks on a 60-second cadence (and once at startup). Honours CancellationToken,
 //          guards against concurrent re-entry, and bounds each pass by a fixed look-back window so
@@ -13,9 +15,18 @@
 //          also exposes a full-rebuild mode used by the DEBUG "Rebuild RDP Activity statistics" IPC
 //          action: it pages through every in-window fact (no MaxRawEventsPerPass truncation) so a
 //          single manual rebuild always re-derives current-day LastSeenUtc from current facts.
-// Extends: Microsoft.Extensions.Hosting.BackgroundService
-// Author:  Mikhail Deynekin
-// Site:    https://Deynekin.com
+//
+//          v1.4.0 fix (empty RDP Activity, "Stats worker last run = never"): ExecuteAsync now yields
+//          (await Task.Yield()) before the startup refresh so BackgroundService.StartAsync returns to
+//          the Generic Host immediately — the startup pass no longer runs inline on the host-start
+//          thread, so this worker (and every worker registered after it) can no longer be starved by
+//          a slow first projection. The re-entrancy skip path is now observable: skipped passes are
+//          logged distinctly and never masquerade as a successful "0 rows" pass, and the periodic loop
+//          honours WasSkipped so a held gate is reported as such rather than as an empty projection.
+// Depends: IDbContextFactory<AuditDbContext>, AttackStatsAggregator, ServiceMetrics, IpNormalizer
+// Extends: Microsoft.Extensions.Hosting.BackgroundService — add a new projection input by extending
+//          the sample-building loop in RunRefreshAsync, keeping AuthAttemptFact as the sole counter
+//          source of truth (v3 §6.3 rule 3).
 
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Hosting;
@@ -29,6 +40,8 @@ namespace RdpAudit.Service.Workers;
 /// <summary>Stage 6 background worker that materialises per-IP <see cref="AttackStat"/> rows.</summary>
 public sealed class AttackStatsRefreshWorker : BackgroundService
 {
+	// ── Fields & DI ──────────────────────────────────────────────────────────────
+
 	/// <summary>Refresh cadence. Operator-facing dashboards happily tolerate 60-second lag.</summary>
 	internal static readonly TimeSpan Period = TimeSpan.FromSeconds(60);
 
@@ -48,43 +61,67 @@ public sealed class AttackStatsRefreshWorker : BackgroundService
 	private readonly ILogger<AttackStatsRefreshWorker> _logger;
 	private readonly ServiceMetrics? _metrics;
 	private readonly SemaphoreSlim _gate = new(1, 1);
+	private int _disposed;
+
+	// ── Construction ─────────────────────────────────────────────────────────────
 
 	public AttackStatsRefreshWorker(
 		IDbContextFactory<AuditDbContext> factory,
 		ILogger<AttackStatsRefreshWorker> logger,
 		ServiceMetrics? metrics = null)
 	{
-		_factory = factory;
-		_logger = logger;
+		_factory = factory ?? throw new ArgumentNullException(nameof(factory));
+		_logger = logger ?? throw new ArgumentNullException(nameof(logger));
 		_metrics = metrics;
 	}
+
+	// ── Public API ───────────────────────────────────────────────────────────────
 
 	protected override async Task ExecuteAsync(CancellationToken stoppingToken)
 	{
 		_logger.LogInformation("{Worker} starting", nameof(AttackStatsRefreshWorker));
 		_metrics?.SetStatsWorkerEnabled(true);
+
+		// CRITICAL: yield before the startup refresh so BackgroundService.StartAsync returns control
+		// to the Generic Host synchronously. Otherwise the first projection pass (CreateDbContext +
+		// several sequential EF queries over a 30-day window) runs inline on the host-start thread and
+		// can stall the ordered startup chain — the exact failure behind an empty AttackStats table
+		// with "Stats worker last run = never" while Live Events was healthy.
+		await Task.Yield();
+
 		try
 		{
 			// Startup refresh: kick the first pass without waiting for the cadence.
 			await SafeRefreshAsync(stoppingToken).ConfigureAwait(false);
 
-			while (!stoppingToken.IsCancellationRequested)
+			using PeriodicTimer timer = new(Period);
+			while (await WaitForNextTickAsync(timer, stoppingToken).ConfigureAwait(false))
 			{
-				try
-				{
-					await Task.Delay(Period, stoppingToken).ConfigureAwait(false);
-				}
-				catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
-				{
-					break;
-				}
-
 				await SafeRefreshAsync(stoppingToken).ConfigureAwait(false);
 			}
 		}
+		catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+		{
+			// Service shutdown — quiet return.
+		}
 		finally
 		{
+			_metrics?.SetStatsWorkerEnabled(false);
 			_logger.LogInformation("{Worker} stopped", nameof(AttackStatsRefreshWorker));
+		}
+	}
+
+	/// <summary>Awaits the next timer tick, translating a shutdown cancellation into a clean
+	/// loop-exit (<see langword="false"/>) instead of a propagated exception.</summary>
+	private static async Task<bool> WaitForNextTickAsync(PeriodicTimer timer, CancellationToken ct)
+	{
+		try
+		{
+			return await timer.WaitForNextTickAsync(ct).ConfigureAwait(false);
+		}
+		catch (OperationCanceledException) when (ct.IsCancellationRequested)
+		{
+			return false;
 		}
 	}
 
@@ -98,7 +135,14 @@ public sealed class AttackStatsRefreshWorker : BackgroundService
 	{
 		if (!await _gate.WaitAsync(0, ct).ConfigureAwait(false))
 		{
-			_logger.LogDebug("{Worker} refresh skipped: previous pass still running", nameof(AttackStatsRefreshWorker));
+			_logger.LogInformation(
+				"{Worker} refresh skipped: previous pass still running (fullRebuild={FullRebuild})",
+				nameof(AttackStatsRefreshWorker),
+				fullRebuild);
+
+			// Surface the skip in diagnostics so a held gate is distinguishable from a worker that
+			// never ran — without this, a permanently-stuck pass would look identical to "never ran".
+			_metrics?.RecordStatsWorkerSkipped(DateTime.UtcNow);
 			return AttackStatsRefreshResult.Skipped;
 		}
 
@@ -132,12 +176,29 @@ public sealed class AttackStatsRefreshWorker : BackgroundService
 		return result.RowsUpserted;
 	}
 
+	// ── Core Logic ───────────────────────────────────────────────────────────────
+
 	private async Task SafeRefreshAsync(CancellationToken ct)
 	{
 		try
 		{
 			AttackStatsRefreshResult result = await RefreshOnceDetailedAsync(false, ct).ConfigureAwait(false);
-			_logger.LogDebug("{Worker} pass complete, rows materialised: {Rows}", nameof(AttackStatsRefreshWorker), result.RowsUpserted);
+
+			if (result.WasSkipped)
+			{
+				_logger.LogDebug(
+					"{Worker} pass skipped (re-entrancy gate held)",
+					nameof(AttackStatsRefreshWorker));
+				return;
+			}
+
+			_logger.LogDebug(
+				"{Worker} pass complete, rows materialised: {Rows} (before={Before} after={After} latestFact={LatestFact})",
+				nameof(AttackStatsRefreshWorker),
+				result.RowsUpserted,
+				result.RowsBefore,
+				result.RowsAfter,
+				result.LatestSourceFactUtc);
 		}
 		catch (OperationCanceledException) when (ct.IsCancellationRequested)
 		{
@@ -357,9 +418,15 @@ public sealed class AttackStatsRefreshWorker : BackgroundService
 		};
 	}
 
+	// ── Disposal & Pool Returns ──────────────────────────────────────────────────
+
 	public override void Dispose()
 	{
-		_gate.Dispose();
+		if (Interlocked.Exchange(ref _disposed, 1) == 0)
+		{
+			_gate.Dispose();
+		}
+
 		base.Dispose();
 	}
 }
