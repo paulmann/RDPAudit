@@ -50,9 +50,9 @@ function Write-BuildInfoManifest {
         sourceRevision  = $resolvedRevision
         publishedUtc    = (Get-Date).ToUniversalTime().ToString("o")
         components      = @{
-            Service      = "1.6.0"
-            Configurator = "1.6.0"
-            Mikrotik     = "1.6.0"
+            Service      = $Version
+            Configurator = $Version
+            Mikrotik     = $Version
         }
         features        = @{
             lockFreeRingBuffer   = $true
@@ -484,64 +484,70 @@ function Remove-PublishOutput {
 # -----------------------------------------------------------------------------
 # Pre-flight validation
 # -----------------------------------------------------------------------------
-# Validates that critical build prerequisites for RDPAudit 2.0 (Lock-Free Ring Buffer)
-# are in place before attempting publish. Fails fast with actionable diagnostics.
 function Test-PublishPrerequisites {
-    $failures = New-Object 'System.Collections.Generic.List[string]'
+	$failures = New-Object 'System.Collections.Generic.List[string]'
 
-    # 1. Verify AllowUnsafeBlocks is enabled in Service project (required for NativeMemory/pointers)
-    $serviceCsproj = Join-Path $PSScriptRoot "src/RdpAudit.Service/RdpAudit.Service.csproj"
-    if (Test-Path $serviceCsproj) {
-        $content = Get-Content $serviceCsproj -Raw -Encoding UTF8
-        if ($content -notmatch '<AllowUnsafeBlocks>\s*true\s*</AllowUnsafeBlocks>') {
-            $failures.Add("RdpAudit.Service.csproj is missing <AllowUnsafeBlocks>true</AllowUnsafeBlocks>. " +
-                          "This is REQUIRED for the Lock-Free Ring Buffer (NativeMemory, unsafe blocks, pointers). " +
-                          "Add it inside the first <PropertyGroup>.")
-        }
-    } else {
-        $failures.Add("Service project not found at '$serviceCsproj'.")
-    }
+	# 1. Verify AllowUnsafeBlocks is enabled (required for NativeMemory/pointers in ring buffer)
+	$serviceCsproj = Join-Path $PSScriptRoot 'src/RdpAudit.Service/RdpAudit.Service.csproj'
+	if (Test-Path $serviceCsproj) {
+		$content = Get-Content $serviceCsproj -Raw -Encoding UTF8
+		if ($content -notmatch '<AllowUnsafeBlocks>\s*true\s*</AllowUnsafeBlocks>') {
+			$failures.Add(
+				'RdpAudit.Service.csproj is missing <AllowUnsafeBlocks>true</AllowUnsafeBlocks>. ' +
+				'Required for Lock-Free Ring Buffer (NativeMemory, unsafe pointers). ' +
+				'Add it inside the first <PropertyGroup>.'
+			) | Out-Null
+		}
+	} else {
+		$failures.Add("Service project not found at '$serviceCsproj'.") | Out-Null
+	}
 
-    # 2. Verify .NET SDK version is 8.0+
-    try {
-        $sdkVersion = (& dotnet --version 2>$null).Trim()
-        if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($sdkVersion)) {
-            $failures.Add("dotnet SDK not found on PATH.")
-        } else {
-            $parts = $sdkVersion -split '\.'
-            $major = [int]$parts[0]
-            if ($major -lt 8) {
-                $failures.Add("RDPAudit 2.0 requires .NET SDK 8.0 or later. Found: $sdkVersion")
-            }
-        }
-    } catch {
-        $failures.Add("Could not determine .NET SDK version: " + $_.Exception.Message)
-    }
+	# 2. Verify .NET SDK 8.0+
+	try {
+		$sdkRaw = & dotnet --version 2>$null
+		if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($sdkRaw)) {
+			$failures.Add('dotnet SDK not found on PATH.') | Out-Null
+		} else {
+			$sdkVersion = $sdkRaw.Trim()
+			$parts      = $sdkVersion -split '\.'
+			$major      = [int]$parts[0]
+			if ($major -lt 8) {
+				$failures.Add("RDPAudit 2.0 requires .NET SDK 8.0+. Found: $sdkVersion") | Out-Null
+			}
+		}
+	} catch {
+		$failures.Add('Could not determine .NET SDK version: ' + $_.Exception.Message) | Out-Null
+	}
 
-    # 3. Verify Directory.Build.props has matching VersionPrefix
-    $dbp = Join-Path $PSScriptRoot "Directory.Build.props"
-    if (Test-Path $dbp) {
-        $dbpContent = Get-Content $dbp -Raw -Encoding UTF8
-        if ($dbpContent -match '<VersionPrefix[^>]*>\s*([^<]+?)\s*</VersionPrefix>') {
-            $dbpVersion = $Matches[1]
-            if ($dbpVersion -ne $Version) {
-                Write-Host ("Warning: publish.ps1 Version='$Version' differs from Directory.Build.props VersionPrefix='$dbpVersion'. " +
-                            "The -p:VersionPrefix override will win, but consider syncing them.") -ForegroundColor Yellow
-            }
-        }
-    }
+	# 3. Warn if publish.ps1 $Version drifts from Directory.Build.props VersionPrefix
+	$dbp = Join-Path $PSScriptRoot 'Directory.Build.props'
+	if (Test-Path $dbp) {
+		$dbpContent = Get-Content $dbp -Raw -Encoding UTF8
+		$m = [regex]::Match($dbpContent, '<VersionPrefix[^>]*>\s*([^<]+?)\s*</VersionPrefix>')
+		if ($m.Success) {
+			$dbpVersion = $m.Groups[1].Value.Trim()
+			if ($dbpVersion -ne $Version) {
+				Write-Host (
+					"Warning: publish.ps1 -Version '$Version' differs from " +
+					"Directory.Build.props VersionPrefix '$dbpVersion'. " +
+					"The -p:VersionPrefix override will win; consider syncing them."
+				) -ForegroundColor Yellow
+			}
+		}
+	}
 
-    if ($failures.Count -gt 0) {
-        $sb = [System.Text.StringBuilder]::new()
-        [void]$sb.AppendLine("Pre-flight validation failed ($($failures.Count) issue(s)):")
-        foreach ($f in $failures) {
-            [void]$sb.AppendLine("  ✗ $f")
-        }
-        throw $sb.ToString().TrimEnd()
-    }
+	if ($failures.Count -gt 0) {
+		$sb = [System.Text.StringBuilder]::new()
+		[void]$sb.AppendLine("Pre-flight validation failed ($($failures.Count) issue(s)):")
+		foreach ($f in $failures) {
+			[void]$sb.AppendLine("  x $f")
+		}
+		throw $sb.ToString().TrimEnd()
+	}
 
-    Write-Host "✓ Pre-flight validation passed (unsafe blocks enabled, SDK 8.0+, versions aligned)" -ForegroundColor Green
+	Write-Host 'Pre-flight validation passed (unsafe blocks enabled, SDK 8.0+, versions aligned).' -ForegroundColor Green
 }
+
 
 # -----------------------------------------------------------------------------
 # Publish
@@ -653,40 +659,45 @@ function Resolve-SqliteBundleSource {
 # -----------------------------------------------------------------------------
 # Documentation copy
 # -----------------------------------------------------------------------------
+
 function Copy-PublishDocumentation {
-    $docsSource = Join-Path $PSScriptRoot "docs"
-    $docsTarget = Join-Path $publishRoot "Docs"
+	$docsSource = Join-Path $PSScriptRoot 'docs'
+	$docsTarget = Join-Path $publishRoot  'Docs'
 
-    if (-not (Test-Path $docsSource)) {
-        Write-Diag "No docs/ folder found; skipping documentation copy."
-        return
-    }
+	if (-not (Test-Path $docsSource)) {
+		Write-Diag 'No docs/ folder found; skipping documentation copy.'
+		return
+	}
 
-    if (-not (Test-Path $docsTarget)) {
-        New-Item -ItemType Directory -Path $docsTarget | Out-Null
-    }
+	if (-not (Test-Path $docsTarget)) {
+		New-Item -ItemType Directory -Path $docsTarget | Out-Null
+	}
 
-    $copied = 0
-    foreach ($file in (Get-ChildItem -Path $docsSource -File -Filter "*.md" -ErrorAction SilentlyContinue)) {
-        Copy-Item -Path $file.FullName -Destination $docsTarget -Force
-        $copied++
-        Write-Diag ("Copied doc: " + $file.Name)
-    }
+	$copied = 0
 
-    # Also copy README.md and Detect_Attack_Strategy docs if present
-    $extras = @("README.md", "Detect_Attack_Strategy_v3.md")
-    foreach ($name in $extras) {
-        $path = Join-Path $PSScriptRoot $name
-        if (Test-Path $path) {
-            Copy-Item -Path $path -Destination $docsTarget -Force
-            $copied++
-        }
-    }
+	foreach ($file in @(Get-ChildItem -Path $docsSource -File -Filter '*.md' -ErrorAction SilentlyContinue)) {
+		Copy-Item -Path $file.FullName -Destination $docsTarget -Force
+		$copied++
+		Write-Diag ("Copied doc: " + $file.Name)
+	}
 
-    if ($copied -gt 0) {
-        Write-Host "✓ Copied $copied documentation file(s) to $docsTarget" -ForegroundColor Green
-    }
+	# Copy root-level extras when present
+	foreach ($name in @('README.md', 'Detect_Attack_Strategy_v3.md')) {
+		$path = Join-Path $PSScriptRoot $name
+		if (Test-Path $path) {
+			Copy-Item -Path $path -Destination $docsTarget -Force
+			$copied++
+			Write-Diag ("Copied root doc: $name")
+		}
+	}
+
+	if ($copied -gt 0) {
+		Write-Host ("Copied $copied documentation file(s) to $docsTarget") -ForegroundColor Green
+	} else {
+		Write-Diag 'No documentation files found to copy.'
+	}
 }
+
 
 # Copies the SQLite support files into $TargetDir, resolving each from $SourceDir (the loose
 # build output). The native e_sqlite3.dll can land either in the RID root or under
@@ -739,9 +750,11 @@ function Copy-SqliteSupportFiles {
 	return $copied
 }
 
-# Top-level orchestration for the bundle: resolves a loose-file source, copies the required
-# files next to the published Configurator, then verifies the target now holds every file.
-function Ensure-SqliteSupportBundle {
+# -----------------------------------------------------------------------------
+# SQLite support bundle — top-level orchestration
+# Renamed from Ensure-SqliteSupportBundle (unapproved verb) to Invoke-SqliteSupportBundle
+# -----------------------------------------------------------------------------
+function Invoke-SqliteSupportBundle {
 	param(
 		[Parameter(Mandatory = $true)][string]$ConfiguratorPublishDir,
 		[Parameter(Mandatory = $true)][string]$Version
@@ -749,29 +762,38 @@ function Ensure-SqliteSupportBundle {
 
 	Write-Host "Ensuring SQLite diagnostic support bundle in $ConfiguratorPublishDir" -ForegroundColor Cyan
 
-	$source = Resolve-SqliteBundleSource -Project "src/RdpAudit.Configurator/RdpAudit.Configurator.csproj" -Version $Version
+	$source = Resolve-SqliteBundleSource `
+		-Project 'src/RdpAudit.Configurator/RdpAudit.Configurator.csproj' `
+		-Version $Version
+
 	$copied = Copy-SqliteSupportFiles -SourceDir $source -TargetDir $ConfiguratorPublishDir
 
-	# Post-condition verification: re-check the TARGET directly so a silently failed copy is caught.
+	# Post-condition: re-verify TARGET so a silently failed copy is caught immediately
 	$stillMissing = New-Object 'System.Collections.Generic.List[string]'
 	foreach ($name in $script:SqliteSupportFiles) {
 		if (-not (Test-Path (Join-Path $ConfiguratorPublishDir $name))) {
 			$stillMissing.Add($name) | Out-Null
 		}
 	}
+
 	if ($stillMissing.Count -gt 0) {
-		throw ("SQLite support bundle verification failed after copy: {0} file(s) still missing in '{1}': {2}." -f `
-			$stillMissing.Count, $ConfiguratorPublishDir, ($stillMissing -join ", "))
+		throw (
+			"SQLite support bundle verification failed after copy: " +
+			"$($stillMissing.Count) file(s) still missing in '$ConfiguratorPublishDir': " +
+			($stillMissing -join ', ') + '.'
+		)
 	}
 
-	# Clean up the transient loose-build output so it does not ship in the publish tree.
-	$bundleObjDir = Join-Path $PSScriptRoot "publish/.sqlite-bundle"
+	# Clean up transient loose-build output — must not ship in the publish tree
+	$bundleObjDir = Join-Path $PSScriptRoot 'publish/.sqlite-bundle'
 	if (Test-Path $bundleObjDir) {
 		Remove-Item -Recurse -Force $bundleObjDir -ErrorAction SilentlyContinue
 	}
 
-	Write-Host ("SQLite support bundle complete: {0}/{1} file(s) present next to the Configurator." -f `
-		$copied.Count, $script:SqliteSupportFiles.Count) -ForegroundColor Green
+	Write-Host (
+		"SQLite support bundle complete: $($copied.Count)/$($script:SqliteSupportFiles.Count) " +
+		"file(s) present next to the Configurator."
+	) -ForegroundColor Green
 }
 
 # -----------------------------------------------------------------------------
@@ -1044,7 +1066,7 @@ if ($IncludeBenchmarks) {                    # NEW: optional benchmarks
     }
 }
 
-Ensure-SqliteSupportBundle -ConfiguratorPublishDir (Join-Path $publishRoot "Configurator") -Version $Version
+Invoke-SqliteSupportBundle -ConfiguratorPublishDir (Join-Path $publishRoot 'Configurator') -Version $Version
 
 Copy-PublishDocumentation                    # NEW: docs/ → publish/Docs
 Write-BuildInfoManifest                      # NEW: build-info.json
