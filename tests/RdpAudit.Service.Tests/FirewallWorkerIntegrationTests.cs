@@ -258,8 +258,15 @@ public class FirewallWorkerIntegrationTests
 		}
 	}
 
+	/// <summary>
+	/// When the firewall provider returns a non-Success status (Unavailable, Failed, etc.),
+	/// NO ActiveBlock or BlocklistEntry row must be written to the database.
+	/// The provider call IS made (BlockCalls must be non-empty), but because the OS rule
+	/// was never installed the worker must not leave ghost rows that the UI would display
+	/// as 'blocked'. This is the corrected behavior introduced in Bug Fix #1 (commit 623dadb).
+	/// </summary>
 	[Fact]
-	public async Task AutoBlockWorker_ProviderError_FlagsActiveBlockFailed()
+	public async Task AutoBlockWorker_ProviderError_WritesNoActiveBlockRow()
 	{
 		(IDbContextFactory<AuditDbContext> factory, SqliteConnection conn) = await CreateDbAsync();
 		try
@@ -286,10 +293,16 @@ public class FirewallWorkerIntegrationTests
 
 			await InvokeProcessBatchAsync(worker);
 
+			// Provider was called once (the attempt was made).
+			Assert.Single(provider.BlockCalls);
+
 			await using AuditDbContext db = factory.CreateDbContext();
-			ActiveBlock active = Assert.Single(await db.ActiveBlocks.ToListAsync());
-			Assert.Equal(ActiveBlockStatus.Failed, active.Status);
-			Assert.NotNull(active.LastError);
+
+			// No ghost ActiveBlock row: the OS rule was never installed so the DB must be empty.
+			Assert.Empty(await db.ActiveBlocks.ToListAsync());
+
+			// No ghost BlocklistEntry row: IP must not appear as 'blocked' in the UI.
+			Assert.Empty(await db.BlocklistEntries.ToListAsync());
 		}
 		finally
 		{
@@ -411,8 +424,6 @@ public class FirewallWorkerIntegrationTests
 
 	private static async Task InvokeProcessBatchAsync(FirewallAutoBlockWorker worker)
 	{
-		// Use reflection-free path: cancel before ExecuteAsync would loop forever by invoking
-		// the internal ProcessBatchAsync method via the InternalsVisibleTo channel.
 		var method = typeof(FirewallAutoBlockWorker)
 			.GetMethod("ProcessBatchAsync", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
 		Assert.NotNull(method);
