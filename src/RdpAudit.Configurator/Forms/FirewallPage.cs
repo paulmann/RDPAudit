@@ -9,7 +9,7 @@
 // Extends: System.Windows.Forms.TabPage
 // Author:  Mikhail Deynekin
 // Site:    https://Deynekin.com
-// Version: 1.4.1
+// Version: 1.4.2
 
 using System.ComponentModel;
 using System.Globalization;
@@ -1455,7 +1455,7 @@ public sealed class FirewallPage : TabPage
 
 		System.Text.StringBuilder sb = new();
 		sb.Append("Operation: ").Append(operation).Append(Environment.NewLine);
-		sb.Append("Selected Id: ").Append(selectedId.ToString(CultureInfo.InvariantCulture)).Append(Environment.NewLine);
+		sb.Append("Selected Id: ").Append(selectedId).Append(Environment.NewLine);
 		sb.Append("IP: ").Append(ip).Append(Environment.NewLine);
 		sb.Append("UTC: ").Append(DateTime.UtcNow.ToString("O", CultureInfo.InvariantCulture)).Append(Environment.NewLine);
 		if (!string.IsNullOrEmpty(error))
@@ -1693,7 +1693,8 @@ public sealed class FirewallPage : TabPage
 			return;
 		}
 
-		bool unblockOk = true;
+		bool unblockOk = false;
+		bool askedToUnblock = false;
 		if (wlOk)
 		{
 			DialogResult choice = MessageBox.Show(
@@ -1705,6 +1706,7 @@ public sealed class FirewallPage : TabPage
 				MessageBoxDefaultButton.Button1);
 			if (choice == DialogResult.Yes)
 			{
+				askedToUnblock = true;
 				try
 				{
 					bool? legacy = await _ipc.SendAsync<bool?>(IpcCommand.UnblockAddress, ip).ConfigureAwait(true);
@@ -1718,8 +1720,9 @@ public sealed class FirewallPage : TabPage
 		}
 
 		SetStatus(string.Format(CultureInfo.InvariantCulture,
-			"AddToWhitelist {0}: whitelist={1}, unblock={2}",
-			ip, wlOk ? "OK" : "FAIL", unblockOk ? "OK" : "FAIL"));
+			"AddToWhitelist {0}: whitelist=OK{1}",
+			ip,
+			askedToUnblock ? (", unblock=" + (unblockOk ? "OK" : "FAIL")) : string.Empty));
 		if (wlOk)
 		{
 			_whitelistInput.Text = string.Empty;
@@ -2174,7 +2177,11 @@ public sealed class FirewallPage : TabPage
 			counts[dto.Address] = counts.TryGetValue(dto.Address, out int n) ? n + 1 : 1;
 		}
 
-		int dupIps = counts.Count(kv => kv.Value > 1);
+		int dupIps = 0;
+		foreach (KeyValuePair<string, int> kv in counts)
+		{
+			if (kv.Value > 1) dupIps++;
+		}
 		if (dupIps > 0)
 		{
 			SetStatus(string.Format(System.Globalization.CultureInfo.CurrentCulture,
@@ -2618,6 +2625,7 @@ public sealed class FirewallPage : TabPage
 	{
 		if (disposing)
 		{
+			_timer.Stop();
 			_timer.Dispose();
 		}
 
