@@ -1,5 +1,5 @@
 /* Project: RDPAudit 2.0 | Author: Mikhail Deynekin | Site: Deynekin.com | Email: Mikhail@Deynekin.com */
-// Version: 1.0.0
+// Version: 1.1.0
 // File   : ThirdPartyFirewallClassifierTests.cs
 // Project: RdpAudit.Service.Tests
 // Purpose: Regression suite for FirewallProviderClassifier — proves that the
@@ -16,6 +16,18 @@ namespace RdpAudit.Service.Tests;
 
 public sealed class ThirdPartyFirewallClassifierTests
 {
+	// ── Test Fixtures ─────────────────────────────────────────────────────────────
+
+	private static FirewallServiceState Service(string serviceName, string displayName, bool isRunning) =>
+		new(
+			ServiceName: serviceName,
+			DisplayName: displayName,
+			Status: isRunning ? "Running" : "Stopped",
+			IsRunning: isRunning);
+
+	private static FirewallCliToolPresence CliTool(string toolName, string fullPath, bool present) =>
+		FirewallCliToolPresence.WithFullPath(toolName, fullPath, present);
+
 	// ── Regression: exact signal set from the 2026-07-02 user diagnostic ────────
 
 	[Fact]
@@ -25,10 +37,10 @@ public sealed class ThirdPartyFirewallClassifierTests
 		// MpsSvc=Running, BFE=Running, WinDefend=Stopped, klim6=Running
 		List<FirewallServiceState> services =
 		[
-			new("MpsSvc", "Windows Defender Firewall", Running: true),
-			new("BFE", "Base Filtering Engine", Running: true),
-			new("WinDefend", "Microsoft Defender Antivirus Service", Running: false),
-			new("klim6", "Kaspersky Anti-Virus NDIS 6 Filter", Running: true),
+			Service("MpsSvc", "Windows Defender Firewall", isRunning: true),
+			Service("BFE", "Base Filtering Engine", isRunning: true),
+			Service("WinDefend", "Microsoft Defender Antivirus Service", isRunning: false),
+			Service("klim6", "Kaspersky Anti-Virus NDIS 6 Filter", isRunning: true),
 		];
 
 		// No CLI tools present (kescli / kavshell absent; avp.exe / avp.com present
@@ -52,12 +64,8 @@ public sealed class ThirdPartyFirewallClassifierTests
 		List<FirewallServiceState> noServices = [];
 		List<FirewallCliToolPresence> tools =
 		[
-			new FirewallCliToolPresence("avp.exe",
-				@"C:\Program Files (x86)\Kaspersky Lab\Kaspersky 21.25\avp.exe",
-				present: true),
-			new FirewallCliToolPresence("avp.com",
-				@"C:\Program Files (x86)\Kaspersky Lab\Kaspersky 21.25\avp.com",
-				present: true),
+			CliTool("avp.exe", @"C:\Program Files (x86)\Kaspersky Lab\Kaspersky 21.25\avp.exe", present: true),
+			CliTool("avp.com", @"C:\Program Files (x86)\Kaspersky Lab\Kaspersky 21.25\avp.com", present: true),
 		];
 
 		// Act
@@ -76,19 +84,15 @@ public sealed class ThirdPartyFirewallClassifierTests
 		// klim6 running + avp.exe present + avp.com present
 		List<FirewallServiceState> services =
 		[
-			new("MpsSvc", "Windows Defender Firewall", Running: true),
-			new("BFE", "Base Filtering Engine", Running: true),
-			new("WinDefend", "Microsoft Defender Antivirus Service", Running: false),
-			new("klim6", "Kaspersky Anti-Virus NDIS 6 Filter", Running: true),
+			Service("MpsSvc", "Windows Defender Firewall", isRunning: true),
+			Service("BFE", "Base Filtering Engine", isRunning: true),
+			Service("WinDefend", "Microsoft Defender Antivirus Service", isRunning: false),
+			Service("klim6", "Kaspersky Anti-Virus NDIS 6 Filter", isRunning: true),
 		];
 		List<FirewallCliToolPresence> tools =
 		[
-			new FirewallCliToolPresence("avp.exe",
-				@"C:\Program Files (x86)\Kaspersky Lab\Kaspersky 21.25\avp.exe",
-				present: true),
-			new FirewallCliToolPresence("avp.com",
-				@"C:\Program Files (x86)\Kaspersky Lab\Kaspersky 21.25\avp.com",
-				present: true),
+			CliTool("avp.exe", @"C:\Program Files (x86)\Kaspersky Lab\Kaspersky 21.25\avp.exe", present: true),
+			CliTool("avp.com", @"C:\Program Files (x86)\Kaspersky Lab\Kaspersky 21.25\avp.com", present: true),
 		];
 
 		// Act
@@ -97,8 +101,8 @@ public sealed class ThirdPartyFirewallClassifierTests
 
 		bool suspected =
 			kind is FirewallProviderDetectedKind.KasperskyDetected
-			     or FirewallProviderDetectedKind.KasperskyManagedWindowsFirewall
-			     or FirewallProviderDetectedKind.ThirdPartyFirewallUnknown;
+				or FirewallProviderDetectedKind.KasperskyManagedWindowsFirewall
+				or FirewallProviderDetectedKind.ThirdPartyFirewallUnknown;
 
 		// Assert — this is the regression that was false before the fix
 		Assert.True(suspected, $"Expected ThirdPartyFirewallSuspected=true but classifier returned kind={kind}");
@@ -110,9 +114,9 @@ public sealed class ThirdPartyFirewallClassifierTests
 		// Arrange — clean Windows Defender-only machine
 		List<FirewallServiceState> services =
 		[
-			new("MpsSvc", "Windows Defender Firewall", Running: true),
-			new("BFE", "Base Filtering Engine", Running: true),
-			new("WinDefend", "Microsoft Defender Antivirus Service", Running: true),
+			Service("MpsSvc", "Windows Defender Firewall", isRunning: true),
+			Service("BFE", "Base Filtering Engine", isRunning: true),
+			Service("WinDefend", "Microsoft Defender Antivirus Service", isRunning: true),
 		];
 		List<FirewallCliToolPresence> noTools = [];
 
@@ -131,13 +135,11 @@ public sealed class ThirdPartyFirewallClassifierTests
 	{
 		List<FirewallServiceState> services =
 		[
-			new("klim6", "Kaspersky Anti-Virus NDIS 6 Filter", Running: true),
+			Service("klim6", "Kaspersky Anti-Virus NDIS 6 Filter", isRunning: true),
 		];
 		List<FirewallCliToolPresence> tools =
 		[
-			new FirewallCliToolPresence("avp.exe",
-				@"C:\Program Files (x86)\Kaspersky Lab\Kaspersky 21.25\avp.exe",
-				present: true),
+			CliTool("avp.exe", @"C:\Program Files (x86)\Kaspersky Lab\Kaspersky 21.25\avp.exe", present: true),
 		];
 
 		// Warm-up
