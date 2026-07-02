@@ -1,14 +1,25 @@
 /* Project: RDPAudit 2.0 | Author: Mikhail Deynekin | Site: Deynekin.com | Email: Mikhail@Deynekin.com */
-// Version: 2.1.0
+// Version: 2.1.4
 // File   : EventProcessorWorker.cs
 // Project: RdpAudit.Service (RdpAudit.Service.Workers)
 // Purpose: Drains the lock-free ring buffer in batches, normalises payloads, and persists to
-//          SQLite inside a single explicit transaction. v2.1.0 removes the per-idle-tick List
-//          allocation (DrainBatchAsync previously allocated a new List<RawEventDto> on every
-//          call even when the buffer was empty), switches the drain path to ValueTask, and adds
-//          DEBUG-mode structured tracing across normalization, address upsert, and the
-//          connection/auth fact upsert calls — without this, an empty RDP Activity table with a
-//          healthy Live Events feed was undiagnosable without re-instrumenting the binary.
+//          SQLite inside a single explicit transaction.
+//          v2.1.0: decomposed the monolithic persist method into UpsertAddressesAsync /
+//          ApplySessionIpCorrelationAsync steps; removed the per-idle-tick List allocation in
+//          DrainBatchAsync (previously allocated a new List<RawEventDto> on every call even when
+//          the ring buffer was empty); added DEBUG-mode structured tracing across normalization,
+//          address upsert, and fact-upsert calls so an empty RDP Activity table with a healthy
+//          Live Events feed can be diagnosed from logs alone.
+//          v2.1.3: DrainBatchAsync briefly used ValueTask<T> to silence CS1998, but reflection
+//          in EventProcessorWorkerRingBufferTests.InvokeDrainBatchAsync hard-casts the result to
+//          Task<List<RawEventDto>> — ValueTask<T> is not Task<T> and threw InvalidCastException.
+//          Reverted to Task<T>, kept the method non-async via Task.FromResult (the drain loop is
+//          fully synchronous — SpinWait + Channel.TryRead, no I/O). Constructor guard clauses
+//          also relaxed: EventProcessorWorkerRingBufferTests constructs the worker with `null!`
+//          for factory/normalizer/correlationUpserter/connectionFactUpserter/
+//          authAttemptFactUpserter/securityWatchdog/opLog while exercising only DrainBatchAsync,
+//          which never dereferences those fields; guards now cover only channel/metrics/logger/
+//          options, the fields DrainBatchAsync and the constructor itself touch unconditionally.
 // Depends: EventChannel, IDbContextFactory<AuditDbContext>, EventNormalizer,
 //          SessionIpCorrelationUpserter, RdpConnectionFactUpserter, AuthAttemptFactUpserter,
 //          SecurityCorrelationWatchdog, ServiceMetrics, IOptionsMonitor<RdpAuditOptions>
@@ -69,44 +80,43 @@ public sealed class EventProcessorWorker : BackgroundService
 
 	// ── Construction ─────────────────────────────────────────────────────────────
 
-// Version: 2.1.3
-// Fix: EventProcessorWorkerRingBufferTests constructs this worker with `null!` for factory,
-// normalizer, correlationUpserter, connectionFactUpserter, authAttemptFactUpserter, and
-// securityWatchdog — the test only exercises the private DrainBatchAsync method, which touches
-// none of those dependencies. ArgumentNullException.ThrowIfNull on those parameters broke this
-// established test pattern. Guards now cover only the dependencies DrainBatchAsync/ExecuteAsync
-// actually dereference unconditionally at construction time: channel, metrics, logger, options.
+	/// <summary>
+	/// Only <paramref name="channel"/>, <paramref name="metrics"/>, <paramref name="logger"/>,
+	/// and <paramref name="options"/> are guarded against null: these are the fields
+	/// <see cref="DrainBatchAsync"/> and the constructor itself dereference unconditionally.
+	/// The remaining dependencies are only touched inside <see cref="PersistBatchAsync"/>, which
+	/// unit tests that isolate <see cref="DrainBatchAsync"/> intentionally never invoke.
+	/// </summary>
+	public EventProcessorWorker(
+		EventChannel channel,
+		IDbContextFactory<AuditDbContext> factory,
+		EventNormalizer normalizer,
+		SessionIpCorrelationUpserter correlationUpserter,
+		RdpConnectionFactUpserter connectionFactUpserter,
+		AuthAttemptFactUpserter authAttemptFactUpserter,
+		SecurityCorrelationWatchdog securityWatchdog,
+		ServiceMetrics metrics,
+		ILogger<EventProcessorWorker> logger,
+		IOptionsMonitor<RdpAuditOptions> options,
+		IOperationLogWriter opLog)
+	{
+		ArgumentNullException.ThrowIfNull(channel);
+		ArgumentNullException.ThrowIfNull(metrics);
+		ArgumentNullException.ThrowIfNull(logger);
+		ArgumentNullException.ThrowIfNull(options);
 
-public EventProcessorWorker(
-	EventChannel channel,
-	IDbContextFactory<AuditDbContext> factory,
-	EventNormalizer normalizer,
-	SessionIpCorrelationUpserter correlationUpserter,
-	RdpConnectionFactUpserter connectionFactUpserter,
-	AuthAttemptFactUpserter authAttemptFactUpserter,
-	SecurityCorrelationWatchdog securityWatchdog,
-	ServiceMetrics metrics,
-	ILogger<EventProcessorWorker> logger,
-	IOptionsMonitor<RdpAuditOptions> options,
-	IOperationLogWriter opLog)
-{
-	ArgumentNullException.ThrowIfNull(channel);
-	ArgumentNullException.ThrowIfNull(metrics);
-	ArgumentNullException.ThrowIfNull(logger);
-	ArgumentNullException.ThrowIfNull(options);
-
-	_channel = channel;
-	_factory = factory;
-	_normalizer = normalizer;
-	_correlationUpserter = correlationUpserter;
-	_connectionFactUpserter = connectionFactUpserter;
-	_authAttemptFactUpserter = authAttemptFactUpserter;
-	_securityWatchdog = securityWatchdog;
-	_metrics = metrics;
-	_logger = logger;
-	_options = options;
-	_opLog = opLog;
-}
+		_channel = channel;
+		_factory = factory;
+		_normalizer = normalizer;
+		_correlationUpserter = correlationUpserter;
+		_connectionFactUpserter = connectionFactUpserter;
+		_authAttemptFactUpserter = authAttemptFactUpserter;
+		_securityWatchdog = securityWatchdog;
+		_metrics = metrics;
+		_logger = logger;
+		_options = options;
+		_opLog = opLog;
+	}
 
 	private bool DebugEnabled => _options.CurrentValue.Diagnostics.DebugMode;
 
@@ -201,48 +211,53 @@ public EventProcessorWorker(
 
 	// ── Core Logic ───────────────────────────────────────────────────────────────
 
-// Version: 2.1.1
-// Fix: CS1998 — method had no await inside an async body. DrainBatchAsync is fully
-// synchronous (SpinWait + TryRead), so drop the async keyword and wrap the result
-// directly with ValueTask.FromResult / new ValueTask<T>(value).
-
-private ValueTask<List<RawEventDto>?> DrainBatchAsync(CancellationToken stoppingToken)
-{
-	MonitoringOptions monitoring = _options.CurrentValue.Monitoring;
-	int max = Math.Max(1, monitoring.BatchSize);
-	TimeSpan timeout = TimeSpan.FromMilliseconds(Math.Max(50, monitoring.BatchTimeoutMilliseconds));
-
-	SpinWait spinner = default;
-	long startTimestamp = Stopwatch.GetTimestamp();
-	long timeoutTicks = (long)(timeout.TotalSeconds * Stopwatch.Frequency);
-
-	while (!stoppingToken.IsCancellationRequested)
+	/// <summary>
+	/// Drains the lock-free ring buffer up to <c>Monitoring.BatchSize</c> items or until the
+	/// batch timeout elapses. Returns <c>null</c> instead of allocating an empty
+	/// <see cref="List{T}"/> when no event arrived before the timeout — the drain loop is fully
+	/// synchronous (SpinWait + Channel.TryRead, no I/O), so the method itself is not
+	/// <c>async</c>; it returns <see cref="Task.FromResult{TResult}(TResult)"/> directly.
+	/// Kept as <see cref="Task{TResult}"/> rather than <see cref="ValueTask{TResult}"/> because
+	/// <c>EventProcessorWorkerRingBufferTests</c> invokes this method via reflection and casts
+	/// the result to <c>Task&lt;List&lt;RawEventDto&gt;&gt;</c>.
+	/// </summary>
+	private Task<List<RawEventDto>?> DrainBatchAsync(CancellationToken stoppingToken)
 	{
-		if (_channel.Channel.TryRead(out RawEventDto first))
-		{
-			_metrics.IncrementRingBufferRead();
+		MonitoringOptions monitoring = _options.CurrentValue.Monitoring;
+		int max = Math.Max(1, monitoring.BatchSize);
+		TimeSpan timeout = TimeSpan.FromMilliseconds(Math.Max(50, monitoring.BatchTimeoutMilliseconds));
 
-			List<RawEventDto> batch = new(max) { first };
-			while (batch.Count < max && _channel.Channel.TryRead(out RawEventDto next))
+		SpinWait spinner = default;
+		long startTimestamp = Stopwatch.GetTimestamp();
+		long timeoutTicks = (long)(timeout.TotalSeconds * Stopwatch.Frequency);
+
+		while (!stoppingToken.IsCancellationRequested)
+		{
+			if (_channel.Channel.TryRead(out RawEventDto first))
 			{
 				_metrics.IncrementRingBufferRead();
-				batch.Add(next);
+
+				List<RawEventDto> batch = new(max) { first };
+				while (batch.Count < max && _channel.Channel.TryRead(out RawEventDto next))
+				{
+					_metrics.IncrementRingBufferRead();
+					batch.Add(next);
+				}
+
+				return Task.FromResult<List<RawEventDto>?>(batch);
 			}
 
-			return new ValueTask<List<RawEventDto>?>(batch);
+			if (Stopwatch.GetTimestamp() - startTimestamp >= timeoutTicks)
+			{
+				return Task.FromResult<List<RawEventDto>?>(null);
+			}
+
+			spinner.SpinOnce();
 		}
 
-		if (Stopwatch.GetTimestamp() - startTimestamp >= timeoutTicks)
-		{
-			return new ValueTask<List<RawEventDto>?>(result: null);
-		}
-
-		spinner.SpinOnce();
+		stoppingToken.ThrowIfCancellationRequested();
+		return Task.FromResult<List<RawEventDto>?>(null);
 	}
-
-	stoppingToken.ThrowIfCancellationRequested();
-	return new ValueTask<List<RawEventDto>?>(result: null);
-}
 
 	private async Task PersistBatchAsync(List<RawEventDto> dtos, CancellationToken ct)
 	{
@@ -453,9 +468,6 @@ private ValueTask<List<RawEventDto>?> DrainBatchAsync(CancellationToken stopping
 			}
 			else if (entity.EventId == 4624 || entity.EventId == 4768 || entity.EventId == 4769 || entity.EventId == 4648)
 			{
-				// Cameyo rdpmon parity: 4648 (explicit credentials) counts as a successful
-				// authentication on the per-IP reputation row even though the connection-fact
-				// layer classifies 4648 as ExplicitCreds rather than a session-establishing logon.
 				addr.SuccessCount++;
 			}
 			else if (IsTsLsm21(entity) || IsTsRcm1149(entity))
@@ -527,7 +539,7 @@ private ValueTask<List<RawEventDto>?> DrainBatchAsync(CancellationToken stopping
 	// (Not applicable: this worker is the cold-path DB persistence stage per the project's
 	// Cold/Hot Database Split directive. EventCollectorWorker's ingestion callback is the
 	// zero-alloc hot path; this class is intentionally allocation-tolerant for EF/SQLite writes,
-	// with v2.1.0 only removing the one allocation that occurred even when idle.)
+	// with 2.1.0 only removing the one allocation that occurred even when idle.)
 
 	private static bool IsSecurityChannel(string? channel)
 		=> !string.IsNullOrWhiteSpace(channel)
