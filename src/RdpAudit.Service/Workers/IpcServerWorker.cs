@@ -4,7 +4,7 @@
 // Extends: Microsoft.Extensions.Hosting.BackgroundService
 // Author:  Mikhail Deynekin
 // Site:    https://Deynekin.com
-// Version: 1.6.2
+// Version: 1.6.3
 
 using System.IO;
 using System.IO.Pipes;
@@ -56,6 +56,9 @@ public sealed class IpcServerWorker : BackgroundService
 
 	protected override async Task ExecuteAsync(CancellationToken stoppingToken)
 	{
+		// Written unconditionally and before any pipe/AV interaction so ipc-startup.log always shows a
+		// worker-start breadcrumb even if the process is killed or faults before CreatePipe ever runs.
+		WriteIpcDebugLine($"[{DateTime.UtcNow:O}] {nameof(IpcServerWorker)} ExecuteAsync entered (pid={Environment.ProcessId})");
 		_logger.LogInformation("{Worker} starting", nameof(IpcServerWorker));
 		if (!OperatingSystem.IsWindows())
 		{
@@ -184,8 +187,19 @@ public sealed class IpcServerWorker : BackgroundService
 		catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
 		{
 		}
+		catch (Exception ex)
+		{
+			// A fault escaping this outer try means the accept loop is dead and the BackgroundService is
+			// about to stop silently from the host's perspective — the historic cause of "IPC Connected:
+			// no" with no trace anywhere. Always leave a breadcrumb on disk before rethrowing.
+			WriteIpcDebugLine($"[{DateTime.UtcNow:O}] {nameof(IpcServerWorker)} FATAL accept-loop exit [{ex.GetType().Name}]: {ex.Message}");
+			_logger.LogCritical(ex, "{Worker} accept loop terminated unexpectedly [{ExType}]: {ExMsg}", nameof(IpcServerWorker), ex.GetType().Name, ex.Message);
+			await TryLogOperationFaultAsync(ex, stoppingToken).ConfigureAwait(false);
+			throw;
+		}
 		finally
 		{
+			WriteIpcDebugLine($"[{DateTime.UtcNow:O}] {nameof(IpcServerWorker)} ExecuteAsync exiting");
 			_logger.LogInformation("{Worker} stopped", nameof(IpcServerWorker));
 		}
 	}
