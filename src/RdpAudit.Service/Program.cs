@@ -189,7 +189,12 @@ public static class Program
 	private static void RegisterServices(IServiceCollection services)
 	{
 		services.AddSingleton<SqlitePragmaInterceptor>();
-
+			if (OperatingSystem.IsWindows())
+			{
+				services.AddSingleton<IThirdPartyFirewallProbe,
+					WindowsServiceThirdPartyFirewallProbe>();
+			}
+		
 		services.AddDbContextFactory<AuditDbContext>((sp, options) =>
 		{
 			IOptions<RdpAuditOptions> opts = sp.GetRequiredService<IOptions<RdpAuditOptions>>();
