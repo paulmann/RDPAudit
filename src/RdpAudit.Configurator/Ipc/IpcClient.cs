@@ -10,7 +10,7 @@
 // Extends: System.Object
 // Author:  Mikhail Deynekin
 // Site:    https://Deynekin.com
-// Version: 1.4.1
+// Version: 1.4.2
 
 using System.Diagnostics;
 using System.IO.Pipes;
@@ -102,6 +102,24 @@ public sealed class IpcClient
 			catch (OperationCanceledException) when (!ct.IsCancellationRequested)
 			{
 				return Fail<T>(command, IpcCallOutcome.ConnectFailed, "Timed out connecting to the service named pipe (service stopped or not installed).", nameof(TimeoutException), startUtc, sw, timeoutMs, connected, false);
+			}
+			catch (UnauthorizedAccessException ex)
+			{
+				// Pipe exists but ACL blocks this client, or an AV/EDR product (Kaspersky KLIF)
+				// is intercepting the named pipe. Run the Configurator as Administrator.
+				return Fail<T>(command, IpcCallOutcome.ConnectFailed,
+					"Access denied connecting to named pipe — run the Configurator as Administrator, " +
+					"or check if an AV/EDR product is intercepting named pipes. Detail: " + ex.Message,
+					nameof(UnauthorizedAccessException), startUtc, sw, timeoutMs, connected, false);
+			}
+			catch (IOException ex) when (!connected)
+			{
+				// Named pipe exists but connect failed (access-denied variant, Kaspersky interception,
+				// or broken pipe before connected=true). Surfaces the exact OS message instead of
+				// the generic "IPC transport error" the outer IOException catch would produce.
+				return Fail<T>(command, IpcCallOutcome.ConnectFailed,
+					"I/O error connecting to named pipe — possible AV/EDR interception. Detail: " + ex.Message,
+					nameof(IOException), startUtc, sw, timeoutMs, connected, false);
 			}
 
 			IpcResponse response = await ExchangeAsync(pipe, command, payload, cts.Token).ConfigureAwait(false);
