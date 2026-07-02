@@ -282,35 +282,131 @@ public static class Program
 		// it first guarantees IpcServerWorker.ExecuteAsync (and its unconditional first-line
 		// WriteIpcDebugLine to ipc-startup.log) runs before any other worker gets a chance to block
 		// the startup sequence.
-		services.AddHostedService<IpcServerWorker>();
-		services.AddHostedService(sp => new EventCollectorWorker(
+		// Every hosted service is wrapped in TimedHostedService so startup-sequence.log records the
+		// exact begin/end/duration/failure of each IHostedService.StartAsync call in registration
+		// order. This is the direct diagnostic for the class of bug fixed above (a stuck synchronous
+		// prefix in one BackgroundService starving a later-registered one): instead of inferring from
+		// absence of evidence (a missing "{Worker} starting" line in service-*.log), the log now shows
+		// exactly which worker's StartAsync is still running -- or how long each one took -- even if
+		// the process never gets far enough to accept an IPC connection.
+		services.AddTimedHostedService<IpcServerWorker>(nameof(IpcServerWorker));
+		services.AddTimedHostedService(sp => new EventCollectorWorker(
 			sp.GetRequiredService<EventChannel>(),
 			sp.GetRequiredService<BookmarkStore>(),
 			sp.GetRequiredService<ServiceMetrics>(),
 			sp.GetRequiredService<ILogger<EventCollectorWorker>>(),
 			sp.GetRequiredService<IOptionsMonitor<RdpAuditOptions>>(),
 			sp.GetRequiredService<IDbContextFactory<AuditDbContext>>(),
-			sp.GetRequiredService<IOperationLogWriter>()));
-		services.AddHostedService(sp => new SecurityBackfillWorker(
+			sp.GetRequiredService<IOperationLogWriter>()), nameof(EventCollectorWorker));
+		services.AddTimedHostedService(sp => new SecurityBackfillWorker(
 			sp.GetRequiredService<EventChannel>(),
 			sp.GetRequiredService<ServiceMetrics>(),
 			sp.GetRequiredService<ILogger<SecurityBackfillWorker>>(),
 			sp.GetRequiredService<IOptionsMonitor<RdpAuditOptions>>(),
 			sp.GetRequiredService<BookmarkStore>(),
 			sp.GetRequiredService<IDbContextFactory<AuditDbContext>>(),
-			sp.GetRequiredService<OverviewProgressState>()));
-		services.AddHostedService<EventProcessorWorker>();
-		services.AddHostedService<SessionCorrelationHydrationWorker>();
-		services.AddHostedService<AlertWorker>();
-		services.AddHostedService<MaintenanceWorker>();
-		services.AddHostedService<FirewallAutoBlockWorker>();
-		services.AddHostedService<FirewallExpirationWorker>();
-		services.AddHostedService<EnforcementReconciliationWorker>();
+			sp.GetRequiredService<OverviewProgressState>()), nameof(SecurityBackfillWorker));
+		services.AddTimedHostedService<EventProcessorWorker>(nameof(EventProcessorWorker));
+		services.AddTimedHostedService<SessionCorrelationHydrationWorker>(nameof(SessionCorrelationHydrationWorker));
+		services.AddTimedHostedService<AlertWorker>(nameof(AlertWorker));
+		services.AddTimedHostedService<MaintenanceWorker>(nameof(MaintenanceWorker));
+		services.AddTimedHostedService<FirewallAutoBlockWorker>(nameof(FirewallAutoBlockWorker));
+		services.AddTimedHostedService<FirewallExpirationWorker>(nameof(FirewallExpirationWorker));
+		services.AddTimedHostedService<EnforcementReconciliationWorker>(nameof(EnforcementReconciliationWorker));
 		// Singleton + hosted-service-resolving-the-singleton so the IPC RebuildAttackStats action can
 		// invoke the very same worker instance (sharing its re-entrancy gate) the background loop uses.
 		services.AddSingleton<AttackStatsRefreshWorker>();
-		services.AddHostedService(sp => sp.GetRequiredService<AttackStatsRefreshWorker>());
-		services.AddHostedService<AbuseIpDbReportWorker>();
+		services.AddTimedHostedService(sp => sp.GetRequiredService<AttackStatsRefreshWorker>(), nameof(AttackStatsRefreshWorker));
+		services.AddTimedHostedService<AbuseIpDbReportWorker>(nameof(AbuseIpDbReportWorker));
+	}
+
+	/// <summary>Registers <typeparamref name="T"/> as a singleton and wraps it in a
+	/// <see cref="TimedHostedService"/> so its StartAsync begin/end/duration/failure is recorded to
+	/// startup-sequence.log. Equivalent to <c>services.AddHostedService&lt;T&gt;()</c> plus timing.</summary>
+	private static void AddTimedHostedService<T>(this IServiceCollection services, string name)
+		where T : class, IHostedService
+	{
+		services.AddSingleton<T>();
+		services.AddSingleton<IHostedService>(sp => new TimedHostedService(sp.GetRequiredService<T>(), name));
+	}
+
+	/// <summary>Same as the generic overload, for hosted services constructed via an explicit
+	/// factory delegate (manual constructor call, or resolving a pre-registered singleton) rather
+	/// than DI activation.</summary>
+	private static void AddTimedHostedService(
+		this IServiceCollection services, Func<IServiceProvider, IHostedService> factory, string name)
+	{
+		services.AddSingleton<IHostedService>(sp => new TimedHostedService(factory(sp), name));
+	}
+
+	/// <summary>Decorates an <see cref="IHostedService"/> so every StartAsync call logs a begin
+	/// timestamp, an end timestamp with elapsed duration, or a failure with the elapsed duration and
+	/// exception detail — all to startup-sequence.log, independent of the Serilog pipeline (which may
+	/// not have flushed, or may itself be stalled behind the very worker being timed). This is the
+	/// direct answer to "which worker is blocking startup": a BEGIN line with no matching END/FAILED
+	/// line is the stuck one.</summary>
+	private sealed class TimedHostedService : IHostedService
+	{
+		private readonly IHostedService _inner;
+		private readonly string _name;
+
+		public TimedHostedService(IHostedService inner, string name)
+		{
+			_inner = inner;
+			_name = name;
+		}
+
+		public async Task StartAsync(CancellationToken cancellationToken)
+		{
+			StartupSequenceLog.Write("StartAsync BEGIN  " + _name);
+			Stopwatch sw = Stopwatch.StartNew();
+			try
+			{
+				await _inner.StartAsync(cancellationToken).ConfigureAwait(false);
+				StartupSequenceLog.Write("StartAsync END    " + _name + " (" + sw.ElapsedMilliseconds + " ms)");
+			}
+			catch (Exception ex)
+			{
+				StartupSequenceLog.Write("StartAsync FAILED " + _name + " (" + sw.ElapsedMilliseconds + " ms): "
+					+ ex.GetType().Name + ": " + ex.Message);
+				throw;
+			}
+		}
+
+		public Task StopAsync(CancellationToken cancellationToken) => _inner.StopAsync(cancellationToken);
+	}
+
+	/// <summary>Minimal, dependency-free append-only writer for the hosted-service startup sequence
+	/// trace. Deliberately bypasses Serilog/DI entirely: the whole point of this log is to diagnose a
+	/// startup that never reaches a working logging pipeline (e.g. a worker stuck before the DI
+	/// container finishes composing, or Serilog's own sink stalled behind a slow disk/AV filter), so
+	/// it must not share any dependency with the thing it is meant to debug. Mirrors
+	/// IpcServerWorker.WriteIpcDebugLine's file-size-capped append pattern.</summary>
+	private static class StartupSequenceLog
+	{
+		public static void Write(string line)
+		{
+			try
+			{
+				string dir = Path.Combine(
+					Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
+					"RdpAudit",
+					"logs");
+				Directory.CreateDirectory(dir);
+				string path = Path.Combine(dir, "startup-sequence.log");
+				FileInfo fi = new(path);
+				if (fi.Exists && fi.Length > 512 * 1024)
+				{
+					File.Delete(path);
+				}
+
+				File.AppendAllText(path, "[" + DateTime.UtcNow.ToString("O") + "] " + line + Environment.NewLine);
+			}
+			catch (Exception)
+			{
+				// Never let a diagnostics write take down startup.
+			}
+		}
 	}
 
 	private static ISecretProtector CreateSecretProtector()
