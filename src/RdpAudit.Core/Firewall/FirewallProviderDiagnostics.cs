@@ -9,7 +9,7 @@
 //          UI and tests can consume the model without taking a WinForms or Win32 dependency.
 // Extends: System.Object
 // Author:  Mikhail Deynekin
-// Site:    https://Deynekin.com
+// Site:    [https://Deynekin.com](https://Deynekin.com)
 
 using System.Globalization;
 using System.Text;
@@ -60,12 +60,18 @@ public sealed record FirewallServiceState(
 public sealed record FirewallCliToolPresence(
 	string ToolName,
 	string? Path,
-	bool Present);
-
-public FirewallCliToolPresence(string toolName, string fullPath, bool present)
-    : this(toolName, present)
+	bool Present)
 {
-    FullPath = fullPath;
+	/// <summary>Absolute filesystem path, when known. Preserved for compatibility with probes
+	/// that want to surface a concrete install location.</summary>
+	public string FullPath { get; init; } = Path ?? string.Empty;
+
+	/// <summary>Convenience constructor for callers that already have a concrete full path.</summary>
+	public FirewallCliToolPresence(string toolName, string fullPath, bool present, bool _ = true)
+		: this(toolName, present ? fullPath : null, present)
+	{
+		FullPath = fullPath ?? string.Empty;
+	}
 }
 
 /// <summary>Snapshot of the firewall environment, suitable for UI display and clipboard export.</summary>
@@ -161,6 +167,7 @@ public sealed class FirewallProviderDiagnostics
 				}
 				sb.Append('\n');
 			}
+
 			if (LocalRulesAreGpoStoreOnly)
 			{
 				sb.Append("Note: at least one profile reports LocalFirewallRules N/A (GPO-store only) — direct local netsh writes are blocked by Group Policy.\n");
@@ -173,7 +180,8 @@ public sealed class FirewallProviderDiagnostics
 			foreach (FirewallServiceState svc in ProviderServices)
 			{
 				sb.Append("  - ").Append(svc.ServiceName);
-				if (!string.IsNullOrEmpty(svc.DisplayName) && !string.Equals(svc.DisplayName, svc.ServiceName, StringComparison.Ordinal))
+				if (!string.IsNullOrEmpty(svc.DisplayName) &&
+					!string.Equals(svc.DisplayName, svc.ServiceName, StringComparison.Ordinal))
 				{
 					sb.Append(" (").Append(svc.DisplayName).Append(')');
 				}
@@ -187,7 +195,8 @@ public sealed class FirewallProviderDiagnostics
 			foreach (FirewallCliToolPresence tool in DetectedCliTools)
 			{
 				sb.Append("  - ").Append(tool.ToolName).Append(": ");
-				sb.Append(tool.Present ? tool.Path ?? "(present, path unknown)" : "not present").Append('\n');
+				string path = tool.Path ?? tool.FullPath;
+				sb.Append(tool.Present ? (string.IsNullOrEmpty(path) ? "(present, path unknown)" : path) : "not present").Append('\n');
 			}
 		}
 
@@ -198,22 +207,27 @@ public sealed class FirewallProviderDiagnostics
 			{
 				sb.Append("  - ").Append(profile.ProfileName)
 					.Append(": enabled=").Append(profile.Enabled ? "yes" : "no");
+
 				if (profile.DefaultInboundAction is not null)
 				{
 					sb.Append(", inbound=").Append(profile.DefaultInboundAction);
 				}
+
 				if (profile.DefaultOutboundAction is not null)
 				{
 					sb.Append(", outbound=").Append(profile.DefaultOutboundAction);
 				}
+
 				if (profile.AllowLocalFirewallRules is bool localRules)
 				{
 					sb.Append(", allowLocalRules=").Append(localRules ? "yes" : "no");
 				}
+
 				if (!string.IsNullOrEmpty(profile.PolicySource))
 				{
 					sb.Append(", policy=").Append(profile.PolicySource);
 				}
+
 				sb.Append('\n');
 			}
 		}
