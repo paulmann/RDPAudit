@@ -148,6 +148,12 @@ public sealed class IpcServerWorker : BackgroundService
 					{
 						_logger.LogDebug(ex, "{Worker} expected accept/disconnect transient — continuing", nameof(IpcServerWorker));
 					}
+					            // Back-off to prevent tight-loop CPU spin when AV/EDR repeatedly destroys the pipe.
+								            if (_consecutiveWaitFailures > 0)
+											            {
+														                try { await Task.Delay(TimeSpan.FromMilliseconds(500), stoppingToken).ConfigureAwait(false); }
+																		                catch (OperationCanceledException) { break; }
+																						            }
 					continue;
 				}
 				catch (Exception ex)
