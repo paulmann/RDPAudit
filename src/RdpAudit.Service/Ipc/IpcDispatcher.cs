@@ -57,8 +57,14 @@ public sealed class IpcDispatcher
 	private readonly Core.Diagnostics.OverviewProgressState? _overviewProgress;
 	private readonly Workers.AttackStatsRefreshWorker? _attackStatsWorker;
 	private readonly Firewall.IFirewallRuleScanner? _ruleScanner;
-	private readonly IThirdPartyFirewallProbe _thirdPartyProbe;
-	
+
+	/// <summary>Optional third-party firewall detection probe. Nullable by design: this
+	/// dispatcher is shared across hosts, and not every host (or platform) registers a probe.
+	/// Callers MUST null-check before use and fall back to "not suspected, not evaluated"
+	/// rather than throwing — third-party detection is informational only and must never
+	/// block a GetFirewallDiagnostics response.</summary>
+	private readonly IThirdPartyFirewallProbe? _thirdPartyProbe;
+
 	public IpcDispatcher(
 		IDbContextFactory<AuditDbContext> factory,
 		ServiceMetrics metrics,
@@ -85,13 +91,13 @@ public sealed class IpcDispatcher
 		Firewall.IFirewallRuleScanner? ruleScanner = null,
 		IThirdPartyFirewallProbe? thirdPartyProbe = null)
 	{
-		_factory = factory;
-		_metrics = metrics;
-		_options = options;
-		_settings = settings;
-		_firewall = firewall;
-		_providers = providers;
-		_logger = logger;
+		_factory = factory ?? throw new ArgumentNullException(nameof(factory));
+		_metrics = metrics ?? throw new ArgumentNullException(nameof(metrics));
+		_options = options ?? throw new ArgumentNullException(nameof(options));
+		_settings = settings ?? throw new ArgumentNullException(nameof(settings));
+		_firewall = firewall ?? throw new ArgumentNullException(nameof(firewall));
+		_providers = providers ?? throw new ArgumentNullException(nameof(providers));
+		_logger = logger ?? throw new ArgumentNullException(nameof(logger));
 		_sessions = sessions;
 		_shadow = shadow;
 		_abuseClient = abuseClient;
@@ -110,7 +116,7 @@ public sealed class IpcDispatcher
 		_ruleScanner = ruleScanner;
 		_thirdPartyProbe = thirdPartyProbe;
 	}
-
+	
 	/// <summary>Best-effort durable operation-log record for an operator action taken through IPC.
 	/// Never throws and never blocks the action (the writer is itself best-effort).</summary>
 	private void LogOperation(OperationLogSeverity severity, string operation, string message, string? detailsJson = null)
