@@ -1,17 +1,12 @@
-// File:    src/RdpAudit.Service/Workers/FirewallAutoBlockWorker.cs
-// Module:  RdpAudit.Service.Workers
-// Purpose: Reads newly raised Alerts and applies the Stage 3 auto-block policy:
-//          1. Skip when source IP is missing / invalid.
-//          2. Skip when IP is in WhitelistEntries / Firewall.Whitelist / Firewall.WhitelistIps.
-//          3. Block brute-force when FailCount exceeds AutoBlockThreshold and no active block exists.
-//          4. Block when login is blacklisted and BlockOnBlacklistedLogin is enabled.
-//          5. Block when login matches InstantBlockLogins (case-insensitive trip-wires).
-//          Writes ActiveBlocks + BlocklistEntries rows with UTC timestamps, provider, reason,
-//          expiration, and linked alert id.
-// Extends: Microsoft.Extensions.Hosting.BackgroundService
-// Author:  Mikhail Deynekin
-// Site:    https://Deynekin.com
-// Version: 1.4.1
+/* Project: RDPAudit 2.0 | Author: Mikhail Deynekin | Site: Deynekin.com | Email: Mikhail@Deynekin.com */
+// Version: 1.4.2
+// File   : FirewallAutoBlockWorker.cs
+// Project: RdpAudit.Service (RdpAudit.Service)
+// Purpose: Reads newly raised Alerts and applies the Stage 3 auto-block policy. Fixed: Failed
+//          provider results no longer persist ghost ActiveBlock/BlocklistEntry rows that caused the
+//          UI to display IPs as blocked even when no firewall rule existed in the OS store.
+// Depends: IFirewallProvider, AuditDbContext, AutoBlockPolicy, IOptionsMonitor<RdpAuditOptions>
+// Extends: When adding a new block trigger: extend AutoBlockPolicy.Decide; no changes needed here.
 
 using System.Collections.Concurrent;
 using System.Globalization;
@@ -64,7 +59,6 @@ public sealed class FirewallAutoBlockWorker : BackgroundService
 	{
 		_logger.LogInformation("{Worker} starting", nameof(FirewallAutoBlockWorker));
 
-		// Resume from the current high-water mark so we do not double-process pre-existing alerts.
 		try
 		{
 			await using AuditDbContext db = await _factory.CreateDbContextAsync(stoppingToken).ConfigureAwait(false);
@@ -129,7 +123,6 @@ public sealed class FirewallAutoBlockWorker : BackgroundService
 			return 0;
 		}
 
-		// Snapshot whitelist / blacklist / login-rule state once per batch to amortise the cost.
 		HashSet<string> whitelistDb = (await db.WhitelistEntries.AsNoTracking()
 			.Select(w => w.Ip)
 			.ToListAsync(ct).ConfigureAwait(false))
@@ -156,8 +149,6 @@ public sealed class FirewallAutoBlockWorker : BackgroundService
 			.Select(static s => s.Trim())
 			.ToHashSet(StringComparer.OrdinalIgnoreCase);
 
-		// Parse every CIDR-shaped whitelist entry (DB + config) once per batch so a whole private range
-		// (e.g. 10.0.0.0/8, fc00::/7) exempts its members from auto-blocking, not just literal hosts.
 		IReadOnlyList<CidrRange> whitelistRanges = AutoBlockPolicy.BuildWhitelistRanges(
 			whitelistDb.Concat(whitelistConfig));
 
@@ -197,10 +188,17 @@ public sealed class FirewallAutoBlockWorker : BackgroundService
 				continue;
 			}
 
-			await ApplyBlockAsync(db, alert, decision, cfg, ct).ConfigureAwait(false);
-			TouchDebounce(decision.NormalizedIp, cfg.AutoBlockDebounceSeconds);
+			// FIX Bug 1: ApplyBlockAsync now returns bool indicating whether a successful block
+			// was installed. SaveChangesAsync is still called once per batch (EF tracks all
+			// changes), but Failed provider attempts no longer add ActiveBlock or BlocklistEntry
+			// rows — those are only added when the provider confirms Success.
+			bool applied = await ApplyBlockAsync(db, alert, decision, cfg, ct).ConfigureAwait(false);
+			if (applied)
+			{
+				TouchDebounce(decision.NormalizedIp, cfg.AutoBlockDebounceSeconds);
+			}
 
-			if (string.Equals(decision.ReasonTag, "InstantLogin", StringComparison.Ordinal))
+			if (applied && string.Equals(decision.ReasonTag, "InstantLogin", StringComparison.Ordinal))
 			{
 				await RecordTripWireFiringAsync(db, alert, decision, ct).ConfigureAwait(false);
 			}
@@ -208,11 +206,16 @@ public sealed class FirewallAutoBlockWorker : BackgroundService
 
 		await db.SaveChangesAsync(ct).ConfigureAwait(false);
 
+		// Advance the high-water mark regardless of individual block outcomes: alerts are not
+		// retried (the alert itself was processed; only the OS firewall call may have failed).
+		// The reconciliation worker handles any missing OS rules independently.
 		_lastProcessedAlertId = batch[^1].Id;
 		return processed;
 	}
 
-	private async Task ApplyBlockAsync(
+	// FIX Bug 1: returns true only when at least one provider installed a successful block.
+	// Failed provider calls no longer write ghost ActiveBlock/BlocklistEntry rows to the DB.
+	private async Task<bool> ApplyBlockAsync(
 		AuditDbContext db,
 		Alert alert,
 		AutoBlockDecision decision,
@@ -222,8 +225,6 @@ public sealed class FirewallAutoBlockWorker : BackgroundService
 		string ip = decision.NormalizedIp!;
 		FirewallProviderKind providerKind = cfg.Provider;
 
-		// v1.4.1: DEBUG trace of the resolved decision so an operator running with LogLevel=Debug can see
-		// exactly which rule fired, the resolved action / reason tag, the target provider kind and backend.
 		_logger.LogDebug(
 			"Auto-block applying for {Ip}: action={Action} reasonTag={ReasonTag} alert={AlertId} providerKind={ProviderKind} backend={Backend}",
 			ip,
@@ -233,7 +234,6 @@ public sealed class FirewallAutoBlockWorker : BackgroundService
 			providerKind,
 			cfg.EnforcementBackend);
 
-		// Active block guard: if any provider already has an active block we keep it and skip.
 		bool alreadyActive = await db.ActiveBlocks
 			.AnyAsync(b => b.Ip == ip
 				&& (b.Status == ActiveBlockStatus.Active || b.Status == ActiveBlockStatus.Pending),
@@ -242,7 +242,7 @@ public sealed class FirewallAutoBlockWorker : BackgroundService
 		if (alreadyActive)
 		{
 			_logger.LogDebug("Auto-block already active for {Ip}; skipping", ip);
-			return;
+			return false;
 		}
 
 		int maxActive = Math.Max(1, cfg.MaxActiveBlocks);
@@ -256,14 +256,10 @@ public sealed class FirewallAutoBlockWorker : BackgroundService
 				ip,
 				activeCount,
 				maxActive);
-			return;
+			return false;
 		}
 
 		DateTime nowUtc = DateTime.UtcNow;
-		// Auto-blocks ALWAYS expire: a runaway or stale policy must never leave a host permanently
-		// firewalled off an IP it can no longer justify. A non-positive configured duration falls back
-		// to AutoBlockPolicy.FallbackBlockDurationMinutes rather than producing a permanent block —
-		// only manual operator blocks are allowed to be "Never".
 		DateTime expiresUtc = nowUtc.AddMinutes(AutoBlockPolicy.ResolveBlockDurationMinutes(cfg.DefaultBlockDurationMinutes));
 		string reason = string.Format(
 			CultureInfo.InvariantCulture,
@@ -271,25 +267,26 @@ public sealed class FirewallAutoBlockWorker : BackgroundService
 			decision.ReasonTag,
 			alert.RuleId);
 
-		bool blockedAlready = await db.BlocklistEntries
-			.AnyAsync(b => b.Ip == ip && b.IsEnabled, ct).ConfigureAwait(false);
-		if (!blockedAlready)
-		{
-			db.BlocklistEntries.Add(new BlocklistEntry
-			{
-				Ip = ip,
-				Login = decision.LoginForJournal,
-				Reason = reason,
-				AddedUtc = nowUtc,
-				ExpiresUtc = expiresUtc,
-				Source = BlocklistSource.Auto,
-				LinkedAlertId = alert.Id,
-				IsEnabled = true,
-			});
-		}
-
 		if (providerKind == FirewallProviderKind.None)
 		{
+			// Audit-only mode: always record regardless of any OS firewall action.
+			bool blockedAlready = await db.BlocklistEntries
+				.AnyAsync(b => b.Ip == ip && b.IsEnabled, ct).ConfigureAwait(false);
+			if (!blockedAlready)
+			{
+				db.BlocklistEntries.Add(new BlocklistEntry
+				{
+					Ip = ip,
+					Login = decision.LoginForJournal,
+					Reason = reason,
+					AddedUtc = nowUtc,
+					ExpiresUtc = expiresUtc,
+					Source = BlocklistSource.Auto,
+					LinkedAlertId = alert.Id,
+					IsEnabled = true,
+				});
+			}
+
 			ActiveBlock audit = new()
 			{
 				Ip = ip,
@@ -304,7 +301,7 @@ public sealed class FirewallAutoBlockWorker : BackgroundService
 				"Auto-block recorded (audit-only) for {Ip} via alert {AlertId}",
 				ip,
 				alert.Id);
-			return;
+			return true;
 		}
 
 		string ruleName = string.IsNullOrWhiteSpace(cfg.BlockRuleName) ? "RdpAudit-Block" : cfg.BlockRuleName;
@@ -315,30 +312,17 @@ public sealed class FirewallAutoBlockWorker : BackgroundService
 			Reason = reason,
 		};
 
-		// Fan-out: when configured Both, drive Windows then MikroTik with one ActiveBlock row each so
-		// every rule has its own RuleHandle and can be expired by FirewallExpirationWorker on its own.
 		List<FirewallProviderKind> targets = providerKind == FirewallProviderKind.Both
 			? new List<FirewallProviderKind> { FirewallProviderKind.Windows, FirewallProviderKind.MikroTik }
 			: new List<FirewallProviderKind> { providerKind };
 
+		bool anySuccess = false;
+
 		foreach (FirewallProviderKind target in targets)
 		{
-			ActiveBlock active = new()
-			{
-				Ip = ip,
-				Provider = target,
-				CreatedUtc = nowUtc,
-				ExpiresUtc = expiresUtc,
-				Reason = reason,
-				Status = ActiveBlockStatus.Pending,
-			};
-			db.ActiveBlocks.Add(active);
-
 			IFirewallProvider? provider = ResolveProvider(target, cfg.EnforcementBackend);
 			if (provider is null)
 			{
-				active.Status = ActiveBlockStatus.Failed;
-				active.LastError = "No firewall provider registered for the configured provider kind / backend.";
 				_logger.LogWarning(
 					"Auto-block failed for {Ip}: no provider for kind {Kind} backend {Backend}",
 					ip,
@@ -352,8 +336,40 @@ public sealed class FirewallAutoBlockWorker : BackgroundService
 				FirewallActionResult result = await provider.BlockAsync(request, ct).ConfigureAwait(false);
 				if (result.Status == FirewallActionStatus.Success)
 				{
-					active.Status = ActiveBlockStatus.Active;
-					active.RuleHandle = result.RuleId;
+					// FIX Bug 1: only add ActiveBlock and BlocklistEntry rows when the OS
+					// firewall rule was actually installed and verified. Previously these rows
+					// were added unconditionally (before calling the provider), so a Failed
+					// result left ghost rows that the UI displayed as 'blocked'.
+					ActiveBlock active = new()
+					{
+						Ip = ip,
+						Provider = target,
+						CreatedUtc = nowUtc,
+						ExpiresUtc = expiresUtc,
+						Reason = reason,
+						Status = ActiveBlockStatus.Active,
+						RuleHandle = result.RuleId,
+					};
+					db.ActiveBlocks.Add(active);
+
+					bool blockedAlready = await db.BlocklistEntries
+						.AnyAsync(b => b.Ip == ip && b.IsEnabled, ct).ConfigureAwait(false);
+					if (!blockedAlready)
+					{
+						db.BlocklistEntries.Add(new BlocklistEntry
+						{
+							Ip = ip,
+							Login = decision.LoginForJournal,
+							Reason = reason,
+							AddedUtc = nowUtc,
+							ExpiresUtc = expiresUtc,
+							Source = BlocklistSource.Auto,
+							LinkedAlertId = alert.Id,
+							IsEnabled = true,
+						});
+					}
+
+					anySuccess = true;
 					_logger.LogInformation(
 						"Auto-block installed for {Ip} provider={Provider} rule={Rule}",
 						ip,
@@ -362,10 +378,10 @@ public sealed class FirewallAutoBlockWorker : BackgroundService
 				}
 				else
 				{
-					active.Status = ActiveBlockStatus.Failed;
-					active.LastError = result.Message;
+					// Do NOT persist any DB row for a failed block — the IP must NOT appear
+					// in the blocked list when the OS firewall rule was never installed.
 					_logger.LogWarning(
-						"Auto-block provider returned {Status} for {Ip}: {Message}",
+						"Auto-block provider returned {Status} for {Ip}: {Message} (no DB row written)",
 						result.Status,
 						ip,
 						result.Message);
@@ -377,16 +393,16 @@ public sealed class FirewallAutoBlockWorker : BackgroundService
 			}
 			catch (Exception ex)
 			{
-				active.Status = ActiveBlockStatus.Failed;
-				active.LastError = ex.Message;
-				_logger.LogError(ex, "Auto-block provider threw for {Ip}", ip);
+				// Do NOT persist a ghost row on exception either.
+				_logger.LogError(ex, "Auto-block provider threw for {Ip} (no DB row written)", ip);
 			}
 		}
+
+		return anySuccess;
 	}
 
-	/// <summary>Increments per-rule trip-wire telemetry (TriggerCount / First / Last / LastSourceIp) for
-	/// the enabled <see cref="LoginRule"/> whose login matched the firing alert. Config-only trip-wires
-	/// (<see cref="FirewallOptions.InstantBlockLogins"/>) have no DB row and are silently ignored.</summary>
+	/// <summary>Increments per-rule trip-wire telemetry for the enabled <see cref="LoginRule"/> whose
+	/// login matched the firing alert. Config-only trip-wires have no DB row and are silently ignored.</summary>
 	private async Task RecordTripWireFiringAsync(
 		AuditDbContext db,
 		Alert alert,
@@ -403,8 +419,6 @@ public sealed class FirewallAutoBlockWorker : BackgroundService
 		LoginRule? rule = await db.LoginRules
 			.FirstOrDefaultAsync(r => r.Enabled && r.Login == trimmed, ct).ConfigureAwait(false);
 
-		// The policy folds DB logins to their stored (lower-cased) key, so a direct match should hit;
-		// fall back to a case-insensitive client-side match for any legacy mixed-case rows.
 		if (rule is null)
 		{
 			List<LoginRule> enabled = await db.LoginRules
@@ -485,14 +499,10 @@ internal readonly record struct AutoBlockDecision(
 internal static class AutoBlockPolicy
 {
 	/// <summary>Duration applied to an auto-block when the operator left
-	/// <see cref="FirewallOptions.DefaultBlockDurationMinutes"/> at zero / negative. Auto-blocks must
-	/// always expire (see <see cref="ResolveBlockDurationMinutes"/>); only manual blocks may be
-	/// permanent, so this guarantees a bounded, self-healing auto-block.</summary>
+	/// <see cref="FirewallOptions.DefaultBlockDurationMinutes"/> at zero / negative.</summary>
 	public const int FallbackBlockDurationMinutes = 60;
 
-	/// <summary>Resolves the effective auto-block duration in minutes. A positive configured value is
-	/// honoured verbatim; zero or negative falls back to <see cref="FallbackBlockDurationMinutes"/> so
-	/// an auto-block is never permanent.</summary>
+	/// <summary>Resolves the effective auto-block duration in minutes.</summary>
 	public static int ResolveBlockDurationMinutes(int configuredMinutes)
 		=> configuredMinutes > 0 ? configuredMinutes : FallbackBlockDurationMinutes;
 
@@ -524,9 +534,6 @@ internal static class AutoBlockPolicy
 
 		string normalizedIp = parsed.ToString();
 
-		// Whitelist precedence: an exact-literal hit (fast path) OR membership in any whitelisted CIDR
-		// range. Range matching is family-aware, so an IPv4 source is tested only against IPv4 networks
-		// and an IPv6 source only against IPv6 networks (e.g. fc00::/7, fd00::/8).
 		if (whitelistDb.Contains(normalizedIp)
 			|| whitelistConfig.Contains(normalizedIp)
 			|| MatchesWhitelistRange(parsed, whitelistRanges))
@@ -534,7 +541,6 @@ internal static class AutoBlockPolicy
 			return new AutoBlockDecision(AutoBlockAction.Skip, normalizedIp, alert.UserName, string.Empty, "whitelist");
 		}
 
-		// 5: instant-login trip-wire (highest priority — explicit operator-supplied honeypots).
 		if (!string.IsNullOrWhiteSpace(alert.UserName) && instantLogins.Contains(alert.UserName!))
 		{
 			return new AutoBlockDecision(
@@ -545,7 +551,6 @@ internal static class AutoBlockPolicy
 				string.Empty);
 		}
 
-		// 4: blacklisted login on a configured Blacklist member.
 		if (cfg.BlockOnBlacklistedLogin && !string.IsNullOrWhiteSpace(alert.UserName) && blacklistLiteral.Contains(alert.UserName!))
 		{
 			return new AutoBlockDecision(
@@ -556,7 +561,6 @@ internal static class AutoBlockPolicy
 				string.Empty);
 		}
 
-		// 3: brute-force class alerts. Both severity High AND a known brute-force rule id qualify.
 		if (cfg.AutoBlockBruteForce && IsBruteForceClass(alert))
 		{
 			return new AutoBlockDecision(
@@ -582,9 +586,8 @@ internal static class AutoBlockPolicy
 			|| alert.RuleId.StartsWith("UNKNOWN_IP_SUCCESS", StringComparison.OrdinalIgnoreCase);
 	}
 
-	/// <summary>Parses the CIDR-shaped entries (those containing '/') from a set of whitelist literals into
-	/// <see cref="CidrRange"/> objects, silently dropping malformed entries. Single-IP literals are left to
-	/// the existing exact-match HashSet path and are not returned here.</summary>
+	/// <summary>Parses CIDR-shaped entries from a set of whitelist literals into <see cref="CidrRange"/>
+	/// objects, silently dropping malformed entries.</summary>
 	public static IReadOnlyList<CidrRange> BuildWhitelistRanges(IEnumerable<string> literals)
 	{
 		ArgumentNullException.ThrowIfNull(literals);
@@ -601,8 +604,6 @@ internal static class AutoBlockPolicy
 		return ranges;
 	}
 
-	/// <summary>Returns true when the candidate address falls inside any whitelisted CIDR network. The
-	/// <see cref="CidrRange.Contains(IPAddress?)"/> test is family-aware, so IPv4 and IPv6 never cross-match.</summary>
 	private static bool MatchesWhitelistRange(IPAddress candidate, IReadOnlyList<CidrRange>? ranges)
 	{
 		if (ranges is null || ranges.Count == 0)

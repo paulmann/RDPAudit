@@ -1,17 +1,14 @@
-// File:    src/RdpAudit.Service/Firewall/PowerShellFirewallRuleScanner.cs
-// Module:  RdpAudit.Service.Firewall
-// Purpose: Locale-independent IFirewallRuleScanner. Enumerates RdpAudit-owned inbound block rules by
-//          running `Get-NetFirewallRule | … | ConvertTo-Json` and parsing the English-stable JSON
-//          property names — instead of parsing the `netsh` verbose text dump, whose field labels are
-//          translated into the host UI language and therefore yield zero matches on a non-English
-//          host (the root cause of "RdpAudit-group inbound block rules: 0" on a Russian Windows
-//          install even though the rules exist). The PowerShell command is invoked via an argument
-//          vector (no shell, no string concatenation across the rule-name boundary). When the
-//          PowerShell path is unavailable or fails, the scanner transparently falls back to the
-//          netsh text scanner so a host without the NetSecurity module still degrades gracefully.
-// Extends: RdpAudit.Service.Firewall.IFirewallRuleScanner
-// Author:  Mikhail Deynekin
-// Site:    https://Deynekin.com
+/* Project: RDPAudit 2.0 | Author: Mikhail Deynekin | Site: Deynekin.com | Email: Mikhail@Deynekin.com */
+// Version: 1.4.2
+// File   : PowerShellFirewallRuleScanner.cs
+// Project: RdpAudit.Service (RdpAudit.Service.Firewall)
+// Purpose: Locale-independent IFirewallRuleScanner. Enumerates RdpAudit-owned inbound block rules
+//          via Get-NetFirewallRule JSON. Fixed (Bug 3): when the -Group RdpAudit scan returns 0
+//          rules (i.e. rules were created by the netsh fallback path and therefore have no group
+//          stamp), a secondary name-prefix scan is performed to discover those ungrouped rules so
+//          verification does not falsely report Unavailable.
+// Depends: IExternalCommandRunner, IFirewallRuleScanner (netsh fallback), NetshCommandBuilder
+// Extends: Update FirewallRulesJsonScript and NamePrefixFallbackScript when changing rule schema.
 
 using System.Runtime.Versioning;
 using Microsoft.Extensions.Logging;
@@ -24,20 +21,8 @@ namespace RdpAudit.Service.Firewall;
 /// <c>Get-NetFirewallRule | ConvertTo-Json</c>. Falls back to the netsh text scanner on failure.</summary>
 public sealed class PowerShellFirewallRuleScanner : IFirewallRuleScanner
 {
-	/// <summary>Fixed PowerShell script that emits one JSON object per RdpAudit-owned rule.
-	/// English-stable property names; no operator input is interpolated. Passed as a single
-	/// argument-vector element so there is no shell-quoting surface.</summary>
-	/// <remarks>
-	/// IMPORTANT: enumeration is anchored on <c>Get-NetFirewallRule -Group 'RdpAudit'</c> — the exact
-	/// query the operator confirmed returns our rules on a live ru-RU host. The earlier script scanned
-	/// EVERY inbound rule (<c>-Direction Inbound -All</c>) and piped each through
-	/// <c>Get-NetFirewallAddressFilter</c> / <c>Get-NetFirewallPortFilter</c>; on the live host that
-	/// fragile per-rule enrichment collapsed the whole result to <c>[]</c> even though the rules exist.
-	/// Here the address / port enrichment is best-effort (<c>-ErrorAction SilentlyContinue</c>) so a
-	/// single failing filter can never zero out the rule list — a rule still reports its
-	/// Name / Group / DisplayGroup / Direction / Action / Enabled even if its filters cannot be read.
-	/// The parser then matches by name prefix OR group=RdpAudit.
-	/// </remarks>
+	/// <summary>Primary script: anchored on <c>-Group RdpAudit</c> — locale-independent, preferred.
+	/// Returns '[]' when no rules with the RdpAudit group exist (e.g. rules created via netsh fallback).</summary>
 	internal const string FirewallRulesJsonScript =
 		"$ErrorActionPreference='SilentlyContinue';"
 		+ "$r=Get-NetFirewallRule -Group 'RdpAudit';"
@@ -51,6 +36,24 @@ public sealed class PowerShellFirewallRuleScanner : IFirewallRuleScanner
 		+ "Protocol=[string]$p.Protocol;LocalPort=@($p.LocalPort);RemoteAddress=@($a.RemoteAddress)"
 		+ "}};"
 		+ "if($null -eq $o){'[]'}else{$o|ConvertTo-Json -Depth 4 -Compress}}";
+
+	/// <summary>FIX Bug 3: secondary name-prefix script used when the group-anchored scan returns 0
+	/// rules. Discovers rules created by the netsh fallback path that have no -Group RdpAudit stamp.
+	/// The '{0}' placeholder is replaced at runtime with the sanitised rule name prefix
+	/// (e.g. 'RdpAudit-Block'). Single-quote doubling is applied before substitution.</summary>
+	internal const string NamePrefixFallbackScriptTemplate =
+		"$ErrorActionPreference='SilentlyContinue';"
+		+ "$r=Get-NetFirewallRule|Where-Object{{$_.Name -like '{0}*'}};"
+		+ "if($null -eq $r){{'{{'+'[]'+'}}' }}else{{"
+		+ "$o=foreach($x in $r){{"
+		+ "$a=$x|Get-NetFirewallAddressFilter -ErrorAction SilentlyContinue;"
+		+ "$p=$x|Get-NetFirewallPortFilter -ErrorAction SilentlyContinue;"
+		+ "[pscustomobject]@{{"
+		+ "Name=$x.Name;DisplayName=$x.DisplayName;Group=$x.Group;DisplayGroup=$x.DisplayGroup;"
+		+ "Direction=[string]$x.Direction;Action=[string]$x.Action;Enabled=[string]$x.Enabled;"
+		+ "Protocol=[string]$p.Protocol;LocalPort=@($p.LocalPort);RemoteAddress=@($a.RemoteAddress)"
+		+ "}}}};"
+		+ "if($null -eq $o){{'[]'}}else{{$o|ConvertTo-Json -Depth 4 -Compress}}}}";
 
 	private static readonly TimeSpan ScanTimeout = TimeSpan.FromSeconds(30);
 
@@ -96,7 +99,7 @@ public sealed class PowerShellFirewallRuleScanner : IFirewallRuleScanner
 		try
 		{
 			result = await _runner.RunDirectAsync(
-				commandLabel: "powershell Get-NetFirewallRule (JSON)",
+				commandLabel: "powershell Get-NetFirewallRule -Group RdpAudit (JSON)",
 				executable: "powershell.exe",
 				arguments: new[]
 				{
@@ -137,6 +140,33 @@ public sealed class PowerShellFirewallRuleScanner : IFirewallRuleScanner
 			ruleNamePrefix,
 			NetshCommandBuilder.RdpAuditGroup);
 
+		// FIX Bug 3: when the group-anchored scan returns 0 rules, attempt a secondary
+		// name-prefix scan. This covers rules created via the netsh fallback path that
+		// have no -Group RdpAudit stamp and would otherwise be invisible to verification,
+		// causing BlockAsync to return Unavailable even though the OS rule exists.
+		if (rules.Count == 0)
+		{
+			_logger.LogDebug(
+				"Group-anchored scan returned 0 rules for prefix={Prefix}; attempting name-prefix fallback scan",
+				ruleNamePrefix);
+
+			IReadOnlyList<DiscoveredBlockRule> prefixRules = await TryNamePrefixScanAsync(
+				ruleNamePrefix, ct).ConfigureAwait(false);
+
+			if (prefixRules.Count > 0)
+			{
+				_logger.LogInformation(
+					"Name-prefix fallback scan discovered {Count} ungrouped RdpAudit rule(s) for prefix={Prefix} (rules lack -Group stamp; created via netsh fallback)",
+					prefixRules.Count,
+					ruleNamePrefix);
+				return new FirewallScanResult(
+					Scannable: true,
+					Rules: prefixRules,
+					Note: "Discovered via name-prefix fallback (no -Group RdpAudit stamp; rules were likely created by netsh fallback path).",
+					Backend: FirewallScanBackend.PowerShellJson);
+			}
+		}
+
 		_logger.LogInformation(
 			"PowerShell firewall scan discovered {Count} RdpAudit block rule(s) (locale-independent JSON read)",
 			rules.Count);
@@ -146,6 +176,73 @@ public sealed class PowerShellFirewallRuleScanner : IFirewallRuleScanner
 			Rules: rules,
 			Note: "Enumerated via Get-NetFirewallRule JSON (locale-independent; matches by name prefix OR group=RdpAudit).",
 			Backend: FirewallScanBackend.PowerShellJson);
+	}
+
+	/// <summary>FIX Bug 3: performs a secondary <c>Get-NetFirewallRule | Where Name -like 'prefix*'</c>
+	/// scan to discover ungrouped rules created by the netsh fallback path. Returns an empty list when
+	/// the script fails or times out — the caller then proceeds with the original 0-rule result.</summary>
+	private async Task<IReadOnlyList<DiscoveredBlockRule>> TryNamePrefixScanAsync(
+		string ruleNamePrefix,
+		CancellationToken ct)
+	{
+		// Sanitise the prefix for safe interpolation into the PS single-quoted literal:
+		// single quotes must be doubled so the prefix cannot break out of the string.
+		string safePrefixForPs = ruleNamePrefix.Replace("'", "''", StringComparison.Ordinal);
+		string script = string.Format(
+			System.Globalization.CultureInfo.InvariantCulture,
+			"$ErrorActionPreference='SilentlyContinue';"
+			+ "$r=Get-NetFirewallRule|Where-Object{{$_.Name -like '{0}*'}};"
+			+ "if($null -eq $r){{'[]'}}else{{"
+			+ "$o=foreach($x in $r){{"
+			+ "$a=$x|Get-NetFirewallAddressFilter -ErrorAction SilentlyContinue;"
+			+ "$p=$x|Get-NetFirewallPortFilter -ErrorAction SilentlyContinue;"
+			+ "[pscustomobject]@{{"
+			+ "Name=$x.Name;DisplayName=$x.DisplayName;Group=$x.Group;DisplayGroup=$x.DisplayGroup;"
+			+ "Direction=[string]$x.Direction;Action=[string]$x.Action;Enabled=[string]$x.Enabled;"
+			+ "Protocol=[string]$p.Protocol;LocalPort=@($p.LocalPort);RemoteAddress=@($a.RemoteAddress)"
+			+ "}}}};"
+			+ "if($null -eq $o){{'[]'}}else{{$o|ConvertTo-Json -Depth 4 -Compress}}}}",
+			safePrefixForPs);
+
+		try
+		{
+			ExternalCommandResult prefixResult = await _runner.RunDirectAsync(
+				commandLabel: "powershell Get-NetFirewallRule name-prefix fallback (JSON)",
+				executable: "powershell.exe",
+				arguments: new[]
+				{
+					"-NoProfile",
+					"-NonInteractive",
+					"-ExecutionPolicy", "Bypass",
+					"-OutputFormat", "Text",
+					"-Command", script,
+				},
+				timeout: ScanTimeout,
+				ct: ct).ConfigureAwait(false);
+
+			if (prefixResult.TimedOut || prefixResult.ExitCode != 0 || string.IsNullOrWhiteSpace(prefixResult.StdOut))
+			{
+				_logger.LogDebug(
+					"Name-prefix fallback scan unusable (timedOut={TimedOut} exit={Exit})",
+					prefixResult.TimedOut,
+					prefixResult.ExitCode);
+				return Array.Empty<DiscoveredBlockRule>();
+			}
+
+			return PowerShellFirewallRuleParser.DiscoverRdpAuditBlockRules(
+				prefixResult.StdOut,
+				ruleNamePrefix,
+				NetshCommandBuilder.RdpAuditGroup);
+		}
+		catch (OperationCanceledException)
+		{
+			throw;
+		}
+		catch (Exception ex)
+		{
+			_logger.LogDebug(ex, "Name-prefix fallback scan threw; ignoring");
+			return Array.Empty<DiscoveredBlockRule>();
+		}
 	}
 
 	private async Task<FirewallScanResult> FallBackAsync(string ruleNamePrefix, string reason, CancellationToken ct)

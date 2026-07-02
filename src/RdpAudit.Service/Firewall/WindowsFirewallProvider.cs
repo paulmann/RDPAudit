@@ -1,14 +1,16 @@
-// File:    src/RdpAudit.Service/Firewall/WindowsFirewallProvider.cs
-// Module:  RdpAudit.Service.Firewall
-// Purpose: Real IFirewallProvider implementation for Windows Advanced Firewall. Drives
-//          netsh advfirewall through a sanitised ProcessStartInfo.ArgumentList — no shell
-//          string concatenation is ever performed across IP / rule-name / reason boundaries.
-//          Validates every IP via IPAddress.TryParse, applies an explicit reserved-address
-//          policy, sanitises rule names, and emits idempotent block / unblock operations.
-// Extends: RdpAudit.Core.Firewall.IFirewallProvider
-// Author:  Mikhail Deynekin
-// Site:    https://Deynekin.com
-// Version: 1.4.1
+/* Project: RDPAudit 2.0 | Author: Mikhail Deynekin | Site: Deynekin.com | Email: Mikhail@Deynekin.com */
+// Version: 1.4.2
+// File   : WindowsFirewallProvider.cs
+// Project: RdpAudit.Service (RdpAudit.Service.Firewall)
+// Purpose: Real IFirewallProvider backed by netsh advfirewall + PowerShell New-NetFirewallRule.
+//          Fixed: (a) TryPowerShellCreateAsync now logs PS exit/stderr at Warning on failure so
+//          the operator can diagnose silent fallbacks; (b) UnblockAsync uses exit-code 1 as the
+//          locale-independent NotFound signal instead of an English text match that failed on
+//          Russian/Chinese/other Windows UI cultures.
+// Depends: INetshRunner, IFirewallRuleScanner, IExternalCommandRunner, IRdpPortProvider,
+//          NetshCommandBuilder, RdpAuditFirewallRuleMatcher
+// Extends: Add new block scopes in NetshCommandBuilder.BuildAddRuleArgs and
+//          BuildNewNetFirewallRuleScript; add new verification logic in the VerifyAfterBlock path.
 
 using System.Globalization;
 using System.Net;
@@ -22,40 +24,20 @@ using RdpAudit.Core.Util;
 namespace RdpAudit.Service.Firewall;
 
 /// <summary>Real <see cref="IFirewallProvider"/> implementation backed by netsh advfirewall.</summary>
-/// <remarks>
-/// Implementation invariants:
-/// <list type="bullet">
-///   <item>Every IP is validated with <see cref="IPAddress.TryParse(string, out IPAddress?)"/>.</item>
-///   <item>Reserved / private / loopback addresses are refused by default to prevent self-DoS.</item>
-///   <item>Rule names follow the deterministic <c>{prefix}-{normalized-ip}</c> form.</item>
-///   <item>Block / unblock are idempotent: re-applying installs nothing new, re-removing is non-fatal.</item>
-///   <item>Only RdpAudit-prefixed rules are ever touched on unblock — third-party rules are safe.</item>
-/// </list>
-/// </remarks>
 public sealed class WindowsFirewallProvider : IFirewallProvider
 {
 	/// <summary>Hard timeout for the PowerShell New-NetFirewallRule create path.</summary>
 	private static readonly TimeSpan PowerShellCreateTimeout = TimeSpan.FromSeconds(20);
 
+	// ── Fields & DI ──────────────────────────────────────────────────────────────
 	private readonly ILogger<WindowsFirewallProvider> _logger;
 	private readonly IOptionsMonitor<RdpAuditOptions> _options;
 	private readonly INetshRunner _runner;
 	private readonly IRdpPortProvider _portProvider;
-
-	/// <summary>Optional PowerShell runner used to create rules via <c>New-NetFirewallRule -Group
-	/// RdpAudit</c> so the firewall Group is actually stamped (netsh's <c>add rule</c> cannot set it).
-	/// When null the provider creates rules via the netsh add path (group-free) instead. Tests that
-	/// inject only the netsh runner exercise the netsh path deterministically.</summary>
 	private readonly IExternalCommandRunner? _powerShellRunner;
-
-	/// <summary>Optional locale-independent scanner used to verify / enumerate RdpAudit-owned rules via
-	/// <c>Get-NetFirewallRule -Group RdpAudit</c> JSON. When present the provider verifies a create by
-	/// targeted exact-Name match and enumerates blocks through this scanner instead of the locale-fragile
-	/// netsh verbose text parse (whose field labels are translated on non-English hosts and yield zero
-	/// matches). When null the provider falls back to the netsh text path. Tests that inject only the
-	/// netsh runner leave this null and exercise the netsh path deterministically.</summary>
 	private readonly IFirewallRuleScanner? _scanner;
 
+	// ── Construction ─────────────────────────────────────────────────────────────
 	[SupportedOSPlatform("windows")]
 	public WindowsFirewallProvider(
 		ILogger<WindowsFirewallProvider> logger,
@@ -86,6 +68,7 @@ public sealed class WindowsFirewallProvider : IFirewallProvider
 		_scanner = scanner;
 	}
 
+	// ── Public API ───────────────────────────────────────────────────────────────
 	public string ProviderId => "Windows";
 
 	public async Task<FirewallStatusReport> GetStatusAsync(CancellationToken ct)
@@ -188,8 +171,6 @@ public sealed class WindowsFirewallProvider : IFirewallProvider
 		string ruleName = NetshCommandBuilder.BuildRuleName(request.RuleName, canonicalIp);
 		string description = BuildAuditDescription(request.Reason, request.Duration);
 
-		// Resolve the block scope and the real RDP listener port. RdpPortOnly requires a concrete
-		// port; the resolver never hardcodes 3389 (registry value, or documented Microsoft default).
 		FirewallBlockScope scope = cfg.BlockScope;
 		int rdpPort = scope == FirewallBlockScope.RdpPortOnly ? _portProvider.GetRdpPort() : 0;
 
@@ -210,19 +191,12 @@ public sealed class WindowsFirewallProvider : IFirewallProvider
 			};
 		}
 
-		// Idempotency: best-effort delete first so we do not stack multiple identical rules in
-		// the firewall store. Errors here are non-fatal — the add below is the real success.
 		IReadOnlyList<string> deleteArgs = NetshCommandBuilder.BuildDeleteRuleArgs(ruleName);
-		// v1.4.1: DEBUG trace of the exact netsh invocation so an operator running with LogLevel=Debug
-		// can see precisely which command the provider executed when a block does not appear to take.
 		_logger.LogDebug("Firewall block: pre-delete netsh {Args} (rule={RuleName}, ip={Ip})",
 			string.Join(' ', deleteArgs), ruleName, canonicalIp);
 		NetshResult deleteResult = await _runner.RunAsync(deleteArgs, ct).ConfigureAwait(false);
 		_logger.LogDebug("Firewall block: pre-delete netsh exit={Exit} (rule={RuleName})", deleteResult.ExitCode, ruleName);
 
-		// Create the rule. Prefer the PowerShell New-NetFirewallRule path when a PowerShell runner is
-		// available, because only it can stamp -Group RdpAudit (netsh's add rule rejects group=). When
-		// the PowerShell path is unavailable or fails, fall back to the group-free netsh add.
 		BackendCommandAttempt addAttempt;
 		bool createdOk;
 		BackendCommandAttempt? powerShellAttempt = await TryPowerShellCreateAsync(
@@ -261,21 +235,11 @@ public sealed class WindowsFirewallProvider : IFirewallProvider
 					VerifierReason = powerShellAttempt is null
 						? "netsh add rule exited non-zero before verification."
 						: "PowerShell New-NetFirewallRule failed and the netsh add fallback also exited non-zero.",
-					// When netsh exits non-zero with empty stderr, the failure text is in stdout — surface it.
 					Message = BuildBackendFailureMessage("netsh add rule", addResult),
 				};
 			}
 		}
 
-		// Verification: a non-zero exit is a clear failure, but netsh (or a managing third-party
-		// firewall such as Kaspersky) can return zero while no rule actually lands. Confirm an enabled
-		// inbound block rule exists before declaring success.
-		//
-		// Prefer the locale-independent scanner (Get-NetFirewallRule -Group RdpAudit JSON) and look for a
-		// TARGETED match on the exact deterministic rule name. On a localised (e.g. ru-RU) host the netsh
-		// verbose text labels are translated, so the legacy English-text parse below returns zero matches
-		// even though the rule exists — that was the operator-reported "create PASS / verify FAIL" symptom.
-		// When no scanner is wired (tests injecting only the netsh runner) the netsh text verify is used.
 		if (cfg.VerifyAfterBlock)
 		{
 			if (_scanner is not null)
@@ -297,10 +261,6 @@ public sealed class WindowsFirewallProvider : IFirewallProvider
 						Note: "Targeted verification scan threw: " + ex.GetType().Name, Backend: FirewallScanBackend.None);
 				}
 
-				// v1.3.9: verify ownership for the IP through the shared matcher rather than an exact
-				// Name == canonical compare. Windows can persist the rule under a GUID Name whose
-				// DisplayName is the canonical "RdpAudit-Block-<ip>" (empty Group); the old exact-name
-				// check then failed even though the rule exists — the "create PASS / verify FAIL" symptom.
 				FirewallRuleMatchResult verifyMatch = RdpAuditFirewallRuleMatcher.MatchDiscovered(
 					scan.Rules,
 					canonicalIp,
@@ -412,11 +372,14 @@ public sealed class WindowsFirewallProvider : IFirewallProvider
 		};
 	}
 
+	// ── Core Logic ───────────────────────────────────────────────────────────────
+
 	/// <summary>Attempts to create the block rule via PowerShell <c>New-NetFirewallRule -Group
-	/// RdpAudit</c> so the firewall Group is stamped. Returns null when no PowerShell runner is wired
-	/// (the caller then uses the netsh add path); returns a populated <see cref="BackendCommandAttempt"/>
-	/// describing the exact command, exit code, duration and bounded previews otherwise. A non-success
-	/// attempt is non-fatal — the caller falls back to netsh.</summary>
+	/// RdpAudit</c>. Returns null when no PowerShell runner is wired; returns a populated
+	/// <see cref="BackendCommandAttempt"/> otherwise. A non-success attempt is non-fatal — the
+	/// caller falls back to netsh.
+	/// FIX Bug 2: PS exit code and stderr are now logged at Warning level when the PS path fails
+	/// so the operator can diagnose why the fallback was triggered.</summary>
 	private async Task<BackendCommandAttempt?> TryPowerShellCreateAsync(
 		string ruleName,
 		string canonicalIp,
@@ -470,6 +433,20 @@ public sealed class WindowsFirewallProvider : IFirewallProvider
 			return null;
 		}
 
+		// FIX Bug 2: log the PS failure details at Warning so the operator knows the netsh
+		// fallback was triggered and WHY — previously this was only visible at Debug level
+		// and the silent fallback left rules without -Group RdpAudit, causing the scanner
+		// to report 0 rules and verification to return Unavailable.
+		if (result.TimedOut || result.ExitCode != 0)
+		{
+			_logger.LogWarning(
+				"PowerShell New-NetFirewallRule failed for {Ip}: timedOut={TimedOut} exit={Exit} stderr={StdErr}; falling back to netsh (rule will lack -Group RdpAudit and may not be found by scanner)",
+				canonicalIp,
+				result.TimedOut,
+				result.ExitCode,
+				SanitizeForLog(result.StdErr));
+		}
+
 		return new BackendCommandAttempt(
 			CommandLabel: "New-NetFirewallRule -Group RdpAudit",
 			Executable: "powershell.exe",
@@ -484,16 +461,12 @@ public sealed class WindowsFirewallProvider : IFirewallProvider
 			ScannerBackend: "NewNetFirewallRule");
 	}
 
-	/// <summary>Builds a <see cref="BackendCommandAttempt"/> from a netsh outcome, filling in the
-	/// argument line the provider knows about (the runner does not echo it back).</summary>
 	private static BackendCommandAttempt BuildAttempt(NetshResult result, IReadOnlyList<string> args)
 	{
 		BackendCommandAttempt baseAttempt = result.ToBackendAttempt();
 		return baseAttempt with { Arguments = string.Join(' ', args) };
 	}
 
-	/// <summary>Builds the operator-facing failure message for a non-zero netsh exit. When stderr is
-	/// empty the stdout text is the only failure signal, so it is folded into the message.</summary>
 	private static string BuildBackendFailureMessage(string action, NetshResult result)
 	{
 		string stderr = result.StdErr?.Trim() ?? string.Empty;
@@ -535,15 +508,20 @@ public sealed class WindowsFirewallProvider : IFirewallProvider
 		string fullRuleName = NetshCommandBuilder.BuildRuleName(ruleName, canonicalIp);
 
 		IReadOnlyList<string> unblockArgs = NetshCommandBuilder.BuildDeleteRuleArgs(fullRuleName);
-		// v1.4.1: DEBUG trace of the exact unblock netsh invocation for LogLevel=Debug diagnostics.
 		_logger.LogDebug("Firewall unblock: netsh {Args} (rule={RuleName}, ip={Ip})",
 			string.Join(' ', unblockArgs), fullRuleName, canonicalIp);
 		NetshResult delResult = await _runner.RunAsync(unblockArgs, ct).ConfigureAwait(false);
 
 		if (!delResult.Success)
 		{
-			// netsh returns non-zero when no rule matched the name — treat that as NotFound, not as an error.
-			bool notFound = delResult.StdOut.Contains("No rules match", StringComparison.OrdinalIgnoreCase);
+			// FIX Bug 4: use exit code 1 as the locale-independent NotFound signal.
+			// The original check 'delResult.StdOut.Contains("No rules match")' failed on
+			// Russian/Chinese/other Windows UI cultures where netsh emits translated text.
+			// netsh advfirewall delete rule exits 1 when no rules match the name filter;
+			// it exits with other non-zero codes for permission errors and parse failures.
+			// The English text check is kept as a secondary signal for English-locale hosts.
+			bool notFound = delResult.ExitCode == 1
+				|| delResult.StdOut.Contains("No rules match", StringComparison.OrdinalIgnoreCase);
 			_logger.LogDebug(
 				"Firewall unblock returned exit={Exit} notFound={NotFound} for {RuleName}",
 				delResult.ExitCode,
@@ -582,11 +560,6 @@ public sealed class WindowsFirewallProvider : IFirewallProvider
 
 		string normalized = NetshCommandBuilder.NormalizeRulePrefix(ruleName);
 
-		// Prefer the locale-independent scanner (Get-NetFirewallRule -Group RdpAudit JSON). The legacy
-		// netsh path below passed the BASE prefix (e.g. "RdpAudit-ToolsDiag-TempProbe") as an EXACT
-		// netsh `name=`, which never matched the per-IP rule "…-TempProbe-78.37.40.185" — the temp-probe
-		// "verify FAIL" symptom. The scanner matches by group, so it returns the per-IP rule by its full
-		// name regardless of host UI culture. Fall back to the netsh text parse when no scanner is wired.
 		if (_scanner is not null)
 		{
 			FirewallScanResult scan = await _scanner
@@ -670,6 +643,7 @@ public sealed class WindowsFirewallProvider : IFirewallProvider
 			expires);
 	}
 
+	// ── Error Handling & Retry ───────────────────────────────────────────────────
 	private static string SanitizeForLog(string? value)
 	{
 		if (string.IsNullOrEmpty(value))
