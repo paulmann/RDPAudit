@@ -877,51 +877,80 @@ function Update-MessagePackPackageReference {
 
 # ── Test Dependencies ────────────────────────────────────────────────────────
 function Install-MoqPackage {
-    <#
-    .SYNOPSIS
-        Ensures the Moq package is present in RdpAudit.Service.Tests before build/test.
-    #>
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory)][ValidateNotNullOrEmpty()][string]$RepositoryRoot
-    )
+	<#
+	.SYNOPSIS
+		Ensures the Moq package is present in RdpAudit.Service.Tests before build/test.
+	.DESCRIPTION
+		Parses the test project file via SelectNodes (handles multiple ItemGroup blocks),
+		skips the dotnet-add step when Moq is already referenced, and records the action
+		in the install state. Does NOT run a standalone restore — the full-solution restore
+		in Invoke-RdpAuditBuildPipeline covers this project.
+	#>
+	[CmdletBinding()]
+	param(
+		[Parameter(Mandatory)][ValidateNotNullOrEmpty()][string]$RepositoryRoot
+	)
 
-    $testProj = Join-Path -Path $RepositoryRoot -ChildPath 'tests\RdpAudit.Service.Tests\RdpAudit.Service.Tests.csproj'
+	Write-Section 'Test Dependencies'
 
-    if (-not (Test-Path -Path $testProj -PathType Leaf)) {
-        Write-WarningMessage "Test project not found: $testProj — skipping Moq install."
-        return
-    }
+	$testProj = Join-Path -Path $RepositoryRoot -ChildPath 'tests\RdpAudit.Service.Tests\RdpAudit.Service.Tests.csproj'
 
-    Write-Info 'Checking Moq package in test project ...'
-    [xml]$xml = Get-Content -Path $testProj -Raw -Encoding UTF8
-    $moqRef = $xml.Project.ItemGroup.PackageReference |
-        Where-Object { $_.Include -ieq 'Moq' } |
-        Select-Object -First 1
+	if (-not (Test-Path -Path $testProj -PathType Leaf)) {
+		Write-WarningMessage "Test project not found: $testProj — skipping Moq install."
+		return
+	}
 
-    if ($null -ne $moqRef) {
-        $ver = if ($moqRef.Version) { "v$($moqRef.Version)" } else { 'version managed centrally' }
-        Write-Ok "Moq already installed ($ver)."
-        return
-    }
+	Write-Info 'Checking Moq package reference in test project ...'
 
-    Write-Info 'Moq not found. Installing via dotnet add package ...'
-    Invoke-CheckedCommand `
-        -FilePath 'dotnet' `
-        -Arguments @('add', $testProj, 'package', 'Moq') `
-        -FailureMessage 'Failed to install Moq into RdpAudit.Service.Tests.'
+	[xml]$xml = Get-Content -Path $testProj -Raw -Encoding UTF8
 
-    Write-Ok 'Moq installed successfully.'
-    Add-InstallAction 'Installed missing Moq package into RdpAudit.Service.Tests'
+	# SelectNodes searches all ItemGroup elements regardless of their position in the
+	# file. The naive $xml.Project.ItemGroup.PackageReference path returns $null when
+	# there are multiple ItemGroup blocks — a common layout in SDK-style projects.
+	$moqRef = $xml.SelectNodes('//PackageReference[@Include]') |
+		Where-Object { $_.GetAttribute('Include') -ieq 'Moq' } |
+		Select-Object -First 1
 
-    Invoke-CheckedCommand `
-        -FilePath 'dotnet' `
-        -Arguments @('restore', $testProj) `
-        -FailureMessage 'Failed to restore RdpAudit.Service.Tests after Moq installation.'
+	if ($null -ne $moqRef) {
+		$ver = $moqRef.GetAttribute('Version')
+		$verText = if (-not [string]::IsNullOrWhiteSpace($ver)) { "v$ver" } else { 'version managed centrally' }
+		Write-Ok "Moq already referenced ($verText) — nothing to install."
+		return
+	}
 
-    Write-Ok 'Dependencies restored.'
+	Write-Info 'Moq reference not found. Adding via dotnet add package ...'
+
+	Invoke-CheckedCommand `
+		-FilePath 'dotnet' `
+		-Arguments @('add', $testProj, 'package', 'Moq') `
+		-FailureMessage 'Failed to add Moq to RdpAudit.Service.Tests.'
+
+	Write-Ok 'Moq package reference added successfully.'
+
+	# Verify the reference actually landed in the file — dotnet add can exit 0 even on
+	# a Central Package Management project where it cannot write the version attribute.
+	[xml]$xmlAfter = Get-Content -Path $testProj -Raw -Encoding UTF8
+	$moqRefAfter = $xmlAfter.SelectNodes('//PackageReference[@Include]') |
+		Where-Object { $_.GetAttribute('Include') -ieq 'Moq' } |
+		Select-Object -First 1
+
+	if ($null -eq $moqRefAfter) {
+		throw (
+			"Moq was NOT found in '$testProj' after 'dotnet add package Moq' reported success. " +
+			'This usually means Central Package Management (CPM) is active and the version must ' +
+			'be declared in Directory.Packages.props instead. Add <PackageVersion Include="Moq" Version="4.*" /> ' +
+			'to Directory.Packages.props and re-run.'
+		)
+	}
+
+	Add-InstallAction 'Added missing Moq package reference to RdpAudit.Service.Tests'
+
+	# NOTE: No standalone 'dotnet restore' here.
+	# Invoke-RdpAuditBuildPipeline runs 'dotnet restore RdpAudit.sln' as its first step,
+	# which covers every project in the solution including the test project. A second
+	# restore here would only add latency without providing any additional guarantee.
+	Write-Info 'Moq restore will be handled by the full-solution restore in the build pipeline.'
 }
-
 
 function Set-DotNetSdkGlobalJson {
 	Write-Section 'SDK Pin'
