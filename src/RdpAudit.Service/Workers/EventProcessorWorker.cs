@@ -258,31 +258,43 @@ public sealed class EventProcessorWorker : BackgroundService
 		int max = Math.Max(1, monitoring.BatchSize);
 		TimeSpan timeout = TimeSpan.FromMilliseconds(Math.Max(50, monitoring.BatchTimeoutMilliseconds));
 
-		// Synchronous fast-path: items already buffered — no await, no allocation beyond the batch.
-		if (TryDrainReady(max, out List<RawEventDto> ready))
-		{
-			return ready;
-		}
+		SpinWait spinner = default;
+		long startTimestamp = Stopwatch.GetTimestamp();
+		long timeoutTicks = (long)(timeout.TotalSeconds * Stopwatch.Frequency);
+		int spinsSinceYield = 0;
 
-		// Idle path: cooperatively wait for the next item under a bounded timeout. This is the
-		// yield point that keeps the ordered startup chain moving and the CPU idle when there is
-		// no work, without changing the empty-batch contract.
-		using CancellationTokenSource timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
-		timeoutCts.CancelAfter(timeout);
-
-		try
+		while (!stoppingToken.IsCancellationRequested)
 		{
-			while (await _channel.Channel.WaitToReadAsync(timeoutCts.Token).ConfigureAwait(false))
+			if (_channel.Channel.TryRead(out RawEventDto first))
 			{
-				if (TryDrainReady(max, out List<RawEventDto> drained))
+				_metrics.IncrementRingBufferRead();
+
+				List<RawEventDto> batch = new(max) { first };
+				while (batch.Count < max && _channel.Channel.TryRead(out RawEventDto next))
 				{
-					return drained;
+					_metrics.IncrementRingBufferRead();
+					batch.Add(next);
 				}
+
+				return batch;
 			}
-		}
-		catch (OperationCanceledException)
-		{
-			// Timeout elapsed or the service is stopping — either way, an empty batch is correct.
+
+			if (Stopwatch.GetTimestamp() - startTimestamp >= timeoutTicks)
+			{
+				return EmptyBatch;
+			}
+
+			// Cooperative yield every ~1000 spins: SpinWait.SpinOnce() alone can busy-spin the
+			// thread on an idle channel without ever handing control back to the scheduler. This
+			// keeps the synchronous TryRead fast-path but prevents the idle-path from starving other
+			// work on the thread pool during ordered startup.
+			spinner.SpinOnce();
+			spinsSinceYield++;
+			if (spinsSinceYield >= 1000)
+			{
+				spinsSinceYield = 0;
+				await Task.Yield();
+			}
 		}
 
 		return EmptyBatch;
