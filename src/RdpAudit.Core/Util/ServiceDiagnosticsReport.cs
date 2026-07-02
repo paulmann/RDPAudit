@@ -68,7 +68,53 @@ public sealed record ServiceDiagnosticsInput(
 	BinaryFingerprint Installed,
 	RunningProcessFingerprint Running,
 	string? IpcRuntimeVersion,
-	bool IpcConnected);
+	bool IpcConnected,
+	/// <summary>Optional deep-diagnostics bundle (IPC round-trip detail, DebugMode-on-disk vs UI,
+	/// log-file tails, crash folder listing). Null for callers that only need the legacy
+	/// SCM/binary/IPC-connected summary (e.g. existing unit tests) — the report simply omits the
+	/// extra sections in that case.</summary>
+	ServiceDiagnosticsExtras? Extras = null);
+
+/// <summary>Deep-diagnostics bundle collected alongside the legacy <see cref="ServiceDiagnosticsInput"/>
+/// fields so a single "Copy diagnostics" click gives enough detail to root-cause "service not
+/// responding" reports without a second round of back-and-forth: the exact IPC failure mode
+/// (SendDetailedAsync outcome), whether DebugMode on disk actually matches what the Settings tab
+/// checkbox shows (the two can disagree when Save failed because IPC was already down), and the
+/// tail of every log artifact IpcServerWorker / Program.ConfigureSerilog / CrashGuard produce.</summary>
+public sealed record ServiceDiagnosticsExtras(
+	/// <summary>RdpAudit:Diagnostics:DebugMode as read directly from appsettings.json on disk —
+	/// independent of IPC, so it is trustworthy even when the service cannot be reached.</summary>
+	bool? DiskDebugModeEnabled,
+	/// <summary>IpcCallOutcome.ToString() from the GetStatus probe (e.g. "ConnectFailed", "Timeout",
+	/// "ServiceError", "Success"). Null when no probe was attempted.</summary>
+	string? IpcOutcome,
+	/// <summary>Curated error text from IpcCallResult (service-supplied or transport description).</summary>
+	string? IpcErrorDetail,
+	/// <summary>Exception / category name for the IPC failure (e.g. "TimeoutException").</summary>
+	string? IpcErrorType,
+	long IpcDurationMs,
+	int IpcTimeoutMs,
+	/// <summary>True once NamedPipeClientStream.ConnectAsync succeeded — distinguishes a stopped
+	/// service (pipe refuses connections) from one that connected but did not answer in time.</summary>
+	bool IpcPipeConnected,
+	bool IpcResponseReceived,
+	/// <summary>Last lines of %ProgramData%\RdpAudit\logs\ipc-startup.log (IpcServerWorker startup /
+	/// fatal breadcrumbs), oldest first. Empty when the file does not exist yet.</summary>
+	IReadOnlyList<string> IpcStartupLogTail,
+	/// <summary>Last lines of %ProgramData%\RdpAudit\RDPAudit_DEBUG_Log.txt (root, not logs\ --
+	/// matches Program.ConfigureSerilog). Empty when DEBUG mode has never actually been persisted
+	/// to disk (see <see cref="DiskDebugModeEnabled"/>) or the service has not restarted since it
+	/// was enabled.</summary>
+	IReadOnlyList<string> DebugLogTail,
+	/// <summary>Last lines of the day-rolling structured Serilog file under
+	/// %ProgramData%\RdpAudit\logs\service-*.log — present even when DEBUG mode is off, so a
+	/// worker-fault / unhandled-exception entry is visible without enabling DEBUG first.</summary>
+	IReadOnlyList<string> ServiceLogTail,
+	/// <summary>File names under %ProgramData%\RdpAudit\crash\ (CrashGuard's last-resort dump
+	/// folder), most recent first.</summary>
+	IReadOnlyList<string> CrashFiles,
+	/// <summary>Full text of the most recent crash file, if any.</summary>
+	string? LastCrashExcerpt);
 
 /// <summary>The diagnostics report. <see cref="Verdict"/> drives the "OK / not installed /
 /// running old binary / hash mismatch" headline label and the colour of the Service tab
@@ -276,7 +322,80 @@ public static class ServiceDiagnosticsReportBuilder
 		sb.Append("  Connected: ").AppendLine(input.IpcConnected ? "yes" : "no");
 		sb.Append("  RuntimeVersion: ").AppendLine(input.IpcRuntimeVersion ?? "(unreachable)");
 
+		if (input.Extras is ServiceDiagnosticsExtras extras)
+		{
+			AppendExtras(sb, extras);
+		}
+
 		return sb.ToString();
+	}
+
+	/// <summary>Appends the deep-diagnostics sections (IPC failure detail, DebugMode disk/UI
+	/// consistency, log tails, crash folder) so a single Copy diagnostics click is enough to
+	/// root-cause a "service not responding" report without asking the operator to go hunting
+	/// through %ProgramData%\RdpAudit\logs manually.</summary>
+	private static void AppendExtras(StringBuilder sb, ServiceDiagnosticsExtras extras)
+	{
+		sb.AppendLine();
+		sb.AppendLine("[IPC call detail]");
+		sb.Append("  Outcome: ").AppendLine(extras.IpcOutcome ?? "(no probe attempted)");
+		sb.Append("  PipeConnected: ").AppendLine(extras.IpcPipeConnected ? "yes" : "no");
+		sb.Append("  ResponseReceived: ").AppendLine(extras.IpcResponseReceived ? "yes" : "no");
+		sb.Append("  DurationMs: ").AppendLine(extras.IpcDurationMs.ToString(CultureInfo.InvariantCulture));
+		sb.Append("  TimeoutMs: ").AppendLine(extras.IpcTimeoutMs.ToString(CultureInfo.InvariantCulture));
+		if (!string.IsNullOrEmpty(extras.IpcErrorType) || !string.IsNullOrEmpty(extras.IpcErrorDetail))
+		{
+			sb.Append("  ErrorType: ").AppendLine(extras.IpcErrorType ?? "(none)");
+			sb.Append("  ErrorDetail: ").AppendLine(extras.IpcErrorDetail ?? "(none)");
+		}
+
+		sb.AppendLine();
+		sb.AppendLine("[Diagnostics config]");
+		sb.Append("  DebugMode (on disk, appsettings.json): ").AppendLine(
+			extras.DiskDebugModeEnabled is bool disk ? (disk ? "true" : "false") : "(appsettings.json unreadable)");
+		if (extras.DiskDebugModeEnabled == true && extras.DebugLogTail.Count == 0)
+		{
+			sb.AppendLine("  Note: DebugMode is enabled on disk but RDPAudit_DEBUG_Log.txt is empty/missing -- " +
+				"the service has likely not restarted since the setting was saved, or ConfigureSerilog's " +
+				"debugMode read failed. Restart the service and re-check.");
+		}
+
+		AppendLogTail(sb, "ipc-startup.log (logs\\ipc-startup.log)", extras.IpcStartupLogTail);
+		AppendLogTail(sb, "RDPAudit_DEBUG_Log.txt (RDPAudit_DEBUG_Log.txt, root)", extras.DebugLogTail);
+		AppendLogTail(sb, "service-*.log (logs\\service-*.log, structured)", extras.ServiceLogTail);
+
+		sb.AppendLine();
+		sb.AppendLine("[Crash folder] (%ProgramData%\\RdpAudit\\crash)");
+		if (extras.CrashFiles.Count == 0)
+		{
+			sb.AppendLine("  (empty -- no AppDomain.UnhandledException / UnobservedTaskException recorded)");
+		}
+		else
+		{
+			sb.Append("  Files (most recent first): ").AppendLine(string.Join(", ", extras.CrashFiles));
+			if (!string.IsNullOrEmpty(extras.LastCrashExcerpt))
+			{
+				sb.AppendLine("  --- most recent crash file ---");
+				sb.AppendLine(extras.LastCrashExcerpt);
+				sb.AppendLine("  --- end crash file ---");
+			}
+		}
+	}
+
+	private static void AppendLogTail(StringBuilder sb, string label, IReadOnlyList<string> tail)
+	{
+		sb.AppendLine();
+		sb.Append("[Log tail] ").AppendLine(label);
+		if (tail.Count == 0)
+		{
+			sb.AppendLine("  (file not found or empty)");
+			return;
+		}
+
+		foreach (string line in tail)
+		{
+			sb.Append("  | ").AppendLine(line);
+		}
 	}
 
 	private static void AppendBinary(StringBuilder sb, BinaryFingerprint fp)
