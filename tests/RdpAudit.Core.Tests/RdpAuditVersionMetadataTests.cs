@@ -1,6 +1,6 @@
 // File:    tests/RdpAudit.Core.Tests/RdpAuditVersionMetadataTests.cs
 // Module:  RdpAudit.Core.Tests
-// Purpose: Pins the current release version to exactly 1.6.0 across every assembly metadata
+// Purpose: Pins the current release version to exactly 1.6.1 across every assembly metadata
 //          surface that publish.ps1 and the running Service surface to the operator: the
 //          AssemblyInformationalVersion (the SemVer driving the Service tab "Runtime version"
 //          line), AssemblyVersion / FileVersion (the four-part identifiers embedded in the
@@ -18,12 +18,12 @@ using Xunit;
 
 namespace RdpAudit.Core.Tests;
 
-/// <summary>Locks the released version metadata at exactly 1.6.0 across the Core assembly,
+/// <summary>Locks the released version metadata at exactly 1.6.1 across the Core assembly,
 /// blocking the prior 1.0.0 placeholder default and the 1.5.x stream from regressing.</summary>
 public class RdpAuditVersionMetadataTests
 {
-	private const string ExpectedSemVer    = "1.6.0";
-	private const string ExpectedFourPart  = "1.6.0.0";
+	private const string ExpectedSemVer    = "1.6.1";
+	private const string ExpectedFourPart  = "1.6.1.0";
 	private const string ForbiddenLegacy   = "1.0.0";
 	private const string ForbiddenPrev     = "1.5.";
 
