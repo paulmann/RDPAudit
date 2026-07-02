@@ -269,6 +269,20 @@ public static class Program
 
 		AlertRuleRegistration.Register(services);
 
+		// IpcServerWorker is registered FIRST among hosted services, deliberately ahead of
+		// EventCollectorWorker / SecurityBackfillWorker / etc. .NET's Generic Host invokes each
+		// IHostedService.StartAsync sequentially and synchronously in registration order during
+		// host startup (see dotnet/runtime#116181); BackgroundService.StartAsync runs every line of
+		// ExecuteAsync up to its first await inline, on the SAME thread that is starting the host --
+		// so a slow or stuck synchronous prefix in an earlier-registered worker (ETW channel
+		// enumeration, EF Core migration checks, AV-intercepted named-pipe creation, etc.) can delay
+		// or altogether starve a later-registered one. IPC is the Configurator's only line of sight
+		// into the service (status, diagnostics, settings save, log tails) and must come up
+		// independently of whether Event/Security/Alert workers are slow to initialize -- registering
+		// it first guarantees IpcServerWorker.ExecuteAsync (and its unconditional first-line
+		// WriteIpcDebugLine to ipc-startup.log) runs before any other worker gets a chance to block
+		// the startup sequence.
+		services.AddHostedService<IpcServerWorker>();
 		services.AddHostedService(sp => new EventCollectorWorker(
 			sp.GetRequiredService<EventChannel>(),
 			sp.GetRequiredService<BookmarkStore>(),
@@ -288,7 +302,6 @@ public static class Program
 		services.AddHostedService<EventProcessorWorker>();
 		services.AddHostedService<SessionCorrelationHydrationWorker>();
 		services.AddHostedService<AlertWorker>();
-		services.AddHostedService<IpcServerWorker>();
 		services.AddHostedService<MaintenanceWorker>();
 		services.AddHostedService<FirewallAutoBlockWorker>();
 		services.AddHostedService<FirewallExpirationWorker>();
