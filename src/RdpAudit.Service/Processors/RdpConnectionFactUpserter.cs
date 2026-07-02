@@ -1,18 +1,27 @@
 /* Project: RDPAudit 2.0 | Author: Mikhail Deynekin | Site: Deynekin.com | Email: Mikhail@Deynekin.com */
-// Version: 2.1.1
+// Version: 2.1.2
 // File   : RdpConnectionFactUpserter.cs
 // Project: RdpAudit.Service (RdpAudit.Service.Processors)
 // Purpose: Batched merge layer that turns normalised RawEvent rows into idempotent upserts
-//          against RdpConnectionFacts. Fixes two defects: (1) strong-key events (LogonId, or
-//          WtsSessionId+UserName) with no direct IP yet were silently dropped forever, leaving
-//          RDP Activity empty even when identity was fully known; (2) CS8601 — RdpConnectionFact.Ip
-//          is a non-nullable string (empty string is the model's "no IP yet" sentinel, per
-//          RdpAudit.Core/Models/RdpConnectionFact.cs), but the previous version assigned a
-//          nullable Candidate.Ip directly and null-checked existing.Ip as if it were nullable.
-//          All IP presence checks now use string.IsNullOrEmpty(...) against the non-nullable
-//          model contract instead of null comparisons.
-// Depends: AuditDbContext, RawEvent, RdpConnectionFact, ILogger<RdpConnectionFactUpserter>,
-//          IOptionsMonitor<RdpAuditOptions>
+//          against RdpConnectionFacts.
+//          v2.1.0: strong-key events (LogonId, or WtsSessionId+UserName) now always create a
+//          fact row even without a direct IP yet — the previous rule required a direct/sentinel
+//          IP to seed ANY new row, silently discarding identity-first events and leaving RDP
+//          Activity empty even with a healthy Live Events feed. IP is backfilled by a later
+//          observation in the same logon chain instead.
+//          v2.1.0: added DEBUG-mode structured tracing at every rejection/merge decision point.
+//          v2.1.1: fixed CS8601 — RdpConnectionFact.Ip is a non-nullable string whose "no IP
+//          yet" sentinel is string.Empty (never null); all IP presence checks use
+//          string.IsNullOrEmpty(...) instead of null comparisons, and assignments use
+//          `?? string.Empty` / a guarded `!`.
+//          v2.1.2: logger/options restored as OPTIONAL constructor parameters. Existing unit
+//          tests (RdpConnectionFactUpserterTests.cs, EventNormalizerStageIpDTests.cs) construct
+//          this type as `new RdpConnectionFactUpserter()` with no arguments — making the
+//          diagnostics dependencies mandatory broke 20+ call sites with CS7036. Production DI
+//          still resolves and injects real ILogger/IOptionsMonitor instances; tests get a fully
+//          functional upserter with diagnostics silently disabled (DebugEnabled=false).
+// Depends: AuditDbContext, RawEvent, RdpConnectionFact, ILogger<RdpConnectionFactUpserter>?,
+//          IOptionsMonitor<RdpAuditOptions>?
 // Extends: Add a new EventKind branch + ClassifyEvent case when a new channel/event needs to
 //          participate in connection-fact lifecycle tracking; update KeyStrength rules if a new
 //          identity field becomes available.
@@ -34,9 +43,9 @@ namespace RdpAudit.Service.Processors;
 /// identity key (LogonId, or WtsSessionId+UserName) is always materialised into a fact row —
 /// IP presence only controls whether the IP column is populated immediately or backfilled by a
 /// later observation in the same logon chain. A weak key (username-only) still requires a
-/// direct or sentinel IP to avoid seeding unanchored noise rows. Note: <see cref="RdpConnectionFact.Ip"/>
-/// is a non-nullable string whose "no IP yet" sentinel value is <see cref="string.Empty"/> —
-/// never null — matching the model's documented contract.
+/// direct or sentinel IP to avoid seeding unanchored noise rows. Note:
+/// <see cref="RdpConnectionFact.Ip"/> is a non-nullable string whose "no IP yet" sentinel value
+/// is <see cref="string.Empty"/> — never null.
 /// </summary>
 public sealed class RdpConnectionFactUpserter
 {
@@ -57,27 +66,26 @@ public sealed class RdpConnectionFactUpserter
 	/// </summary>
 	internal const string UnresolvedIpSentinel = "0.0.0.0";
 
-// Version: 2.1.2
-// Fix: CS7036 in 20+ existing test call sites — logger/options were made mandatory in 2.1.0,
-// breaking every test that constructs this class directly (new RdpConnectionFactUpserter()).
-// Restored as optional parameters with null-safe defaults so both production DI (which always
-// supplies real instances) and existing unit tests (which don't need diagnostics) compile
-// unchanged. All logger calls use the null-conditional operator accordingly.
+	private readonly ILogger<RdpConnectionFactUpserter>? _logger;
+	private readonly IOptionsMonitor<RdpAuditOptions>? _options;
 
-private readonly ILogger<RdpConnectionFactUpserter>? _logger;
-private readonly IOptionsMonitor<RdpAuditOptions>? _options;
+	// ── Construction ─────────────────────────────────────────────────────────────
 
-public RdpConnectionFactUpserter(
-	ILogger<RdpConnectionFactUpserter>? logger = null,
-	IOptionsMonitor<RdpAuditOptions>? options = null)
-{
-	_logger = logger;
-	_options = options;
-}
+	/// <summary>
+	/// <paramref name="logger"/> and <paramref name="options"/> are optional: production DI
+	/// always supplies real instances, enabling DEBUG-mode structured tracing; unit tests may
+	/// construct this type with the parameterless form, in which case all diagnostic logging is
+	/// a no-op via the null-conditional operator.
+	/// </summary>
+	public RdpConnectionFactUpserter(
+		ILogger<RdpConnectionFactUpserter>? logger = null,
+		IOptionsMonitor<RdpAuditOptions>? options = null)
+	{
+		_logger = logger;
+		_options = options;
+	}
 
-private bool DebugEnabled => _options?.CurrentValue.Diagnostics.DebugMode == true;
-
-	private bool DebugEnabled => _options.CurrentValue.Diagnostics.DebugMode;
+	private bool DebugEnabled => _options?.CurrentValue.Diagnostics.DebugMode == true;
 
 	// ── Public API ───────────────────────────────────────────────────────────────
 
@@ -117,7 +125,7 @@ private bool DebugEnabled => _options?.CurrentValue.Diagnostics.DebugMode == tru
 
 		if (debugEnabled)
 		{
-			_logger.LogDebug(
+			_logger?.LogDebug(
 				"RdpConnectionFactUpserter.ApplyAsync: {Total} events in batch, {Candidates} produced a candidate, {Rejected} were rejected before keying",
 				entities.Count, candidates.Count, rejected);
 		}
@@ -243,7 +251,7 @@ private bool DebugEnabled => _options?.CurrentValue.Diagnostics.DebugMode == tru
 
 		if (debugEnabled)
 		{
-			_logger.LogDebug(
+			_logger?.LogDebug(
 				"RdpConnectionFactUpserter.ApplyAsync: {Groups} identity groups processed — {Created} new facts created, {Updated} existing facts touched, {DroppedOnMerge} candidate applications skipped by Merge",
 				grouped.Count, created, updated, droppedOnMerge);
 		}
@@ -365,19 +373,13 @@ private bool DebugEnabled => _options?.CurrentValue.Diagnostics.DebugMode == tru
 			KeyStrength strength = ClassifyKeyStrength(key);
 			bool hasAnchorIp = candidateHasIp && (!c.IpIsDerived || c.IsUnresolvedSentinel);
 
-			// v2.1.0 fix: a strong identity key (LogonId, or WtsSessionId+UserName) is
-			// sufficient to seed a new fact row on its own — requiring a direct IP up front
-			// meant identity-first events (very common — session correlation frequently
-			// resolves the IP a few events LATER in the same logon chain) were silently
-			// discarded and could never be recovered. A weak (username-only) key still
-			// requires a direct or sentinel IP to avoid seeding an unanchored noise row.
 			bool canCreate = strength == KeyStrength.Strong || hasAnchorIp;
 
 			if (!canCreate)
 			{
 				if (debugEnabled)
 				{
-					_logger.LogDebug(
+					_logger?.LogDebug(
 						"RdpConnectionFactUpserter Merge DROP: Key={Key} EventId={EventId} Kind={Kind} KeyStrength={Strength} — cannot seed a new fact: weak key requires a direct/sentinel IP but Ip={Ip} IpIsDerived={IpIsDerived}",
 						key, c.EventId, c.Kind, strength, c.Ip, c.IpIsDerived);
 				}
@@ -385,8 +387,6 @@ private bool DebugEnabled => _options?.CurrentValue.Diagnostics.DebugMode == tru
 				return null;
 			}
 
-			// RdpConnectionFact.Ip is a non-nullable string; string.Empty is the model's
-			// documented "no IP yet" sentinel (see RdpConnectionFact.cs), never null.
 			RdpConnectionFact row = new()
 			{
 				Ip = c.Ip ?? string.Empty,
@@ -408,7 +408,7 @@ private bool DebugEnabled => _options?.CurrentValue.Diagnostics.DebugMode == tru
 
 			if (debugEnabled)
 			{
-				_logger.LogDebug(
+				_logger?.LogDebug(
 					"RdpConnectionFactUpserter Merge CREATE: Key={Key} EventId={EventId} Kind={Kind} Ip={Ip} IpIsDerived={IpIsDerived} LogonId={LogonId} WtsSessionId={WtsSessionId} UserName={UserName}",
 					key, c.EventId, c.Kind, row.Ip, c.IpIsDerived, c.LogonId, c.WtsSessionId, c.UserName);
 			}
@@ -428,16 +428,12 @@ private bool DebugEnabled => _options?.CurrentValue.Diagnostics.DebugMode == tru
 
 		bool existingHasIp = !string.IsNullOrEmpty(existing.Ip);
 
-		// Update IP only for direct, non-sentinel observations. Never let an unresolved-IP
-		// sentinel overwrite a real IP that was already recorded.
 		if (candidateHasIp && !c.IpIsDerived && !c.IsUnresolvedSentinel)
 		{
 			existing.Ip = c.Ip!;
 		}
 		else if (!existingHasIp && candidateHasIp)
 		{
-			// Backfill: the row was seeded without an IP (strong-key fast path) and this
-			// observation — even if derived — is the first IP information available.
 			existing.Ip = c.Ip!;
 		}
 
@@ -472,8 +468,6 @@ private bool DebugEnabled => _options?.CurrentValue.Diagnostics.DebugMode == tru
 			case EventKind.SuccessfulLogon:
 			case EventKind.AuthenticatedConnection:
 			case EventKind.SessionLogon:
-				// NLA hosts almost never emit Security 4624 for the RDP logon flow, so TS-RCM
-				// 1149 and TS-LSM 21 are often the only authoritative proof of success.
 				existing.SuccessfulLogons++;
 				break;
 		}
@@ -483,7 +477,7 @@ private bool DebugEnabled => _options?.CurrentValue.Diagnostics.DebugMode == tru
 
 		if (debugEnabled)
 		{
-			_logger.LogDebug(
+			_logger?.LogDebug(
 				"RdpConnectionFactUpserter Merge UPDATE: Key={Key} EventId={EventId} Kind={Kind} Ip={Ip} IsActive={IsActive} SuccessfulLogons={SuccessfulLogons} FailedLogons={FailedLogons}",
 				key, c.EventId, c.Kind, existing.Ip, existing.IsActive, existing.SuccessfulLogons, existing.FailedLogons);
 		}
@@ -750,13 +744,13 @@ private bool DebugEnabled => _options?.CurrentValue.Diagnostics.DebugMode == tru
 
 		if (kind == EventKind.Unrelated)
 		{
-			_logger.LogDebug(
+			_logger?.LogDebug(
 				"RdpConnectionFactUpserter BuildCandidate DROP: EventId={EventId} Channel={Channel} LogonType={LogonType} classified as Unrelated — no fact row will ever be produced for this event shape.",
 				e.EventId, e.Channel, e.LogonType);
 			return;
 		}
 
-		_logger.LogDebug(
+		_logger?.LogDebug(
 			"RdpConnectionFactUpserter BuildCandidate DROP: EventId={EventId} Channel={Channel} Kind={Kind} has no usable key — LogonId={LogonId} SessionId={SessionId} UserName={UserName}. " +
 			"A key requires LogonId, OR (SessionId AND UserName), OR UserName alone.",
 			e.EventId, e.Channel, kind, e.LogonId, e.SessionId, e.UserName);
@@ -786,9 +780,6 @@ private bool DebugEnabled => _options?.CurrentValue.Diagnostics.DebugMode == tru
 		Strong,
 	}
 
-	/// <summary>Per-event candidate. Note <see cref="Ip"/> stays nullable at this stage — the
-	/// non-null/empty-string contract only applies once the value is written into
-	/// <see cref="RdpConnectionFact.Ip"/>.</summary>
 	internal readonly record struct Candidate(
 		string Key,
 		string? LogonId,
