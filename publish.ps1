@@ -25,7 +25,7 @@
 
 [CmdletBinding()]
 param(
-	[string]$Version = "1.5.0",
+	[string]$Version = "1.6.0",
 	[string]$Configuration = "Release",
 	# Build SHA stamped into AssemblyInformationalVersion as SemVer build metadata (after '+').
 	# Left empty here on purpose: when not supplied it is auto-resolved from `git rev-parse HEAD`
@@ -34,13 +34,37 @@ param(
 	# Pass an explicit value (or '-' to disable) only when building outside a git checkout.
 	[string]$SourceRevisionId = "",
 	[switch]$Force,
-	[switch]$SelfTest
+	[switch]$SelfTest,
+	[switch]$IncludeBenchmarks
 )
 
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
 $publishRoot = Join-Path $PSScriptRoot "publish"
+
+function Write-BuildInfoManifest {
+    $manifest = @{
+        version         = $Version
+        configuration   = $Configuration
+        sourceRevision  = $resolvedRevision
+        publishedUtc    = (Get-Date).ToUniversalTime().ToString("o")
+        components      = @{
+            Service      = "1.6.0"
+            Configurator = "1.6.0"
+            Mikrotik     = "1.6.0"
+        }
+        features        = @{
+            lockFreeRingBuffer   = $true
+            sqliteBundle         = $true
+            benchmarks           = $IncludeBenchmarks.IsPresent
+        }
+    }
+
+    $manifestPath = Join-Path $publishRoot "build-info.json"
+    $manifest | ConvertTo-Json -Depth 5 | Set-Content -Path $manifestPath -Encoding UTF8 -NoNewline
+    Write-Host "✓ Wrote build manifest: $manifestPath" -ForegroundColor Green
+}
 
 # Force deterministic English .NET/MSBuild/NuGet output and a UTF-8 console. The project
 # intentionally emits English-only diagnostics; without these settings the .NET SDK localizes
@@ -458,6 +482,68 @@ function Remove-PublishOutput {
 }
 
 # -----------------------------------------------------------------------------
+# Pre-flight validation
+# -----------------------------------------------------------------------------
+# Validates that critical build prerequisites for RDPAudit 2.0 (Lock-Free Ring Buffer)
+# are in place before attempting publish. Fails fast with actionable diagnostics.
+function Test-PublishPrerequisites {
+    $failures = New-Object 'System.Collections.Generic.List[string]'
+
+    # 1. Verify AllowUnsafeBlocks is enabled in Service project (required for NativeMemory/pointers)
+    $serviceCsproj = Join-Path $PSScriptRoot "src/RdpAudit.Service/RdpAudit.Service.csproj"
+    if (Test-Path $serviceCsproj) {
+        $content = Get-Content $serviceCsproj -Raw -Encoding UTF8
+        if ($content -notmatch '<AllowUnsafeBlocks>\s*true\s*</AllowUnsafeBlocks>') {
+            $failures.Add("RdpAudit.Service.csproj is missing <AllowUnsafeBlocks>true</AllowUnsafeBlocks>. " +
+                          "This is REQUIRED for the Lock-Free Ring Buffer (NativeMemory, unsafe blocks, pointers). " +
+                          "Add it inside the first <PropertyGroup>.")
+        }
+    } else {
+        $failures.Add("Service project not found at '$serviceCsproj'.")
+    }
+
+    # 2. Verify .NET SDK version is 8.0+
+    try {
+        $sdkVersion = (& dotnet --version 2>$null).Trim()
+        if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($sdkVersion)) {
+            $failures.Add("dotnet SDK not found on PATH.")
+        } else {
+            $parts = $sdkVersion -split '\.'
+            $major = [int]$parts[0]
+            if ($major -lt 8) {
+                $failures.Add("RDPAudit 2.0 requires .NET SDK 8.0 or later. Found: $sdkVersion")
+            }
+        }
+    } catch {
+        $failures.Add("Could not determine .NET SDK version: " + $_.Exception.Message)
+    }
+
+    # 3. Verify Directory.Build.props has matching VersionPrefix
+    $dbp = Join-Path $PSScriptRoot "Directory.Build.props"
+    if (Test-Path $dbp) {
+        $dbpContent = Get-Content $dbp -Raw -Encoding UTF8
+        if ($dbpContent -match '<VersionPrefix[^>]*>\s*([^<]+?)\s*</VersionPrefix>') {
+            $dbpVersion = $Matches[1]
+            if ($dbpVersion -ne $Version) {
+                Write-Host ("Warning: publish.ps1 Version='$Version' differs from Directory.Build.props VersionPrefix='$dbpVersion'. " +
+                            "The -p:VersionPrefix override will win, but consider syncing them.") -ForegroundColor Yellow
+            }
+        }
+    }
+
+    if ($failures.Count -gt 0) {
+        $sb = [System.Text.StringBuilder]::new()
+        [void]$sb.AppendLine("Pre-flight validation failed ($($failures.Count) issue(s)):")
+        foreach ($f in $failures) {
+            [void]$sb.AppendLine("  ✗ $f")
+        }
+        throw $sb.ToString().TrimEnd()
+    }
+
+    Write-Host "✓ Pre-flight validation passed (unsafe blocks enabled, SDK 8.0+, versions aligned)" -ForegroundColor Green
+}
+
+# -----------------------------------------------------------------------------
 # Publish
 # -----------------------------------------------------------------------------
 function Publish-Project {
@@ -562,6 +648,44 @@ function Resolve-SqliteBundleSource {
 	}
 
 	return $bundleObjDir
+}
+
+# -----------------------------------------------------------------------------
+# Documentation copy
+# -----------------------------------------------------------------------------
+function Copy-PublishDocumentation {
+    $docsSource = Join-Path $PSScriptRoot "docs"
+    $docsTarget = Join-Path $publishRoot "Docs"
+
+    if (-not (Test-Path $docsSource)) {
+        Write-Diag "No docs/ folder found; skipping documentation copy."
+        return
+    }
+
+    if (-not (Test-Path $docsTarget)) {
+        New-Item -ItemType Directory -Path $docsTarget | Out-Null
+    }
+
+    $copied = 0
+    foreach ($file in (Get-ChildItem -Path $docsSource -File -Filter "*.md" -ErrorAction SilentlyContinue)) {
+        Copy-Item -Path $file.FullName -Destination $docsTarget -Force
+        $copied++
+        Write-Diag ("Copied doc: " + $file.Name)
+    }
+
+    # Also copy README.md and Detect_Attack_Strategy docs if present
+    $extras = @("README.md", "Detect_Attack_Strategy_v3.md")
+    foreach ($name in $extras) {
+        $path = Join-Path $PSScriptRoot $name
+        if (Test-Path $path) {
+            Copy-Item -Path $path -Destination $docsTarget -Force
+            $copied++
+        }
+    }
+
+    if ($copied -gt 0) {
+        Write-Host "✓ Copied $copied documentation file(s) to $docsTarget" -ForegroundColor Green
+    }
 }
 
 # Copies the SQLite support files into $TargetDir, resolving each from $SourceDir (the loose
@@ -894,26 +1018,35 @@ function Invoke-PublishScriptSelfCheck {
 # Entry point
 # -----------------------------------------------------------------------------
 if ($SelfTest) {
-	Invoke-PublishScriptSelfCheck
-	return
+    Invoke-PublishScriptSelfCheck
+    return
 }
+
+Test-PublishPrerequisites                    # NEW: pre-flight validation
 
 Remove-PublishOutput -Path $publishRoot
 
 $resolvedRevision = Resolve-SourceRevisionId -Override $SourceRevisionId
 if (-not [string]::IsNullOrWhiteSpace($resolvedRevision)) {
-	Write-Host ("Stamping build SHA: {0}+{1}" -f $Version, $resolvedRevision) -ForegroundColor Cyan
+    Write-Host ("Stamping build SHA: {0}+{1}" -f $Version, $resolvedRevision) -ForegroundColor Cyan
 } else {
-	Write-Host ("Publishing {0} without a build SHA (no git checkout or SHA disabled)." -f $Version) -ForegroundColor DarkYellow
+    Write-Host ("Publishing {0} without a build SHA (no git checkout or SHA disabled)." -f $Version) -ForegroundColor DarkYellow
 }
 
 Publish-Project -Project "src/RdpAudit.Service/RdpAudit.Service.csproj"           -Subdir "Service"      -RevisionId $resolvedRevision
 Publish-Project -Project "src/RdpAudit.Configurator/RdpAudit.Configurator.csproj" -Subdir "Configurator" -RevisionId $resolvedRevision
 Publish-Project -Project "src/RdpAudit.Mikrotik/RdpAudit.Mikrotik.csproj"         -Subdir "Mikrotik"     -RevisionId $resolvedRevision
 
-# The single-file Configurator embeds its SQLite dependencies; lay them down as loose files so
-# external PowerShell diagnostics can load the provider. This runs AFTER the publish so it copies
-# into the final published Configurator folder.
+if ($IncludeBenchmarks) {                    # NEW: optional benchmarks
+    $benchProj = "src/RdpAudit.Service.Benchmarks/RdpAudit.Service.Benchmarks.csproj"
+    if (Test-Path (Join-Path $PSScriptRoot $benchProj)) {
+        Publish-Project -Project $benchProj -Subdir "Benchmarks" -RevisionId $resolvedRevision
+    }
+}
+
 Ensure-SqliteSupportBundle -ConfiguratorPublishDir (Join-Path $publishRoot "Configurator") -Version $Version
+
+Copy-PublishDocumentation                    # NEW: docs/ → publish/Docs
+Write-BuildInfoManifest                      # NEW: build-info.json
 
 Write-Host "Done -> $publishRoot" -ForegroundColor Green
