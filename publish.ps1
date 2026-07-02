@@ -44,26 +44,26 @@ Set-StrictMode -Version Latest
 $publishRoot = Join-Path $PSScriptRoot "publish"
 
 function Write-BuildInfoManifest {
-    $manifest = @{
-        version         = $Version
-        configuration   = $Configuration
-        sourceRevision  = $resolvedRevision
-        publishedUtc    = (Get-Date).ToUniversalTime().ToString("o")
-        components      = @{
-            Service      = $Version
-            Configurator = $Version
-            Mikrotik     = $Version
-        }
-        features        = @{
-            lockFreeRingBuffer   = $true
-            sqliteBundle         = $true
-            benchmarks           = $IncludeBenchmarks.IsPresent
-        }
-    }
+	$manifest = @{
+		version         = $Version
+		configuration   = $Configuration
+		sourceRevision  = $resolvedRevision
+		publishedUtc    = (Get-Date).ToUniversalTime().ToString("o")
+		components      = @{
+			Service      = $Version
+			Configurator = $Version
+			Mikrotik     = $Version
+		}
+		features        = @{
+			lockFreeRingBuffer   = $true
+			sqliteBundle         = $true
+			benchmarks           = $IncludeBenchmarks.IsPresent
+		}
+	}
 
-    $manifestPath = Join-Path $publishRoot "build-info.json"
-    $manifest | ConvertTo-Json -Depth 5 | Set-Content -Path $manifestPath -Encoding UTF8 -NoNewline
-    Write-Host "✓ Wrote build manifest: $manifestPath" -ForegroundColor Green
+	$manifestPath = Join-Path $publishRoot "build-info.json"
+	$manifest | ConvertTo-Json -Depth 5 | Set-Content -Path $manifestPath -Encoding UTF8 -NoNewline
+	Write-Host "✓ Wrote build manifest: $manifestPath" -ForegroundColor Green
 }
 
 # Force deterministic English .NET/MSBuild/NuGet output and a UTF-8 console. The project
@@ -1040,8 +1040,8 @@ function Invoke-PublishScriptSelfCheck {
 # Entry point
 # -----------------------------------------------------------------------------
 if ($SelfTest) {
-    Invoke-PublishScriptSelfCheck
-    return
+	Invoke-PublishScriptSelfCheck
+	return
 }
 
 Test-PublishPrerequisites                    # NEW: pre-flight validation
@@ -1050,9 +1050,9 @@ Remove-PublishOutput -Path $publishRoot
 
 $resolvedRevision = Resolve-SourceRevisionId -Override $SourceRevisionId
 if (-not [string]::IsNullOrWhiteSpace($resolvedRevision)) {
-    Write-Host ("Stamping build SHA: {0}+{1}" -f $Version, $resolvedRevision) -ForegroundColor Cyan
+	Write-Host ("Stamping build SHA: {0}+{1}" -f $Version, $resolvedRevision) -ForegroundColor Cyan
 } else {
-    Write-Host ("Publishing {0} without a build SHA (no git checkout or SHA disabled)." -f $Version) -ForegroundColor DarkYellow
+	Write-Host ("Publishing {0} without a build SHA (no git checkout or SHA disabled)." -f $Version) -ForegroundColor DarkYellow
 }
 
 Publish-Project -Project "src/RdpAudit.Service/RdpAudit.Service.csproj"           -Subdir "Service"      -RevisionId $resolvedRevision
@@ -1060,10 +1060,10 @@ Publish-Project -Project "src/RdpAudit.Configurator/RdpAudit.Configurator.csproj
 Publish-Project -Project "src/RdpAudit.Mikrotik/RdpAudit.Mikrotik.csproj"         -Subdir "Mikrotik"     -RevisionId $resolvedRevision
 
 if ($IncludeBenchmarks) {                    # NEW: optional benchmarks
-    $benchProj = "src/RdpAudit.Service.Benchmarks/RdpAudit.Service.Benchmarks.csproj"
-    if (Test-Path (Join-Path $PSScriptRoot $benchProj)) {
-        Publish-Project -Project $benchProj -Subdir "Benchmarks" -RevisionId $resolvedRevision
-    }
+	$benchProj = "src/RdpAudit.Service.Benchmarks/RdpAudit.Service.Benchmarks.csproj"
+	if (Test-Path (Join-Path $PSScriptRoot $benchProj)) {
+		Publish-Project -Project $benchProj -Subdir "Benchmarks" -RevisionId $resolvedRevision
+	}
 }
 
 Invoke-SqliteSupportBundle -ConfiguratorPublishDir (Join-Path $publishRoot 'Configurator') -Version $Version
