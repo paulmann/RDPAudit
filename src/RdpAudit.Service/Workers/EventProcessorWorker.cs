@@ -1,5 +1,5 @@
 /* Project: RDPAudit 2.0 | Author: Mikhail Deynekin | Site: Deynekin.com | Email: Mikhail@Deynekin.com */
-// Version: 2.1.5
+// Version: 2.2.0
 // File   : EventProcessorWorker.cs
 // Project: RdpAudit.Service (RdpAudit.Service.Workers)
 // Purpose: Drains the lock-free ring buffer in batches, normalises payloads, and persists to
@@ -11,7 +11,7 @@
 //          v2.1.3: DrainBatchAsync briefly used ValueTask<T> to silence CS1998, but reflection
 //          in EventProcessorWorkerRingBufferTests.InvokeDrainBatchAsync hard-casts the result to
 //          Task<List<RawEventDto>>. Reverted to Task<T>; kept non-async via Task.FromResult
-//          since the drain loop (SpinWait + Channel.TryRead) is fully synchronous. Constructor
+//          since the synchronous fast-path (Channel.TryRead) never awaits. Constructor
 //          guard clauses relaxed to channel/metrics/logger/options only — the same test suite
 //          constructs the worker with `null!` for factory/normalizer/correlationUpserter/
 //          connectionFactUpserter/authAttemptFactUpserter/securityWatchdog/opLog while
@@ -22,6 +22,16 @@
 //          never Task<List<...>?>), returning the shared EmptyBatch instance on timeout/
 //          cancellation instead of null — this also avoids allocating a fresh empty List on
 //          every idle drain tick. EmptyBatch is declared exactly once, in Fields & DI.
+//          v2.2.0: ROOT-CAUSE FIX for empty RDP Activity with healthy Live Events. ExecuteAsync
+//          now yields immediately (await Task.Yield()) so BackgroundService.StartAsync returns
+//          control to the Generic Host synchronously — previously the synchronous DrainBatchAsync
+//          fast-path plus a tight `continue` idle loop could delay the StartAsync return long
+//          enough that AttackStatsRefreshWorker (registered later) never received StartAsync,
+//          leaving AttackStats permanently empty. The idle drain path is now cooperatively
+//          asynchronous (Channel.WaitToReadAsync with a bounded timeout) instead of a raw
+//          SpinWait busy-loop, eliminating both the startup stall AND 100% CPU spin on idle
+//          hosts, while preserving the synchronous TryRead fast-path and the reflection-tested
+//          Task<List<RawEventDto>> return contract.
 // Depends: EventChannel, IDbContextFactory<AuditDbContext>, EventNormalizer,
 //          SessionIpCorrelationUpserter, RdpConnectionFactUpserter, AuthAttemptFactUpserter,
 //          SecurityCorrelationWatchdog, ServiceMetrics, IOptionsMonitor<RdpAuditOptions>
@@ -136,6 +146,12 @@ public sealed class EventProcessorWorker : BackgroundService
 	{
 		_logger.LogInformation("{Worker} starting", nameof(EventProcessorWorker));
 
+		// CRITICAL: return control to the Generic Host immediately so StartAsync completes and
+		// subsequent hosted services (AttackStatsRefreshWorker et al.) receive StartAsync. Without
+		// this yield, a synchronous drain fast-path plus a tight idle loop can stall the ordered
+		// startup chain, leaving AttackStats permanently empty despite a healthy Live Events feed.
+		await Task.Yield();
+
 		try
 		{
 			while (!stoppingToken.IsCancellationRequested)
@@ -225,48 +241,76 @@ public sealed class EventProcessorWorker : BackgroundService
 	/// Drains the lock-free ring buffer up to <c>Monitoring.BatchSize</c> items or until the
 	/// batch timeout elapses. Always returns a non-null <see cref="List{T}"/> — an empty one
 	/// (the shared <see cref="EmptyBatch"/> instance) when nothing arrived before the timeout or
-	/// cancellation was requested. The drain loop is fully synchronous (SpinWait +
-	/// Channel.TryRead, no I/O), so the method itself is not <c>async</c>; it returns
-	/// <see cref="Task.FromResult{TResult}(TResult)"/> directly. Kept as
-	/// <see cref="Task{TResult}"/> rather than <see cref="ValueTask{TResult}"/> because
-	/// <c>EventProcessorWorkerRingBufferTests</c> invokes this method via reflection and casts
-	/// the result to <c>Task&lt;List&lt;RawEventDto&gt;&gt;</c>.
+	/// cancellation was requested.
+	/// <para>
+	/// The synchronous fast-path (<c>Channel.TryRead</c>) returns immediately via
+	/// <see cref="Task.FromResult{TResult}(TResult)"/> when items are already buffered. When the
+	/// buffer is empty, the method awaits <c>WaitToReadAsync</c> under a bounded timeout instead
+	/// of busy-spinning — this yields the thread to the host (essential during ordered startup)
+	/// and prevents 100% CPU on idle servers. Kept as <see cref="Task{TResult}"/> rather than
+	/// <see cref="ValueTask{TResult}"/> because <c>EventProcessorWorkerRingBufferTests</c> invokes
+	/// this method via reflection and casts the result to <c>Task&lt;List&lt;RawEventDto&gt;&gt;</c>.
+	/// </para>
 	/// </summary>
-	private Task<List<RawEventDto>> DrainBatchAsync(CancellationToken stoppingToken)
+	private async Task<List<RawEventDto>> DrainBatchAsync(CancellationToken stoppingToken)
 	{
 		MonitoringOptions monitoring = _options.CurrentValue.Monitoring;
 		int max = Math.Max(1, monitoring.BatchSize);
 		TimeSpan timeout = TimeSpan.FromMilliseconds(Math.Max(50, monitoring.BatchTimeoutMilliseconds));
 
-		SpinWait spinner = default;
-		long startTimestamp = Stopwatch.GetTimestamp();
-		long timeoutTicks = (long)(timeout.TotalSeconds * Stopwatch.Frequency);
-
-		while (!stoppingToken.IsCancellationRequested)
+		// Synchronous fast-path: items already buffered — no await, no allocation beyond the batch.
+		if (TryDrainReady(max, out List<RawEventDto> ready))
 		{
-			if (_channel.Channel.TryRead(out RawEventDto first))
-			{
-				_metrics.IncrementRingBufferRead();
-
-				List<RawEventDto> batch = new(max) { first };
-				while (batch.Count < max && _channel.Channel.TryRead(out RawEventDto next))
-				{
-					_metrics.IncrementRingBufferRead();
-					batch.Add(next);
-				}
-
-				return Task.FromResult(batch);
-			}
-
-			if (Stopwatch.GetTimestamp() - startTimestamp >= timeoutTicks)
-			{
-				return Task.FromResult(EmptyBatch);
-			}
-
-			spinner.SpinOnce();
+			return ready;
 		}
 
-		return Task.FromResult(EmptyBatch);
+		// Idle path: cooperatively wait for the next item under a bounded timeout. This is the
+		// yield point that keeps the ordered startup chain moving and the CPU idle when there is
+		// no work, without changing the empty-batch contract.
+		using CancellationTokenSource timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
+		timeoutCts.CancelAfter(timeout);
+
+		try
+		{
+			while (await _channel.Channel.WaitToReadAsync(timeoutCts.Token).ConfigureAwait(false))
+			{
+				if (TryDrainReady(max, out List<RawEventDto> drained))
+				{
+					return drained;
+				}
+			}
+		}
+		catch (OperationCanceledException)
+		{
+			// Timeout elapsed or the service is stopping — either way, an empty batch is correct.
+		}
+
+		return EmptyBatch;
+	}
+
+	/// <summary>
+	/// Synchronously drains up to <paramref name="max"/> already-buffered items. Returns
+	/// <see langword="true"/> with a freshly allocated, non-empty batch when at least one item was
+	/// read; otherwise returns <see langword="false"/> without allocating.
+	/// </summary>
+	private bool TryDrainReady(int max, out List<RawEventDto> batch)
+	{
+		if (!_channel.Channel.TryRead(out RawEventDto first))
+		{
+			batch = EmptyBatch;
+			return false;
+		}
+
+		_metrics.IncrementRingBufferRead();
+
+		batch = new List<RawEventDto>(max) { first };
+		while (batch.Count < max && _channel.Channel.TryRead(out RawEventDto next))
+		{
+			_metrics.IncrementRingBufferRead();
+			batch.Add(next);
+		}
+
+		return true;
 	}
 
 	private async Task PersistBatchAsync(List<RawEventDto> dtos, CancellationToken ct)
