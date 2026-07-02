@@ -1,17 +1,27 @@
-// File:    src/RdpAudit.Service/Processors/AuthAttemptFactUpserter.cs
-// Module:  RdpAudit.Service.Processors
-// Purpose: Translates the v3 authentication-outcome events into AuthAttemptFact rows — the
-//          atomic source of truth per Detect_Attack_Strategy_v3.md §8.1. Only authoritative
-//          outcome-bearing events create rows; RdpCoreTS / TCP / WTS / LSM events MUST NOT.
-//          Outcome authority hierarchy (v3 §6.3 rule 3):
+/* Project: RDPAudit 2.0 | Author: Mikhail Deynekin | Site: Deynekin.com | Email: Mikhail@Deynekin.com */
+// Version: 2.1.0
+// File   : AuthAttemptFactUpserter.cs
+// Project: RdpAudit.Service (RdpAudit.Service.Processors)
+// Purpose: Translates v3 authentication-outcome events into AuthAttemptFact rows — the atomic
+//          source of truth per Detect_Attack_Strategy_v3.md §8.1. Only authoritative
+//          outcome-bearing Security events create rows; RdpCoreTS / TCP / WTS / LSM events
+//          MUST NOT. Outcome authority hierarchy (v3 §6.3 rule 3):
 //          4624/4625 > 4776/4771 > (1149 + LSM 21) > LSM alone > RdpCoreTS/TCP (never).
 //          A 4625 with no IpAddress is still persisted (NeedsCorrelation=true) so the failure
 //          counter is preserved even when NLA strips the address.
-// Extends: System.Object
-// Author:  Mikhail Deynekin
-// Site:    https://Deynekin.com
+//          v2.1.0: honors CancellationToken in the batch loop, adds constructor guard clauses,
+//          and adds DEBUG-mode structured tracing for every rejected event and every
+//          transport-IP correlation outcome, so an empty AuthAttemptFacts table can be
+//          diagnosed from logs alone without re-instrumenting the binary.
+// Depends: AuditDbContext, RawEvent, AuthAttemptFact, RdpTransportIpCache,
+//          ILogger<AuthAttemptFactUpserter>, IOptionsMonitor<RdpAuditOptions>
+// Extends: Add a new case to IsAuthoritativeAuthEvent + ClassifyOutcome when a new Security
+//          event id becomes an authoritative outcome carrier; keep both switches in sync.
 
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
+using RdpAudit.Core.Config;
 using RdpAudit.Core.Data;
 using RdpAudit.Core.Events;
 using RdpAudit.Core.Models;
@@ -19,23 +29,43 @@ using RdpAudit.Core.Util;
 
 namespace RdpAudit.Service.Processors;
 
-/// <summary>Translates outcome-bearing Windows events into <see cref="AuthAttemptFact"/> rows.</summary>
+/// <summary>Translates outcome-bearing Windows Security events into <see cref="AuthAttemptFact"/>
+/// rows — the single atomic source of truth consumed by Attack Statistics and RDP Activity
+/// aggregates.</summary>
 public sealed class AuthAttemptFactUpserter
 {
+	// ── Fields & DI ──────────────────────────────────────────────────────────────
+
 	private const string SecurityChannel = "Security";
 
 	private readonly RdpTransportIpCache _transportIpCache;
+	private readonly ILogger<AuthAttemptFactUpserter> _logger;
+	private readonly IOptionsMonitor<RdpAuditOptions> _options;
 
-	public AuthAttemptFactUpserter(RdpTransportIpCache transportIpCache)
+	// ── Construction ─────────────────────────────────────────────────────────────
+
+	public AuthAttemptFactUpserter(
+		RdpTransportIpCache transportIpCache,
+		ILogger<AuthAttemptFactUpserter> logger,
+		IOptionsMonitor<RdpAuditOptions> options)
 	{
+		ArgumentNullException.ThrowIfNull(transportIpCache);
+		ArgumentNullException.ThrowIfNull(logger);
+		ArgumentNullException.ThrowIfNull(options);
+
 		_transportIpCache = transportIpCache;
+		_logger = logger;
+		_options = options;
 	}
 
+	private bool DebugEnabled => _options.CurrentValue.Diagnostics.DebugMode;
+
+	// ── Public API ───────────────────────────────────────────────────────────────
+
 	/// <summary>
-	/// Apply a batch of normalized events to <paramref name="db"/>, creating one
-	/// <see cref="AuthAttemptFact"/> per authoritative outcome event. Returns the number of
-	/// failed/succeeded rows created so callers can update telemetry. Caller commits the
-	/// surrounding transaction.
+	/// Apply a batch of normalized events to <see cref="AuditDbContext.AuthAttemptFacts"/>,
+	/// creating one row per authoritative outcome event. Returns the number of failed/succeeded
+	/// rows created so callers can update telemetry. Caller commits the surrounding transaction.
 	/// </summary>
 	public Task<AuthAttemptFactBatchResult> ApplyAsync(
 		AuditDbContext db,
@@ -44,29 +74,74 @@ public sealed class AuthAttemptFactUpserter
 	{
 		ArgumentNullException.ThrowIfNull(db);
 		ArgumentNullException.ThrowIfNull(entities);
-		_ = ct;
+
+		bool debugEnabled = DebugEnabled;
+
+		if (entities.Count == 0)
+		{
+			return Task.FromResult(new AuthAttemptFactBatchResult(0, 0, default, Array.Empty<AuthAttemptFact>()));
+		}
 
 		int failedCount = 0;
 		int succeededCount = 0;
+		int notAuthoritative = 0;
+		int unknownOutcome = 0;
+		int needsCorrelationCount = 0;
 		DateTime lastUtc = default;
 		DateTime nowUtc = DateTime.UtcNow;
 		List<AuthAttemptFact> created = new();
 
-		// First pass: seed the transport-IP cache from RdpCoreTS 131/140 and TS-RCM 261 so a 4625
-		// in the same batch can find its IP candidate even if both events arrived in the same batch.
+		// First pass: seed the transport-IP cache from RdpCoreTS 131/140 and TS-RCM 261 so a
+		// 4625 in the same batch can find its IP candidate even if both events arrived together.
 		foreach (RawEvent e in entities)
 		{
+			ct.ThrowIfCancellationRequested();
+
 			if (IsTransportIpSource(e))
 			{
 				_transportIpCache.Record(e.SourceIp, e.TimeUtc, e.EventId);
+
+				if (debugEnabled)
+				{
+					_logger.LogDebug(
+						"AuthAttemptFactUpserter TRANSPORT-IP SEED: EventId={EventId} Channel={Channel} Ip={Ip} TimeUtc={TimeUtc}",
+						e.EventId, e.Channel, e.SourceIp, e.TimeUtc);
+				}
 			}
 		}
 
 		foreach (RawEvent e in entities)
 		{
-			AuthAttemptFact? fact = TryBuildFact(e);
+			ct.ThrowIfCancellationRequested();
+
+			if (!IsAuthoritativeAuthEvent(e))
+			{
+				notAuthoritative++;
+
+				if (debugEnabled && IsSecurity(e.Channel))
+				{
+					// Only trace Security-channel misses; TS-RCM/TS-LSM/RdpCoreTS events are
+					// expected to never produce an AuthAttemptFact and would flood the log.
+					_logger.LogDebug(
+						"AuthAttemptFactUpserter DROP: EventId={EventId} Channel={Channel} is on the Security channel but is not in the authoritative outcome carrier list (4624/4625/4648/4768/4769/4771/4776/4825). No AuthAttemptFact row created.",
+						e.EventId, e.Channel);
+				}
+
+				continue;
+			}
+
+			AuthAttemptFact? fact = TryBuildFact(e, debugEnabled);
 			if (fact is null)
 			{
+				unknownOutcome++;
+
+				if (debugEnabled)
+				{
+					_logger.LogDebug(
+						"AuthAttemptFactUpserter DROP: EventId={EventId} Channel={Channel} is authoritative but ClassifyOutcome returned Unknown — check that ClassifyOutcome and IsAuthoritativeAuthEvent stay in sync.",
+						e.EventId, e.Channel);
+				}
+
 				continue;
 			}
 
@@ -74,6 +149,11 @@ public sealed class AuthAttemptFactUpserter
 			fact.EvidenceRawEventId = e.Id;
 			db.AuthAttemptFacts.Add(fact);
 			created.Add(fact);
+
+			if (fact.NeedsCorrelation)
+			{
+				needsCorrelationCount++;
+			}
 
 			switch (fact.Outcome)
 			{
@@ -93,12 +173,24 @@ public sealed class AuthAttemptFactUpserter
 		}
 
 		_transportIpCache.Sweep(nowUtc);
+
+		if (debugEnabled)
+		{
+			_logger.LogDebug(
+				"AuthAttemptFactUpserter.ApplyAsync BATCH SUMMARY: total={Total} createdFacts={Created} (failed={Failed}, succeeded={Succeeded}) notAuthoritative={NotAuthoritative} unknownOutcome={UnknownOutcome} needsCorrelation={NeedsCorrelation}",
+				entities.Count, created.Count, failedCount, succeededCount, notAuthoritative, unknownOutcome, needsCorrelationCount);
+		}
+
 		return Task.FromResult(new AuthAttemptFactBatchResult(failedCount, succeededCount, lastUtc, created));
 	}
 
-	/// <summary>Build an <see cref="AuthAttemptFact"/> from a single normalized event, or null when
-	/// the event is not an authoritative outcome carrier.</summary>
-	internal AuthAttemptFact? TryBuildFact(RawEvent e)
+	// ── Core Logic ───────────────────────────────────────────────────────────────
+
+	/// <summary>Build an <see cref="AuthAttemptFact"/> from a single normalized event, or null
+	/// when the event is not an authoritative outcome carrier.</summary>
+	internal AuthAttemptFact? TryBuildFact(RawEvent e) => TryBuildFact(e, DebugEnabled);
+
+	private AuthAttemptFact? TryBuildFact(RawEvent e, bool debugEnabled)
 	{
 		if (!IsAuthoritativeAuthEvent(e))
 		{
@@ -112,11 +204,11 @@ public sealed class AuthAttemptFactUpserter
 		}
 
 		// v1.2.1: re-run normalisation defensively. RawEvent.SourceIp is normally already
-		// canonical (PerEventIpResolver runs IpNormalizer), but the AuthAttemptFact rows are
-		// the single source of truth that the Attack-Statistics / RDP-Clients aggregates
-		// derive from — if a punctuation-wrapped value ever slips through (legacy rows,
-		// SessionCorrelationCache seed paths, tests that pre-date the normalizer), we MUST
-		// reject it here rather than persist it into the aggregate join key.
+		// canonical (PerEventIpResolver runs IpNormalizer), but AuthAttemptFact rows are the
+		// single source of truth that Attack-Statistics / RDP-Clients aggregates derive from —
+		// if a punctuation-wrapped value ever slips through (legacy rows, SessionCorrelationCache
+		// seed paths, tests that pre-date the normalizer), reject it here rather than persist it
+		// into the aggregate join key.
 		string? ip = IpNormalizer.Normalize(e.SourceIp);
 		bool ipFromCorrelation = e.SourceIpDerived;
 		string enrichmentSource = e.SourceIpDerived ? "LogonIdChain" : "DirectXml";
@@ -127,14 +219,24 @@ public sealed class AuthAttemptFactUpserter
 		if (string.IsNullOrWhiteSpace(ip) && (e.EventId == 4625 || e.EventId == 4624) && IsSecurity(e.Channel))
 		{
 			TransportIpLookup lookup = _transportIpCache.FindCandidate(e.TimeUtc);
+
 			if (lookup.Confidence == TransportIpConfidence.UniqueHighConfidence)
 			{
 				ip = lookup.Ip;
 				ipFromCorrelation = true;
 				enrichmentSource = lookup.EvidenceEventId == 131
 					? "RdpCoreTs131"
-					: lookup.EvidenceEventId == 140 ? "RdpCoreTs140" : "TsRcm261";
+					: lookup.EvidenceEventId == 140
+						? "RdpCoreTs140"
+						: "TsRcm261";
 				enrichmentConfidence = "High";
+
+				if (debugEnabled)
+				{
+					_logger.LogDebug(
+						"AuthAttemptFactUpserter TRANSPORT-IP MATCH: EventId={EventId} at {TimeUtc} resolved to Ip={Ip} via {Source} (UniqueHighConfidence)",
+						e.EventId, e.TimeUtc, ip, enrichmentSource);
+				}
 			}
 			else if (lookup.Confidence == TransportIpConfidence.AmbiguousMediumConfidence)
 			{
@@ -143,11 +245,25 @@ public sealed class AuthAttemptFactUpserter
 				enrichmentSource = "RdpCoreTsAmbiguous";
 				enrichmentConfidence = "Medium";
 				needsCorrelation = true;
+
+				if (debugEnabled)
+				{
+					_logger.LogDebug(
+						"AuthAttemptFactUpserter TRANSPORT-IP AMBIGUOUS: EventId={EventId} at {TimeUtc} matched Ip={Ip} with AmbiguousMediumConfidence — multiple transport candidates in window, flagged NeedsCorrelation=true",
+						e.EventId, e.TimeUtc, ip);
+				}
 			}
 			else
 			{
 				// No transport-IP found; persist the failure regardless so attack counters move.
 				needsCorrelation = true;
+
+				if (debugEnabled)
+				{
+					_logger.LogDebug(
+						"AuthAttemptFactUpserter TRANSPORT-IP MISS: EventId={EventId} at {TimeUtc} has no direct IP and RdpTransportIpCache found no candidate within the correlation window. Fact will be persisted with SourceIp=null and NeedsCorrelation=true — verify TS-RCM 261 / RdpCoreTS 131 watchers are armed and forwarding events for this time window.",
+						e.EventId, e.TimeUtc);
+				}
 			}
 		}
 
@@ -155,7 +271,7 @@ public sealed class AuthAttemptFactUpserter
 		string? subStatusMeaning = SubStatusCatalog.Translate(subStatus);
 		string? normalizedUser = NormalizeUserName(e.UserName);
 
-		return new AuthAttemptFact
+		AuthAttemptFact fact = new()
 		{
 			TimeUtc = e.TimeUtc,
 			SourceIp = ip,
@@ -178,6 +294,15 @@ public sealed class AuthAttemptFactUpserter
 			EnrichmentConfidence = enrichmentConfidence,
 			NeedsCorrelation = needsCorrelation,
 		};
+
+		if (debugEnabled)
+		{
+			_logger.LogDebug(
+				"AuthAttemptFactUpserter BUILD: EventId={EventId} Outcome={Outcome} Ip={Ip} IpFromCorrelation={IpFromCorrelation} EnrichmentSource={EnrichmentSource} EnrichmentConfidence={EnrichmentConfidence} NeedsCorrelation={NeedsCorrelation} User={User}",
+				e.EventId, outcome, ip, ipFromCorrelation, enrichmentSource, enrichmentConfidence, needsCorrelation, normalizedUser);
+		}
+
+		return fact;
 	}
 
 	/// <summary>Outcome authority hierarchy enforcement (v3 §6.3 rule 3).</summary>
@@ -193,17 +318,23 @@ public sealed class AuthAttemptFactUpserter
 			// LSA: most authoritative.
 			4624 => AuthAttemptOutcome.Succeeded,
 			4625 => AuthAttemptOutcome.Failed,
+
 			// Explicit credential use: success when the OS records the row (no failure variant).
 			4648 => AuthAttemptOutcome.Succeeded,
+
 			// Kerberos pre-auth failed (4771) — failure with IpAddress.
 			4771 => AuthAttemptOutcome.Failed,
+
 			// NTLM credential validation — Status field encodes success vs failure.
 			4776 => IsZeroStatus(e.Status) ? AuthAttemptOutcome.Succeeded : AuthAttemptOutcome.Failed,
+
 			// Kerberos TGT / service ticket — successes.
 			4768 => AuthAttemptOutcome.Succeeded,
 			4769 => AuthAttemptOutcome.Succeeded,
+
 			// RDP access denied — authorization failure, distinct from credential failure.
 			4825 => AuthAttemptOutcome.Denied,
+
 			_ => AuthAttemptOutcome.Unknown,
 		};
 	}
@@ -251,6 +382,7 @@ public sealed class AuthAttemptFactUpserter
 		string trimmed = userName.Trim();
 		int slash = trimmed.IndexOf('\\', StringComparison.Ordinal);
 		string bareUser = slash >= 0 ? trimmed[(slash + 1)..] : trimmed;
+
 		int at = bareUser.IndexOf('@', StringComparison.Ordinal);
 		if (at > 0)
 		{
@@ -261,24 +393,22 @@ public sealed class AuthAttemptFactUpserter
 	}
 
 	private static bool IsSecurity(string? channel)
-	{
-		return !string.IsNullOrWhiteSpace(channel)
+		=> !string.IsNullOrWhiteSpace(channel)
 			&& channel.Equals(SecurityChannel, StringComparison.OrdinalIgnoreCase);
-	}
 
 	private static bool IsZeroStatus(string? status)
 	{
-		// NtStatusFormatter handles hex (0x0 / 0x00000000), signed decimal (0 / -0), and unsigned
-		// decimal (0). Blank / null is treated as "no failure indicator" — equivalent to a zero
-		// status — so 4776 events without an explicit Status field are classified as Succeeded
-		// (matches Windows semantics: present-but-zero == success).
+		// NtStatusFormatter handles hex (0x0 / 0x00000000), signed decimal (0 / -0), and
+		// unsigned decimal (0). Blank/null is treated as "no failure indicator" — equivalent
+		// to a zero status — so 4776 events without an explicit Status field are classified as
+		// Succeeded (matches Windows semantics: present-but-zero == success).
 		return NtStatusFormatter.IsZero(status);
 	}
 
 	/// <summary>Extract the SubStatus field from the normalized Details JSON if EventNormalizer
 	/// captured it there. EventNormalizer surfaces every EventData/Data child into the JSON map
-	/// and canonicalizes NTSTATUS-bearing fields to <c>0xXXXXXXXX</c>; we re-canonicalize here as
-	/// a defensive belt-and-braces against pre-Stage-3 rows whose Details still carry the raw
+	/// and canonicalizes NTSTATUS-bearing fields to 0xXXXXXXXX; re-canonicalize here as a
+	/// defensive belt-and-braces against pre-Stage-3 rows whose Details still carry the raw
 	/// signed-decimal form Windows wrote.</summary>
 	private static string? ExtractSubStatus(RawEvent e)
 	{
@@ -339,10 +469,10 @@ public sealed class AuthAttemptFactUpserter
 	}
 }
 
-/// <summary>Summary of a single <see cref="AuthAttemptFactUpserter.ApplyAsync"/> batch.</summary>
+/// <summary>Summary of a single batch.</summary>
 /// <param name="FailedCreated">Number of failed/denied facts created.</param>
 /// <param name="SucceededCreated">Number of succeeded facts created.</param>
-/// <param name="LastFactUtc">Timestamp of the most recent created fact, or <c>default</c> when none.</param>
+/// <param name="LastFactUtc">Timestamp of the most recent created fact, or default when none.</param>
 /// <param name="Facts">The created entities (for downstream visibility / tests).</param>
 public sealed record AuthAttemptFactBatchResult(
 	int FailedCreated,
