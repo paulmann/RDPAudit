@@ -432,7 +432,11 @@ public sealed class ServicePage : TabPage
 		{
 			ServiceLayoutInfo layout = await Task.Run(() => ServiceLayout.Discover(AppContext.BaseDirectory)).ConfigureAwait(true);
 			ServiceInstallationInfo scm = await _scmReader.ReadAsync().ConfigureAwait(true);
-			ServiceStatus? ipcStatus = await _ipc.SendAsync<ServiceStatus>(IpcCommand.GetStatus).ConfigureAwait(true);
+			// SendDetailedAsync (not the legacy SendAsync<T>) so a dead/slow/erroring service surfaces
+			// the exact IPC failure mode -- connect-failed vs. timeout vs. service-error vs. transport-
+			// error -- in the report instead of collapsing everything to a bare "Connected: no".
+			IpcCallResult<ServiceStatus> ipcResult = await _ipc.SendDetailedAsync<ServiceStatus>(IpcCommand.GetStatus).ConfigureAwait(true);
+			ServiceStatus? ipcStatus = ipcResult.IsSuccess ? ipcResult.Value : null;
 
 			string? installedExePath = scm.ResolveExecutablePath()
 				?? Path.Combine(layout.InstallDirectory, ServiceLayout.ServiceExeName);
@@ -441,6 +445,17 @@ public sealed class ServicePage : TabPage
 			BinaryFingerprint installedFingerprint = await Task.Run(() => BinaryFingerprintReader.Read(installedExePath)).ConfigureAwait(true);
 			BinaryFingerprint distributionFingerprint = await Task.Run(() => BinaryFingerprintReader.Read(distributionExePath)).ConfigureAwait(true);
 			RunningProcessFingerprint running = await Task.Run(() => RunningProcessProbe.Probe(scm.ProcessId)).ConfigureAwait(true);
+
+			ServiceDiagnosticsExtras extras = await Task.Run(() => DiagnosticsExtrasCollector.Collect(
+				appSettingsPath: layout.AppSettingsPath,
+				programDataDirectory: layout.ProgramDataDirectory,
+				ipcOutcome: ipcResult.Outcome.ToString(),
+				ipcErrorDetail: ipcResult.Error,
+				ipcErrorType: ipcResult.ErrorType,
+				ipcDurationMs: ipcResult.DurationMs,
+				ipcTimeoutMs: ipcResult.TimeoutMs,
+				ipcPipeConnected: ipcResult.PipeConnected,
+				ipcResponseReceived: ipcResult.ResponseReceived)).ConfigureAwait(true);
 
 			string configuratorVersion = ResolveConfiguratorVersion();
 			ServiceDiagnosticsInput input = new(
@@ -451,7 +466,8 @@ public sealed class ServicePage : TabPage
 				Installed: installedFingerprint,
 				Running: running,
 				IpcRuntimeVersion: ipcStatus?.Version,
-				IpcConnected: ipcStatus is not null);
+				IpcConnected: ipcStatus is not null,
+				Extras: extras);
 
 			ServiceDiagnosticsReport report = ServiceDiagnosticsReportBuilder.Build(input);
 			try
