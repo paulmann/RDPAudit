@@ -36,6 +36,9 @@ public sealed class IpcServerWorker : BackgroundService
 	private string? _lastFaultSignature;
 	private DateTime _lastFaultDurableLogUtc = DateTime.MinValue;
 
+	/// <summary>Reset to false on CreatePipe failure so the "pipe accepting" banner re-emits after recovery.</summary>
+	private bool _pipeBannerLogged;
+
 	public IpcServerWorker(IServiceProvider services, ILogger<IpcServerWorker> logger)
 	{
 		_services = services;
@@ -57,59 +60,97 @@ public sealed class IpcServerWorker : BackgroundService
 			List<Task> connectionTasks = new();
 			while (!stoppingToken.IsCancellationRequested)
 			{
+				// ── CreatePipe is intentionally OUTSIDE the accept-try so that failures from the
+				//    OS or AV/EDR interceptors (UnauthorizedAccessException, IOException from
+				//    Kaspersky KLIF etc.) are caught and logged at Warning level, NOT silently
+				//    swallowed as IsExpectedAcceptDisconnect (which treats all IOException as a
+				//    normal client close). This is the primary diagnostic for "IPC Connected: no".
+				NamedPipeServerStream? pipe = null;
 				try
 				{
-					NamedPipeServerStream pipe = CreatePipe();
-					try
+					pipe = CreatePipe();
+					if (!_pipeBannerLogged)
 					{
-						await pipe.WaitForConnectionAsync(stoppingToken).ConfigureAwait(false);
-					}
-					catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
-					{
-						await pipe.DisposeAsync().ConfigureAwait(false);
-						break;
-					}
-
-					Task task = HandleConnectionAsync(pipe, stoppingToken);
-					connectionTasks.Add(task);
-					connectionTasks.RemoveAll(t => t.IsCompleted);
-					if (connectionTasks.Count > MaxConcurrent)
-					{
-						_logger.LogWarning("IPC concurrent connection cap exceeded ({Count}); rejecting new ones briefly", connectionTasks.Count);
-						await Task.Delay(50, stoppingToken).ConfigureAwait(false);
+						_pipeBannerLogged = true;
+						_logger.LogInformation(
+							"{Worker} named pipe \\\\.\\pipe\\{PipeName} created — accepting connections (ACL: Administrators + LocalSystem)",
+							nameof(IpcServerWorker), IpcConstants.PipeName);
 					}
 				}
 				catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
 				{
 					break;
 				}
-				catch (Exception ex)
+				catch (Exception ex) when (ex is UnauthorizedAccessException or IOException)
 				{
-					// A fault accepting one connection (pipe creation, ACL, transient OS error) must not
-					// take the whole service down — the IPC accept loop is the operator's lifeline to the
-					// service. (The original `throw` here was a crash root cause.) Classify before logging:
-					// an expected disconnect / cancellation / disposed-pipe is the routine end of a client
-					// session, NOT a service fault, so logging it Critical (and durably) was the source of
-					// the OperationLog "AcceptLoopFault" Critical spam. Only a genuine, unexpected fault is
-					// recorded Critical and durably (rate-limited), so the operator's signal is not buried.
-					if (IsExpectedAcceptDisconnect(ex))
+					// Most-likely cause: Kaspersky / another EDR intercepts NamedPipeServerStreamAcl.Create()
+					// and returns access-denied or a broken-pipe error before any client connects.
+					// Mark pipe banner as unlogged so next success re-emits it.
+					_pipeBannerLogged = false;
+					if (!IsDuplicateFault(ex))
 					{
-						_logger.LogDebug(ex, "{Worker} accept-loop saw an expected client disconnect — continuing", nameof(IpcServerWorker));
-					}
-					else
-					{
-						_logger.LogError(ex, "{Worker} accept-loop fault — continuing", nameof(IpcServerWorker));
+						_logger.LogWarning(ex,
+							"{Worker} CreatePipe FAILED [{ExType}]: {ExMsg} — possible AV/EDR pipe interception " +
+							"(Kaspersky?). Add RdpAudit.Service.exe to your AV trusted list. Retrying in 5 s.",
+							nameof(IpcServerWorker), ex.GetType().Name, ex.Message);
 						await TryLogOperationFaultAsync(ex, stoppingToken).ConfigureAwait(false);
 					}
+					try { await Task.Delay(TimeSpan.FromSeconds(5), stoppingToken).ConfigureAwait(false); }
+					catch (OperationCanceledException) { break; }
+					continue;
+				}
+				catch (Exception ex)
+				{
+					_pipeBannerLogged = false;
+					if (!IsDuplicateFault(ex))
+					{
+						_logger.LogError(ex,
+							"{Worker} CreatePipe unexpected fault [{ExType}]: {ExMsg} — continuing",
+							nameof(IpcServerWorker), ex.GetType().Name, ex.Message);
+						await TryLogOperationFaultAsync(ex, stoppingToken).ConfigureAwait(false);
+					}
+					try { await Task.Delay(TimeSpan.FromSeconds(1), stoppingToken).ConfigureAwait(false); }
+					catch (OperationCanceledException) { break; }
+					continue;
+				}
 
-					try
+				try
+				{
+					await pipe.WaitForConnectionAsync(stoppingToken).ConfigureAwait(false);
+				}
+				catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+				{
+					await pipe.DisposeAsync().ConfigureAwait(false);
+					break;
+				}
+				catch (Exception ex) when (IsExpectedAcceptDisconnect(ex))
+				{
+					await pipe.DisposeAsync().ConfigureAwait(false);
+					_logger.LogDebug(ex, "{Worker} expected accept/disconnect transient — continuing", nameof(IpcServerWorker));
+					continue;
+				}
+				catch (Exception ex)
+				{
+					await pipe.DisposeAsync().ConfigureAwait(false);
+					if (!IsDuplicateFault(ex))
 					{
-						await Task.Delay(TimeSpan.FromSeconds(1), stoppingToken).ConfigureAwait(false);
+						_logger.LogError(ex,
+							"{Worker} WaitForConnection fault [{ExType}]: {ExMsg} — continuing",
+							nameof(IpcServerWorker), ex.GetType().Name, ex.Message);
+						await TryLogOperationFaultAsync(ex, stoppingToken).ConfigureAwait(false);
 					}
-					catch (OperationCanceledException)
-					{
-						break;
-					}
+					try { await Task.Delay(TimeSpan.FromSeconds(1), stoppingToken).ConfigureAwait(false); }
+					catch (OperationCanceledException) { break; }
+					continue;
+				}
+
+				Task task = HandleConnectionAsync(pipe, stoppingToken);
+				connectionTasks.Add(task);
+				connectionTasks.RemoveAll(t => t.IsCompleted);
+				if (connectionTasks.Count > MaxConcurrent)
+				{
+					_logger.LogWarning("IPC concurrent connection cap exceeded ({Count}); rejecting new ones briefly", connectionTasks.Count);
+					await Task.Delay(50, stoppingToken).ConfigureAwait(false);
 				}
 			}
 		}
@@ -195,6 +236,7 @@ public sealed class IpcServerWorker : BackgroundService
 
 	private async Task HandleConnectionAsync(NamedPipeServerStream pipe, CancellationToken ct)
 	{
+		_logger.LogDebug("{Worker} client connected — dispatching", nameof(IpcServerWorker));
 		await using (pipe)
 		{
 			// Read the request frame first under the short default deadline (a connected client must send
