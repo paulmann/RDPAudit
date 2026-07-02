@@ -32,6 +32,7 @@ using RdpAudit.Service.Services;
 using RdpAudit.Service.Workers;
 using Serilog;
 using Serilog.Formatting.Compact;
+using RdpAudit.Service.Firewall;
 
 namespace RdpAudit.Service;
 
@@ -189,10 +190,10 @@ public static class Program
 	private static void RegisterServices(IServiceCollection services)
 	{
 		services.AddSingleton<SqlitePragmaInterceptor>();
-		if (OperatingSystem.IsWindows())
-		{
-			services.AddSingleton<IThirdPartyFirewallProbe, WindowsServiceThirdPartyFirewallProbe>();
-		}
+				if (OperatingSystem.IsWindows())
+				{
+					services.AddSingleton<IThirdPartyFirewallProbe, WindowsServiceThirdPartyFirewallProbe>();
+				}
 		
 		services.AddDbContextFactory<AuditDbContext>((sp, options) =>
 		{
