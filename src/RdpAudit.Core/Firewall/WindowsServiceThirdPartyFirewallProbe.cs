@@ -1,17 +1,10 @@
 /* Project: RDPAudit 2.0 | Author: Mikhail Deynekin | Site: Deynekin.com | Email: Mikhail@Deynekin.com */
-// Version: 1.0.0
+// Version: 1.1.0
 // File   : WindowsServiceThirdPartyFirewallProbe.cs
 // Project: RdpAudit.Service (RdpAudit.Service.Firewall)
-// Purpose: Service-side IThirdPartyFirewallProbe.  Queries Windows SCM via
-//          ServiceController to enumerate running services and checks well-known
-//          Kaspersky/ESET/Bitdefender/etc. CLI tool paths via File.Exists.
-//          Runs ONLY on explicit GetFirewallDiagnostics / GetFirewallStatus
-//          on-demand calls — never in background workers.
-//          LocalSystem has full SCM enumerate rights; no privilege escalation.
-// Depends: IThirdPartyFirewallProbe, FirewallProviderClassifier,
-//          FirewallServiceState, FirewallCliToolPresence
-// Extends: Add new CLI tool paths to _cliToolCandidates; add new service
-//          fragments to FirewallProviderClassifier lists in Core.
+// Purpose: Service-side IThirdPartyFirewallProbe. Queries Windows SCM via ServiceController to enumerate running services and checks well-known Kaspersky CLI tool paths via File.Exists. Runs only on explicit GetFirewallDiagnostics / GetFirewallStatus requests, never in background workers. Lives in RdpAudit.Service because System.ServiceProcess.ServiceController is Windows-only and must not leak into the cross-platform RdpAudit.Core assembly.
+// Depends: IThirdPartyFirewallProbe, FirewallProviderClassifier, FirewallServiceState, FirewallCliToolPresence
+// Extends: Add new CLI tool paths to _cliToolCandidates; add new service fragments to FirewallProviderClassifier lists in Core.
 
 using System.Runtime.Versioning;
 using System.ServiceProcess;
@@ -30,28 +23,18 @@ public sealed class WindowsServiceThirdPartyFirewallProbe(
 	// ── Fields & DI ──────────────────────────────────────────────────────────────
 	private readonly ILogger<WindowsServiceThirdPartyFirewallProbe> _logger = logger;
 
-	/// <summary>Well-known CLI tool paths for Kaspersky products.
-	/// avp.exe / avp.com ship with KES for Windows (workstation SKU).
-	/// kescli.exe ships with KES managed endpoints.
-	/// kavshell.exe ships with KSWS (server SKU).</summary>
 	private static readonly string[] _cliToolCandidates =
 	[
 		@"C:\Program Files (x86)\Kaspersky Lab\avp.exe",
 		@"C:\Program Files\Kaspersky Lab\avp.exe",
 		@"C:\Program Files (x86)\Kaspersky Lab\avp.com",
 		@"C:\Program Files\Kaspersky Lab\avp.com",
-		// Pattern-match against versioned install dirs (KES 21.x, 12.x, etc.)
-		// resolved below via glob-equivalent directory enumeration.
 	];
 
 	// ── Public API ───────────────────────────────────────────────────────────────
 	public Task<ThirdPartyFirewallSnapshot> CollectAsync(CancellationToken ct)
 	{
 		ct.ThrowIfCancellationRequested();
-
-		// ServiceController.GetServices() is a synchronous SCM call that is
-		// fast (~5 ms) and safe under LocalSystem.  We offload it to a thread-
-		// pool thread to avoid blocking the async IPC dispatch loop.
 		return Task.Run(() => Collect(ct), ct);
 	}
 
@@ -66,41 +49,37 @@ public sealed class WindowsServiceThirdPartyFirewallProbe(
 		return new ThirdPartyFirewallSnapshot(
 			Services: services,
 			CliTools: cliTools,
-			KasperskyManagesWindowsFirewall: false); // KSWS Firewall Management
-			// detection (policy API) is out of scope for this probe;
-			// KasperskyDetected already surfaces the correct warning in the report.
+			KasperskyManagesWindowsFirewall: false);
 	}
 
 	private List<FirewallServiceState> CollectServices(CancellationToken ct)
 	{
 		List<FirewallServiceState> result = [];
+
 		try
 		{
 			ServiceController[] all = ServiceController.GetServices();
 			foreach (ServiceController svc in all)
 			{
 				ct.ThrowIfCancellationRequested();
+
 				try
 				{
-					// We only need name + status; DisplayName requires an extra
-					// SCM query but is worth it for the classifier's
-					// DescribeKasperskyName heuristic.
 					string svcName = svc.ServiceName;
 					string displayName = svc.DisplayName;
 					bool running = svc.Status == ServiceControllerStatus.Running;
 
-					// Pre-filter: only keep entries whose name/display matches
-					// a known fragment — avoids allocating thousands of records
-					// for unrelated services on a busy server.
 					if (IsRelevant(svcName, displayName))
 					{
-						result.Add(new FirewallServiceState(svcName, displayName, running));
+						result.Add(new FirewallServiceState(
+							ServiceName: svcName,
+							DisplayName: displayName,
+							Status: running ? "Running" : svc.Status.ToString(),
+							IsRunning: running));
 					}
 				}
 				catch (InvalidOperationException ex)
 				{
-					// Individual service query failed (access denied on that
-					// specific service, race condition, etc.) — skip silently.
 					_logger.LogDebug(ex,
 						"ThirdPartyFirewallProbe: skipping service {Name} (query failed)",
 						svc.ServiceName);
@@ -129,7 +108,6 @@ public sealed class WindowsServiceThirdPartyFirewallProbe(
 	{
 		List<FirewallCliToolPresence> result = [];
 
-		// Static candidates first.
 		foreach (string path in _cliToolCandidates)
 		{
 			ct.ThrowIfCancellationRequested();
@@ -138,10 +116,6 @@ public sealed class WindowsServiceThirdPartyFirewallProbe(
 			result.Add(new FirewallCliToolPresence(toolName, path, present));
 		}
 
-		// Dynamic: enumerate versioned Kaspersky install dirs under Program Files.
-		// Matches paths like:
-		//   C:\Program Files (x86)\Kaspersky Lab\Kaspersky 21.25\avp.exe
-		//   C:\Program Files (x86)\Kaspersky Lab\Kaspersky Endpoint Security 12.x\avp.exe
 		foreach (string programFiles in new[]
 		{
 			Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86),
@@ -163,24 +137,24 @@ public sealed class WindowsServiceThirdPartyFirewallProbe(
 					foreach (string toolFile in new[] { "avp.exe", "avp.com", "kescli.exe", "kavshell.exe" })
 					{
 						string candidate = Path.Combine(dir, toolFile);
-						if (File.Exists(candidate))
+						if (!File.Exists(candidate))
 						{
-							// Avoid duplicates from the static list above.
-							bool alreadyAdded = false;
-							foreach (FirewallCliToolPresence existing in result)
-							{
-								if (string.Equals(existing.FullPath, candidate,
-									StringComparison.OrdinalIgnoreCase))
-								{
-									alreadyAdded = true;
-									break;
-								}
-							}
+							continue;
+						}
 
-							if (!alreadyAdded)
+						bool alreadyAdded = false;
+						foreach (FirewallCliToolPresence existing in result)
+						{
+							if (string.Equals(existing.FullPath, candidate, StringComparison.OrdinalIgnoreCase))
 							{
-								result.Add(new FirewallCliToolPresence(toolFile, candidate, present: true));
+								alreadyAdded = true;
+								break;
 							}
+						}
+
+						if (!alreadyAdded)
+						{
+							result.Add(new FirewallCliToolPresence(toolFile, candidate, present: true));
 						}
 					}
 				}
@@ -196,10 +170,6 @@ public sealed class WindowsServiceThirdPartyFirewallProbe(
 		return result;
 	}
 
-	/// <summary>Quick pre-filter — only services whose name or display name
-	/// contains at least one known AV/EDR fragment are kept.  This avoids
-	/// allocating <see cref="FirewallServiceState"/> records for the hundreds
-	/// of unrelated services on a typical Windows Server.</summary>
 	private static bool IsRelevant(string serviceName, string displayName)
 	{
 		foreach (string frag in FirewallProviderClassifier.KasperskyServiceFragments)
