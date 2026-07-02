@@ -32,7 +32,6 @@ using RdpAudit.Service.Services;
 using RdpAudit.Service.Workers;
 using Serilog;
 using Serilog.Formatting.Compact;
-using RdpAudit.Service.Firewall;
 
 namespace RdpAudit.Service;
 
