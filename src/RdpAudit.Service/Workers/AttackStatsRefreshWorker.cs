@@ -1,5 +1,5 @@
 /* Project: RDPAudit 2.0 | Author: Mikhail Deynekin | Site: Deynekin.com | Email: Mikhail@Deynekin.com */
-// Version: 1.4.0
+// Version: 1.4.1
 // File   : AttackStatsRefreshWorker.cs
 // Project: RdpAudit.Service (RdpAudit.Service.Workers)
 // Purpose: Stage 6 background worker that materialises per-IP AttackStat rows from AuthAttemptFacts +
@@ -20,9 +20,14 @@
 //          (await Task.Yield()) before the startup refresh so BackgroundService.StartAsync returns to
 //          the Generic Host immediately — the startup pass no longer runs inline on the host-start
 //          thread, so this worker (and every worker registered after it) can no longer be starved by
-//          a slow first projection. The re-entrancy skip path is now observable: skipped passes are
-//          logged distinctly and never masquerade as a successful "0 rows" pass, and the periodic loop
-//          honours WasSkipped so a held gate is reported as such rather than as an empty projection.
+//          a slow first projection.
+//
+//          v1.4.1: RecordStatsWorkerSkipped does not exist on ServiceMetrics — reverted the
+//          re-entrancy-skip diagnostic to the existing RecordStatsWorkerRun(rows=0,
+//          error="Skipped: gate held") call so a held gate is still distinguishable from "never ran"
+//          in the Diagnostic tab, without introducing a new ServiceMetrics API surface. SafeRefreshAsync
+//          now branches on AttackStatsRefreshResult.WasSkipped so a skipped pass is never logged as a
+//          successful "0 rows materialised" projection.
 // Depends: IDbContextFactory<AuditDbContext>, AttackStatsAggregator, ServiceMetrics, IpNormalizer
 // Extends: Microsoft.Extensions.Hosting.BackgroundService — add a new projection input by extending
 //          the sample-building loop in RunRefreshAsync, keeping AuthAttemptFact as the sole counter
@@ -56,6 +61,12 @@ public sealed class AttackStatsRefreshWorker : BackgroundService
 	/// <summary>Page size used by the full-rebuild path so a host with hundreds of thousands of
 	/// in-window facts can be re-projected without loading them all into memory at once.</summary>
 	internal const int FullRebuildPageSize = 50_000;
+
+	/// <summary>Diagnostic marker written via <see cref="ServiceMetrics.RecordStatsWorkerRun"/>'s
+	/// error slot when a pass is rejected by the re-entrancy gate. Not an exception — this is a
+	/// deliberate, expected outcome — but it must be visibly distinct from <c>null</c> (a clean run)
+	/// so an operator reading the Diagnostic tab can tell "gate held" apart from "genuinely failed".</summary>
+	private const string GateHeldMarker = "Skipped: gate held";
 
 	private readonly IDbContextFactory<AuditDbContext> _factory;
 	private readonly ILogger<AttackStatsRefreshWorker> _logger;
@@ -140,9 +151,11 @@ public sealed class AttackStatsRefreshWorker : BackgroundService
 				nameof(AttackStatsRefreshWorker),
 				fullRebuild);
 
-			// Surface the skip in diagnostics so a held gate is distinguishable from a worker that
-			// never ran — without this, a permanently-stuck pass would look identical to "never ran".
-			_metrics?.RecordStatsWorkerSkipped(DateTime.UtcNow);
+			// ServiceMetrics has no dedicated "skipped" counter (RecordStatsWorkerSkipped does not
+			// exist). Reuse RecordStatsWorkerRun with rows=0 and a distinct, non-null error marker so
+			// the Diagnostic tab can tell "gate held" apart from both a clean run and a genuine
+			// exception, without adding a new ServiceMetrics API surface.
+			_metrics?.RecordStatsWorkerRun(DateTime.UtcNow, 0, GateHeldMarker);
 			return AttackStatsRefreshResult.Skipped;
 		}
 
@@ -186,6 +199,8 @@ public sealed class AttackStatsRefreshWorker : BackgroundService
 
 			if (result.WasSkipped)
 			{
+				// Never conflate a gate-held skip with a genuine "0 rows materialised" pass — the
+				// metric was already recorded via GateHeldMarker inside RefreshOnceDetailedAsync.
 				_logger.LogDebug(
 					"{Worker} pass skipped (re-entrancy gate held)",
 					nameof(AttackStatsRefreshWorker));
