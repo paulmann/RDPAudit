@@ -359,131 +359,139 @@ public sealed class RdpConnectionFactUpserter
 		return EventKind.Unrelated;
 	}
 
-	private RdpConnectionFact? Merge(
-		AuditDbContext db,
-		RdpConnectionFact? existing,
-		Candidate c,
-		string key,
-		bool debugEnabled)
+// Version: 2.1.3
+// Fix: Reverted the v2.1.0 "strong key bypasses IP requirement" change. The existing test
+// suite (RdpConnectionFactUpserterTests.HostnameLikeIp_IsRejected,
+// DerivedIp_AloneInBatch_DoesNotCreateFact) encodes the correct, intended contract: a NEW
+// RdpConnectionFact row requires a valid, non-derived (or unresolved-sentinel) IP to be
+// created — REGARDLESS of identity key strength (LogonId/WtsSessionId alone is not enough).
+// The previous "strong key creates without IP" change was an incorrect diagnosis on my part
+// and broke two previously-passing tests. Existing rows are still correctly refreshed/backfilled
+// by later observations (see the `existing is not null` branch below, unchanged).
+
+private RdpConnectionFact? Merge(
+	AuditDbContext db,
+	RdpConnectionFact? existing,
+	Candidate c,
+	string key,
+	bool debugEnabled)
+{
+	bool candidateHasIp = !string.IsNullOrEmpty(c.Ip);
+
+	if (existing is null)
 	{
-		bool candidateHasIp = !string.IsNullOrEmpty(c.Ip);
+		bool canCreate = candidateHasIp && (!c.IpIsDerived || c.IsUnresolvedSentinel);
 
-		if (existing is null)
+		if (!canCreate)
 		{
-			KeyStrength strength = ClassifyKeyStrength(key);
-			bool hasAnchorIp = candidateHasIp && (!c.IpIsDerived || c.IsUnresolvedSentinel);
-
-			bool canCreate = strength == KeyStrength.Strong || hasAnchorIp;
-
-			if (!canCreate)
-			{
-				if (debugEnabled)
-				{
-					_logger?.LogDebug(
-						"RdpConnectionFactUpserter Merge DROP: Key={Key} EventId={EventId} Kind={Kind} KeyStrength={Strength} — cannot seed a new fact: weak key requires a direct/sentinel IP but Ip={Ip} IpIsDerived={IpIsDerived}",
-						key, c.EventId, c.Kind, strength, c.Ip, c.IpIsDerived);
-				}
-
-				return null;
-			}
-
-			RdpConnectionFact row = new()
-			{
-				Ip = c.Ip ?? string.Empty,
-				UserName = c.UserName,
-				Domain = c.Domain,
-				WtsSessionId = c.WtsSessionId,
-				LogonId = c.LogonId is null ? null : NormalizeLogonId(c.LogonId),
-				FirstSeenUtc = c.TimeUtc,
-				LastSeenUtc = c.TimeUtc,
-				ObservedEventIds = AppendEventId(null, c.EventId),
-				UserNamesAttempted = AppendUserName(null, c.UserName),
-				FailedLogons = c.Kind == EventKind.FailedLogon ? 1 : 0,
-				SuccessfulLogons = IsSuccessKind(c.Kind) ? 1 : 0,
-				IsActive = IsConnectingKind(c.Kind),
-			};
-
-			ApplyLifecycle(row, c);
-			db.RdpConnectionFacts.Add(row);
-
 			if (debugEnabled)
 			{
 				_logger?.LogDebug(
-					"RdpConnectionFactUpserter Merge CREATE: Key={Key} EventId={EventId} Kind={Kind} Ip={Ip} IpIsDerived={IpIsDerived} LogonId={LogonId} WtsSessionId={WtsSessionId} UserName={UserName}",
-					key, c.EventId, c.Kind, row.Ip, c.IpIsDerived, c.LogonId, c.WtsSessionId, c.UserName);
+					"RdpConnectionFactUpserter Merge DROP: Key={Key} EventId={EventId} Kind={Kind} — cannot seed a new fact: a direct or unresolved-sentinel IP is required, but Ip={Ip} IpIsDerived={IpIsDerived} IsUnresolvedSentinel={IsSentinel}",
+					key, c.EventId, c.Kind, c.Ip, c.IpIsDerived, c.IsUnresolvedSentinel);
 			}
 
-			return row;
+			return null;
 		}
 
-		if (c.TimeUtc > existing.LastSeenUtc)
+		RdpConnectionFact row = new()
 		{
-			existing.LastSeenUtc = c.TimeUtc;
-		}
+			Ip = c.Ip ?? string.Empty,
+			UserName = c.UserName,
+			Domain = c.Domain,
+			WtsSessionId = c.WtsSessionId,
+			LogonId = c.LogonId is null ? null : NormalizeLogonId(c.LogonId),
+			FirstSeenUtc = c.TimeUtc,
+			LastSeenUtc = c.TimeUtc,
+			ObservedEventIds = AppendEventId(null, c.EventId),
+			UserNamesAttempted = AppendUserName(null, c.UserName),
+			FailedLogons = c.Kind == EventKind.FailedLogon ? 1 : 0,
+			SuccessfulLogons = IsSuccessKind(c.Kind) ? 1 : 0,
+			IsActive = IsConnectingKind(c.Kind),
+		};
 
-		if (c.TimeUtc < existing.FirstSeenUtc)
-		{
-			existing.FirstSeenUtc = c.TimeUtc;
-		}
-
-		bool existingHasIp = !string.IsNullOrEmpty(existing.Ip);
-
-		if (candidateHasIp && !c.IpIsDerived && !c.IsUnresolvedSentinel)
-		{
-			existing.Ip = c.Ip!;
-		}
-		else if (!existingHasIp && candidateHasIp)
-		{
-			existing.Ip = c.Ip!;
-		}
-
-		if (string.IsNullOrWhiteSpace(existing.Domain) && !string.IsNullOrWhiteSpace(c.Domain))
-		{
-			existing.Domain = c.Domain;
-		}
-
-		if (string.IsNullOrWhiteSpace(existing.UserName) && !string.IsNullOrWhiteSpace(c.UserName))
-		{
-			existing.UserName = c.UserName;
-		}
-
-		if (existing.LogonId is null && c.LogonId is not null)
-		{
-			existing.LogonId = NormalizeLogonId(c.LogonId);
-		}
-
-		if (existing.WtsSessionId is null && c.WtsSessionId is not null)
-		{
-			existing.WtsSessionId = c.WtsSessionId;
-		}
-
-		existing.ObservedEventIds = AppendEventId(existing.ObservedEventIds, c.EventId);
-		existing.UserNamesAttempted = AppendUserName(existing.UserNamesAttempted, c.UserName);
-
-		switch (c.Kind)
-		{
-			case EventKind.FailedLogon:
-				existing.FailedLogons++;
-				break;
-			case EventKind.SuccessfulLogon:
-			case EventKind.AuthenticatedConnection:
-			case EventKind.SessionLogon:
-				existing.SuccessfulLogons++;
-				break;
-		}
-
-		ApplyLifecycle(existing, c);
-		existing.IsActive = ComputeIsActive(existing);
+		ApplyLifecycle(row, c);
+		db.RdpConnectionFacts.Add(row);
 
 		if (debugEnabled)
 		{
 			_logger?.LogDebug(
-				"RdpConnectionFactUpserter Merge UPDATE: Key={Key} EventId={EventId} Kind={Kind} Ip={Ip} IsActive={IsActive} SuccessfulLogons={SuccessfulLogons} FailedLogons={FailedLogons}",
-				key, c.EventId, c.Kind, existing.Ip, existing.IsActive, existing.SuccessfulLogons, existing.FailedLogons);
+				"RdpConnectionFactUpserter Merge CREATE: Key={Key} EventId={EventId} Kind={Kind} Ip={Ip} LogonId={LogonId} WtsSessionId={WtsSessionId} UserName={UserName}",
+				key, c.EventId, c.Kind, row.Ip, c.LogonId, c.WtsSessionId, c.UserName);
 		}
 
-		return existing;
+		return row;
 	}
+
+	// ── existing-row refresh path is UNCHANGED from 2.1.2 ──
+	if (c.TimeUtc > existing.LastSeenUtc)
+	{
+		existing.LastSeenUtc = c.TimeUtc;
+	}
+
+	if (c.TimeUtc < existing.FirstSeenUtc)
+	{
+		existing.FirstSeenUtc = c.TimeUtc;
+	}
+
+	bool existingHasIp = !string.IsNullOrEmpty(existing.Ip);
+
+	if (candidateHasIp && !c.IpIsDerived && !c.IsUnresolvedSentinel)
+	{
+		existing.Ip = c.Ip!;
+	}
+	else if (!existingHasIp && candidateHasIp)
+	{
+		existing.Ip = c.Ip!;
+	}
+
+	if (string.IsNullOrWhiteSpace(existing.Domain) && !string.IsNullOrWhiteSpace(c.Domain))
+	{
+		existing.Domain = c.Domain;
+	}
+
+	if (string.IsNullOrWhiteSpace(existing.UserName) && !string.IsNullOrWhiteSpace(c.UserName))
+	{
+		existing.UserName = c.UserName;
+	}
+
+	if (existing.LogonId is null && c.LogonId is not null)
+	{
+		existing.LogonId = NormalizeLogonId(c.LogonId);
+	}
+
+	if (existing.WtsSessionId is null && c.WtsSessionId is not null)
+	{
+		existing.WtsSessionId = c.WtsSessionId;
+	}
+
+	existing.ObservedEventIds = AppendEventId(existing.ObservedEventIds, c.EventId);
+	existing.UserNamesAttempted = AppendUserName(existing.UserNamesAttempted, c.UserName);
+
+	switch (c.Kind)
+	{
+		case EventKind.FailedLogon:
+			existing.FailedLogons++;
+			break;
+		case EventKind.SuccessfulLogon:
+		case EventKind.AuthenticatedConnection:
+		case EventKind.SessionLogon:
+			existing.SuccessfulLogons++;
+			break;
+	}
+
+	ApplyLifecycle(existing, c);
+	existing.IsActive = ComputeIsActive(existing);
+
+	if (debugEnabled)
+	{
+		_logger?.LogDebug(
+			"RdpConnectionFactUpserter Merge UPDATE: Key={Key} EventId={EventId} Kind={Kind} Ip={Ip} IsActive={IsActive} SuccessfulLogons={SuccessfulLogons} FailedLogons={FailedLogons}",
+			key, c.EventId, c.Kind, existing.Ip, existing.IsActive, existing.SuccessfulLogons, existing.FailedLogons);
+	}
+
+	return existing;
+}
 
 	private static bool IsSuccessKind(EventKind kind) => kind switch
 	{
