@@ -10,8 +10,9 @@
 //          array editing), extend LeafRef / BeginInlineEdit / CommitInlineEdit and ParseScalar below.
 // Author:  Mikhail Deynekin
 // Site:    https://Deynekin.com
-// Version: 1.4.3
+// Version: 1.4.4
 
+using System.Diagnostics;
 using System.Globalization;
 using System.Runtime.Versioning;
 using System.Text.Json;
@@ -40,6 +41,7 @@ public sealed class SettingsPage : TabPage
 	private readonly CheckBox _debugToggle;
 	private readonly Label _debugStatus;
 	private readonly Label _debugWarning;
+	private readonly LinkLabel _debugLogLink;
 	private readonly Label _status;
 
 	// Inline value editor: a borderless TextBox floated over the selected leaf node while editing.
@@ -60,7 +62,7 @@ public sealed class SettingsPage : TabPage
 		_ipc = ipc;
 
 		// --- Global DEBUG section (top) ----------------------------------------------------------
-		Panel debugPanel = new() { Dock = DockStyle.Top, Height = 78, Padding = new Padding(6) };
+		Panel debugPanel = new() { Dock = DockStyle.Top, Height = 96, Padding = new Padding(6) };
 		_debugToggle = new CheckBox
 		{
 			Text = "Enable global DEBUG mode",
@@ -81,9 +83,20 @@ public sealed class SettingsPage : TabPage
 			ForeColor = StatusWarning,
 			Location = new Point(8, 30),
 		};
+		// When DEBUG mode is on, the service mirrors every log line into a single persistent file
+		// (RDPAudit_DEBUG_Log.txt) regardless of the day-rolling JSON log — this link opens it (or, if
+		// the service has not written it yet, opens the containing %ProgramData%\RdpAudit directory).
+		_debugLogLink = new LinkLabel
+		{
+			Text = "Open DEBUG log file (RDPAudit_DEBUG_Log.txt)",
+			AutoSize = true,
+			Location = new Point(8, 52),
+		};
+		_debugLogLink.LinkClicked += (_, _) => OpenDebugLogFile();
 		debugPanel.Controls.Add(_debugToggle);
 		debugPanel.Controls.Add(_debugStatus);
 		debugPanel.Controls.Add(_debugWarning);
+		debugPanel.Controls.Add(_debugLogLink);
 
 		// --- Action buttons ----------------------------------------------------------------------
 		FlowLayoutPanel buttons = new() { Dock = DockStyle.Top, Height = 36 };
@@ -558,6 +571,47 @@ public sealed class SettingsPage : TabPage
 		RefreshDebugIndicator(section);
 		_dirty = true;
 		UpdateStatus("DEBUG toggled — Save to apply. " + DebugWarningText);
+	}
+
+	/// <summary>Resolves the persistent DEBUG log path the service writes to when
+	/// Diagnostics.DebugMode is enabled (see RdpAudit.Service Program.ConfigureSerilog).</summary>
+	private static string GetDebugLogFilePath()
+	{
+		string programData = Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData);
+		return Path.Combine(programData, "RdpAudit", "RDPAudit_DEBUG_Log.txt");
+	}
+
+	/// <summary>Opens the DEBUG log file in the default text viewer; falls back to opening the
+	/// containing folder when the file has not been created yet (DEBUG mode never enabled, or the
+	/// service has not started since it was turned on). Never throws to the UI thread.</summary>
+	private void OpenDebugLogFile()
+	{
+		string path = GetDebugLogFilePath();
+		try
+		{
+			if (File.Exists(path))
+			{
+				Process.Start(new ProcessStartInfo { FileName = path, UseShellExecute = true });
+				UpdateStatus("Opened " + path);
+			}
+			else
+			{
+				string? dir = Path.GetDirectoryName(path);
+				if (!string.IsNullOrEmpty(dir) && Directory.Exists(dir))
+				{
+					Process.Start(new ProcessStartInfo { FileName = dir, UseShellExecute = true });
+					UpdateStatus("DEBUG log not created yet (enable DEBUG mode and restart the service). Opened folder instead.");
+				}
+				else
+				{
+					UpdateStatus("DEBUG log not found and %ProgramData%\\RdpAudit does not exist yet: " + path);
+				}
+			}
+		}
+		catch (Exception ex)
+		{
+			UpdateStatus("Failed to open DEBUG log: " + ex.Message);
+		}
 	}
 
 	private void SetEditorText(string text, bool rebuildTree = true)

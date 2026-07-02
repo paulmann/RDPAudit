@@ -115,7 +115,16 @@ public static class Program
 		string logDir = Path.Combine(programData, "RdpAudit", "logs");
 		Directory.CreateDirectory(logDir);
 
+		// DebugMode is read directly from the raw configuration section (not IOptions<T>) because
+		// ConfigureSerilog runs before the DI container is built, so IOptionsMonitor<RdpAuditOptions>
+		// is not yet resolvable. This mirrors RdpAuditOptions.Diagnostics.DebugMode's JSON path.
+		bool debugMode = builder.Configuration
+			.GetSection(RdpAuditOptions.SectionName)
+			.GetSection(nameof(RdpAuditOptions.Diagnostics))
+			.GetValue<bool>(nameof(DiagnosticsOptions.DebugMode));
+
 		LoggerConfiguration logger = new LoggerConfiguration()
+			.MinimumLevel.Is(debugMode ? Serilog.Events.LogEventLevel.Debug : Serilog.Events.LogEventLevel.Information)
 			.ReadFrom.Configuration(builder.Configuration)
 			.Enrich.FromLogContext()
 			.WriteTo.File(
@@ -123,6 +132,24 @@ public static class Program
 				Path.Combine(logDir, "service-.log"),
 				rollingInterval: RollingInterval.Day,
 				retainedFileCountLimit: 90);
+
+		if (debugMode)
+		{
+			// Persistent, human-readable DEBUG mirror requested by operators for support bundles:
+			// every log event (all workers, all sinks) is duplicated here regardless of source, with
+			// no rolling-by-day split, capped by size instead so a single file is always the target
+			// of the Settings tab "Open debug log" link.
+			string debugLogPath = Path.Combine(programData, "RdpAudit", "RDPAudit_DEBUG_Log.txt");
+			logger = logger.WriteTo.File(
+				debugLogPath,
+				restrictedToMinimumLevel: Serilog.Events.LogEventLevel.Debug,
+				rollingInterval: RollingInterval.Infinite,
+				rollOnFileSizeLimit: true,
+				fileSizeLimitBytes: 50 * 1024 * 1024,
+				retainedFileCountLimit: 5,
+				shared: true,
+				outputTemplate: "[{Timestamp:yyyy-MM-dd HH:mm:ss.fff} {Level:u3}] {SourceContext}{NewLine}	{Message:lj}{NewLine}{Exception}");
+		}
 
 		if (OperatingSystem.IsWindows())
 		{
