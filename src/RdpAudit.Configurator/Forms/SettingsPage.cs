@@ -10,7 +10,7 @@
 //          array editing), extend LeafRef / BeginInlineEdit / CommitInlineEdit and ParseScalar below.
 // Author:  Mikhail Deynekin
 // Site:    https://Deynekin.com
-// Version: 1.4.5
+// Version: 1.4.6
 
 using System.Diagnostics;
 using System.Globalization;
@@ -243,15 +243,26 @@ public sealed class SettingsPage : TabPage
 
 		try
 		{
-			object? response = await _ipc.SendAsync<object>(IpcCommand.SaveSettings, _editor.Text).ConfigureAwait(true);
-			if (response is null)
-			{
-				UpdateStatus("Service unreachable. Settings NOT saved.");
-			}
-			else
+			// SendDetailedAsync (not the legacy SendAsync<T>) so a ConnectFailed outcome -- pipe not
+			// accepting connections, i.e. the service is genuinely down -- can be distinguished from a
+			// slow/erroring-but-alive service and trigger the DebugMode-only DirectSettingsWriter
+			// fallback below. Without this distinction the checkbox used to silently drift from what
+			// is actually on disk whenever the service was unreachable at Save time.
+			IpcCallResult<object> result = await _ipc.SendDetailedAsync<object>(IpcCommand.SaveSettings, _editor.Text).ConfigureAwait(true);
+			if (result.IsSuccess)
 			{
 				_dirty = false;
 				UpdateStatus("Saved. Service will hot-reload from disk.");
+			}
+			else if (result.Outcome == IpcCallOutcome.ConnectFailed && TryFallbackSaveDebugMode())
+			{
+				_dirty = false;
+				UpdateStatus("Service unreachable — DebugMode written directly to appsettings.json. " +
+					"Other changes in this document were NOT saved; retry once the service is running.");
+			}
+			else
+			{
+				UpdateStatus("Service unreachable (" + result.Headline() + "). Settings NOT saved.");
 			}
 		}
 		catch (Exception ex)
@@ -261,6 +272,33 @@ public sealed class SettingsPage : TabPage
 		finally
 		{
 			_save.Enabled = true;
+		}
+	}
+
+	/// <summary>Fallback for when the full-document IPC save cannot reach the service at all: writes
+	/// only the DebugMode scalar the checkbox controls directly to appsettings.json via
+	/// DirectSettingsWriter, so the on-disk value never silently drifts from what the operator sees
+	/// checked in the UI. Deliberately narrow in scope -- every other field in the editor (including
+	/// any secret the operator may be mid-edit on) is left untouched on disk until the service comes
+	/// back and a normal IPC save succeeds.</summary>
+	private bool TryFallbackSaveDebugMode()
+	{
+		try
+		{
+			string appSettingsPath = RdpAudit.Core.Util.ServiceLayout.Discover(AppContext.BaseDirectory).AppSettingsPath;
+			bool enabled = _debugToggle.Checked;
+			bool ok = RdpAudit.Configurator.Services.DirectSettingsWriter.TrySetDebugMode(appSettingsPath, enabled, out string? error);
+			if (!ok)
+			{
+				UpdateStatus("DebugMode fallback write failed: " + (error ?? "(unknown error)"));
+			}
+
+			return ok;
+		}
+		catch (Exception ex)
+		{
+			UpdateStatus("DebugMode fallback write failed: " + ex.GetType().Name);
+			return false;
 		}
 	}
 
