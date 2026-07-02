@@ -57,7 +57,8 @@ public sealed class IpcDispatcher
 	private readonly Core.Diagnostics.OverviewProgressState? _overviewProgress;
 	private readonly Workers.AttackStatsRefreshWorker? _attackStatsWorker;
 	private readonly Firewall.IFirewallRuleScanner? _ruleScanner;
-
+	private readonly IThirdPartyFirewallProbe _thirdPartyProbe;
+	
 	public IpcDispatcher(
 		IDbContextFactory<AuditDbContext> factory,
 		ServiceMetrics metrics,
@@ -81,7 +82,8 @@ public sealed class IpcDispatcher
 		IOperationLogWriter? opLog = null,
 		Core.Diagnostics.OverviewProgressState? overviewProgress = null,
 		Workers.AttackStatsRefreshWorker? attackStatsWorker = null,
-		Firewall.IFirewallRuleScanner? ruleScanner = null)
+		Firewall.IFirewallRuleScanner? ruleScanner = null,
+		IThirdPartyFirewallProbe? thirdPartyProbe = null)
 	{
 		_factory = factory;
 		_metrics = metrics;
@@ -106,6 +108,7 @@ public sealed class IpcDispatcher
 		_overviewProgress = overviewProgress;
 		_attackStatsWorker = attackStatsWorker;
 		_ruleScanner = ruleScanner;
+		_thirdPartyProbe = thirdPartyProbe;
 	}
 
 	/// <summary>Best-effort durable operation-log record for an operator action taken through IPC.
@@ -744,6 +747,34 @@ public sealed class IpcDispatcher
 		int verifiedEnforced = 0;
 		int rdpAuditRuleCount = 0;
 		bool thirdPartySuspected = false;
+		// Collect third-party firewall facts on-demand (SCM query, ~5 ms, safe
+// under LocalSystem; never called from background workers).
+ThirdPartyFirewallSnapshot tpSnapshot = await _thirdPartyProbe
+	.CollectAsync(ct).ConfigureAwait(false);
+
+(FirewallProviderDetectedKind tpKind, string tpName) =
+	FirewallProviderClassifier.Classify(
+		tpSnapshot.Services,
+		tpSnapshot.CliTools,
+		tpSnapshot.KasperskyManagesWindowsFirewall);
+
+thirdPartySuspected =
+	tpKind is FirewallProviderDetectedKind.KasperskyDetected
+		   or FirewallProviderDetectedKind.KasperskyManagedWindowsFirewall
+		   or FirewallProviderDetectedKind.ThirdPartyFirewallUnknown;
+
+thirdPartyNote = thirdPartySuspected
+	? string.Format(
+		System.Globalization.CultureInfo.InvariantCulture,
+		"Detected: {0} (kind={1}). " +
+		"IMPORTANT: detection confirms the product is installed and its NDIS LWF " +
+		"driver (e.g. klim6) is running. It does NOT verify whether packet filtering " +
+		"at the NDIS layer will silently drop RdpAudit's Windows Firewall rules. " +
+		"A separate live traffic-blocking verification (out of scope for this probe) " +
+		"is required to confirm end-to-end enforcement.",
+		tpName,
+		tpKind)
+	: null;
 		string? thirdPartyNote = null;
 		string scannerBackend = "None";
 		string? scannerNote = null;
