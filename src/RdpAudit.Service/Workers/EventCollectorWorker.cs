@@ -241,64 +241,92 @@ public sealed class EventCollectorWorker : BackgroundService
 		}
 	}
 
-	[SupportedOSPlatform("windows")]
-	private void ArmChannel(string channel)
+// Version: 2.0.1
+[SupportedOSPlatform("windows")]
+private void ArmChannel(string channel)
+{
+	if (_shuttingDown || _stoppingToken.IsCancellationRequested)
 	{
-		if (_shuttingDown || _stoppingToken.IsCancellationRequested)
+		return;
+	}
+
+	// Capability probe — for optional channels this avoids the Invalid-Handle callback loop.
+	ChannelProbeResult probe = ChannelCapability.Probe(channel);
+	if (!probe.IsAvailable)
+	{
+		ChannelImportance importance = _health.ClassifyChannel(channel);
+		if (importance == ChannelImportance.Optional)
 		{
+			_health.ReportUnavailable(channel, probe.Reason);
+
+			// v2.0.1: embed the probe reason into the channel status so the Diagnostic tab
+			// can distinguish "role not installed" (ChannelNotFound) from "access denied"
+			// or "disabled" without requiring log access. Previously the status collapsed
+			// to a bare "SkippedUnavailable" token that gave no root-cause context.
+			_metrics.SetChannelStatus(channel, BuildSkippedUnavailableStatus(probe.Reason));
+			_logger.LogWarning(
+				"Skipping optional channel {Channel}: {Reason}",
+				channel, probe.Reason);
 			return;
 		}
 
-		// Capability probe — for optional channels this avoids the Invalid-Handle callback loop.
-		ChannelProbeResult probe = ChannelCapability.Probe(channel);
-		if (!probe.IsAvailable)
-		{
-			ChannelImportance importance = _health.ClassifyChannel(channel);
-			if (importance == ChannelImportance.Optional)
-			{
-				_health.ReportUnavailable(channel, probe.Reason);
-				_metrics.SetChannelStatus(channel, "SkippedUnavailable");
-				_logger.LogWarning(
-					"Skipping optional channel {Channel}: {Reason}",
-					channel, probe.Reason);
-				return;
-			}
-
-			// Critical channel that failed capability check: log once at error, still try to arm —
-			// the EventLogWatcher will surface the real failure and the health policy will gate
-			// any restart loop.
-			_logger.LogError(
-				"Critical channel {Channel} failed capability probe: {Reason}. Attempting to arm anyway.",
-				channel, probe.Reason);
-		}
-
-		try
-		{
-			EventLogWatcher watcher = CreateWatcher(channel);
-			lock (_watcherLock)
-			{
-				if (_watchers.TryRemove(channel, out EventLogWatcher? old))
-				{
-					SafeDisposeWatcher(old);
-				}
-
-				watcher.Enabled = true;
-				_watchers[channel] = watcher;
-			}
-
-			_health.ReportSuccess(channel);
-			_metrics.SetChannelStatus(channel, "Armed");
-			if (string.Equals(channel, EventCatalog.ChannelSecurity, StringComparison.OrdinalIgnoreCase))
-			{
-				_metrics.SetSecurityWatcherEnabled(true);
-			}
-			_logger.LogInformation("Watcher armed for channel {Channel}", channel);
-		}
-		catch (Exception ex)
-		{
-			HandleWatcherFailure(channel, ex, isCallback: false);
-		}
+		// Critical channel that failed capability check: log once at error, still try to arm —
+		// the EventLogWatcher will surface the real failure and the health policy will gate
+		// any restart loop.
+		_logger.LogError(
+			"Critical channel {Channel} failed capability probe: {Reason}. Attempting to arm anyway.",
+			channel, probe.Reason);
 	}
+
+	try
+	{
+		EventLogWatcher watcher = CreateWatcher(channel);
+		lock (_watcherLock)
+		{
+			if (_watchers.TryRemove(channel, out EventLogWatcher? old))
+			{
+				SafeDisposeWatcher(old);
+			}
+
+			watcher.Enabled = true;
+			_watchers[channel] = watcher;
+		}
+
+		_health.ReportSuccess(channel);
+		_metrics.SetChannelStatus(channel, "Armed");
+		if (string.Equals(channel, EventCatalog.ChannelSecurity, StringComparison.OrdinalIgnoreCase))
+		{
+			_metrics.SetSecurityWatcherEnabled(true);
+		}
+		_logger.LogInformation("Watcher armed for channel {Channel}", channel);
+	}
+	catch (Exception ex)
+	{
+		HandleWatcherFailure(channel, ex, isCallback: false);
+	}
+}
+
+/// <summary>v2.0.1 — compose the "SkippedUnavailable" channel status token, appending a
+/// bounded-length probe reason so the Diagnostic tab shows WHY an optional channel was
+/// skipped (role not installed, access denied, disabled) instead of a bare status with no
+/// context. Truncated defensively since <see cref="ChannelProbeResult.Reason"/> may embed a
+/// full exception message on some Windows builds.</summary>
+private static string BuildSkippedUnavailableStatus(string reason)
+{
+	const int maxReasonLength = 120;
+	const string prefix = "SkippedUnavailable: ";
+
+	if (string.IsNullOrEmpty(reason))
+	{
+		return "SkippedUnavailable";
+	}
+
+	string trimmed = reason.Length > maxReasonLength
+		? reason[..maxReasonLength] + "..."
+		: reason;
+
+	return prefix + trimmed;
+}
 
 	/// <summary>Build the XPath the channel watcher will use. Pure logic — extracted so tests can
 	/// pin the v1.2.0 contract that Security MUST always use the narrow auth XPath regardless of
