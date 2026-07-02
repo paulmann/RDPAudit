@@ -1,11 +1,21 @@
-// File:    src/RdpAudit.Core/Firewall/FirewallProviderClassifier.cs
-// Module:  RdpAudit.Core.Firewall
+/* Project: RDPAudit 2.0 | Author: Mikhail Deynekin | Site: Deynekin.com | Email: Mikhail@Deynekin.com */
+// Version: 1.1.0
+// File   : FirewallProviderClassifier.cs
+// Project: RdpAudit.Core (RdpAudit.Core.Firewall)
 // Purpose: Pure classifier that derives a FirewallProviderDetectedKind + provider name from a
 //          captured snapshot of services / CLI tools / Windows Firewall profiles. Kept Win32-free
-//          so the same rules can be unit-tested without spawning a real Windows host.
-// Extends: System.Object
-// Author:  Mikhail Deynekin
-// Site:    https://Deynekin.com
+//          so the same rules can be unit-tested without spawning a real Windows host. Every
+//          collection walk below uses an indexed for-loop rather than foreach: iterating an
+//          IReadOnlyList<T>-typed parameter via foreach forces the C# compiler to dispatch through
+//          IEnumerable<T>.GetEnumerator(), which boxes List<T>'s struct enumerator on the heap —
+//          a per-call allocation that violates the zero-alloc hot-path directive even though no
+//          `new`, string interpolation, or LINQ appears anywhere in this file.
+// Depends: FirewallServiceState, FirewallCliToolPresence, FirewallProviderDetectedKind
+// Extends: Add new vendor service-name fragments to KasperskyServiceFragments /
+//          ThirdPartyFirewallServiceFragments; add new CLI tool name checks to
+//          DescribeKasperskyName. Always iterate via indexed for-loops, never foreach, to
+//          preserve the zero-allocation guarantee proven by
+//          RdpAudit.Service.Tests.ThirdPartyFirewallClassifierTests.
 
 namespace RdpAudit.Core.Firewall;
 
@@ -52,6 +62,8 @@ public static class FirewallProviderClassifier
 		"f-secure",
 	};
 
+	// ── Public API ───────────────────────────────────────────────────────────────
+
 	/// <summary>Classify the provider given collected service / CLI / profile state and an
 	/// optional explicit "Kaspersky is managing Windows Firewall" signal supplied by the probe.</summary>
 	/// <param name="services">Captured Windows services (firewall-relevant subset).</param>
@@ -72,7 +84,6 @@ public static class FirewallProviderClassifier
 
 		bool kasperskyDetected = AnyServiceMatches(services, KasperskyServiceFragments)
 			|| AnyCliToolPresent(cliTools);
-		bool thirdPartyDetected = AnyServiceMatches(services, ThirdPartyFirewallServiceFragments);
 
 		if (kasperskyDetected)
 		{
@@ -82,7 +93,7 @@ public static class FirewallProviderClassifier
 				: (FirewallProviderDetectedKind.KasperskyDetected, name);
 		}
 
-		if (thirdPartyDetected)
+		if (AnyServiceMatches(services, ThirdPartyFirewallServiceFragments))
 		{
 			return (FirewallProviderDetectedKind.ThirdPartyFirewallUnknown, "Third-party firewall (unclassified)");
 		}
@@ -92,30 +103,41 @@ public static class FirewallProviderClassifier
 		return (FirewallProviderDetectedKind.WindowsDefenderFirewall, "Windows Defender Firewall");
 	}
 
+	// ── Zero-Alloc Collection Walks ───────────────────────────────────────────────
+	// NOTE: every method below uses an indexed `for` loop against `.Count` / `[i]`.
+	// Do not convert these to `foreach` — see the file header comment for why that
+	// reintroduces a per-call heap allocation via boxed List<T> enumerators.
+
 	private static bool AnyServiceMatches(IReadOnlyList<FirewallServiceState> services, IReadOnlyList<string> fragments)
 	{
-		foreach (FirewallServiceState svc in services)
+		for (int i = 0; i < services.Count; i++)
 		{
-			foreach (string frag in fragments)
+			FirewallServiceState svc = services[i];
+
+			for (int j = 0; j < fragments.Count; j++)
 			{
+				string frag = fragments[j];
+
 				if (Contains(svc.ServiceName, frag) || Contains(svc.DisplayName, frag))
 				{
 					return true;
 				}
 			}
 		}
+
 		return false;
 	}
 
 	private static bool AnyCliToolPresent(IReadOnlyList<FirewallCliToolPresence> cliTools)
 	{
-		foreach (FirewallCliToolPresence tool in cliTools)
+		for (int i = 0; i < cliTools.Count; i++)
 		{
-			if (tool.Present)
+			if (cliTools[i].Present)
 			{
 				return true;
 			}
 		}
+
 		return false;
 	}
 
@@ -125,6 +147,7 @@ public static class FirewallProviderClassifier
 		{
 			return false;
 		}
+
 		return haystack.Contains(fragment, StringComparison.OrdinalIgnoreCase);
 	}
 
@@ -134,51 +157,61 @@ public static class FirewallProviderClassifier
 	{
 		// Prefer the most-specific name we can derive from observed services / CLI tools.
 		// KSWS markers beat KES markers beat the generic "Kaspersky product" string.
-		foreach (FirewallServiceState svc in services)
+		for (int i = 0; i < services.Count; i++)
 		{
+			FirewallServiceState svc = services[i];
+
 			if (Contains(svc.ServiceName, "kavfs") || Contains(svc.DisplayName, "Kaspersky Security for Windows Server"))
 			{
 				return "Kaspersky Security for Windows Server";
 			}
 		}
 
-		foreach (FirewallServiceState svc in services)
+		for (int i = 0; i < services.Count; i++)
 		{
+			FirewallServiceState svc = services[i];
+
 			if (Contains(svc.DisplayName, "Kaspersky Endpoint Security") || Contains(svc.ServiceName, "KES"))
 			{
 				return "Kaspersky Endpoint Security for Windows";
 			}
 		}
 
-		foreach (FirewallCliToolPresence tool in cliTools)
+		for (int i = 0; i < cliTools.Count; i++)
 		{
-			if (tool.Present)
+			FirewallCliToolPresence tool = cliTools[i];
+
+			if (!tool.Present)
 			{
-				if (string.Equals(tool.ToolName, "kavshell.exe", StringComparison.OrdinalIgnoreCase))
-				{
-					return "Kaspersky Security for Windows Server";
-				}
-				if (string.Equals(tool.ToolName, "kescli.exe", StringComparison.OrdinalIgnoreCase))
-				{
-					return "Kaspersky Endpoint Security for Windows";
-				}
-				if (string.Equals(tool.ToolName, "avp.exe", StringComparison.OrdinalIgnoreCase)
-					|| string.Equals(tool.ToolName, "avp.com", StringComparison.OrdinalIgnoreCase))
-				{
-					// `avp.exe` / `avp.com` is the canonical CLI shipped with Kaspersky AV /
-					// Endpoint Security for Windows. The user diagnostic on Windows 10 Pro
-					// reports both candidates and the running AVP21.24 service.
-					return "Kaspersky Endpoint Security for Windows";
-				}
+				continue;
+			}
+
+			if (string.Equals(tool.ToolName, "kavshell.exe", StringComparison.OrdinalIgnoreCase))
+			{
+				return "Kaspersky Security for Windows Server";
+			}
+
+			if (string.Equals(tool.ToolName, "kescli.exe", StringComparison.OrdinalIgnoreCase))
+			{
+				return "Kaspersky Endpoint Security for Windows";
+			}
+
+			if (string.Equals(tool.ToolName, "avp.exe", StringComparison.OrdinalIgnoreCase)
+				|| string.Equals(tool.ToolName, "avp.com", StringComparison.OrdinalIgnoreCase))
+			{
+				// `avp.exe` / `avp.com` is the canonical CLI shipped with Kaspersky AV /
+				// Endpoint Security for Windows. The user diagnostic on Windows 10 Pro
+				// reports both candidates and the running AVP21.24 service.
+				return "Kaspersky Endpoint Security for Windows";
 			}
 		}
 
 		// Last-resort: when only a generic `AVP*` service is observed (no display name match,
 		// no CLI hit), we still know the operator is running Kaspersky AV / Endpoint Security —
 		// on workstation SKUs that surfaces as `AVPxx.yy` (e.g. AVP21.24 in the user diagnostic).
-		foreach (FirewallServiceState svc in services)
+		for (int i = 0; i < services.Count; i++)
 		{
-			if (Contains(svc.ServiceName, "AVP"))
+			if (Contains(services[i].ServiceName, "AVP"))
 			{
 				return "Kaspersky Endpoint Security for Windows";
 			}
