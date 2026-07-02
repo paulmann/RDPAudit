@@ -1,25 +1,27 @@
 /* Project: RDPAudit 2.0 | Author: Mikhail Deynekin | Site: Deynekin.com | Email: Mikhail@Deynekin.com */
-// Version: 2.1.4
+// Version: 2.1.5
 // File   : EventProcessorWorker.cs
 // Project: RdpAudit.Service (RdpAudit.Service.Workers)
 // Purpose: Drains the lock-free ring buffer in batches, normalises payloads, and persists to
 //          SQLite inside a single explicit transaction.
 //          v2.1.0: decomposed the monolithic persist method into UpsertAddressesAsync /
-//          ApplySessionIpCorrelationAsync steps; removed the per-idle-tick List allocation in
-//          DrainBatchAsync (previously allocated a new List<RawEventDto> on every call even when
-//          the ring buffer was empty); added DEBUG-mode structured tracing across normalization,
-//          address upsert, and fact-upsert calls so an empty RDP Activity table with a healthy
-//          Live Events feed can be diagnosed from logs alone.
+//          ApplySessionIpCorrelationAsync steps; added DEBUG-mode structured tracing across
+//          normalization, address upsert, and fact-upsert calls so an empty RDP Activity table
+//          with a healthy Live Events feed can be diagnosed from logs alone.
 //          v2.1.3: DrainBatchAsync briefly used ValueTask<T> to silence CS1998, but reflection
 //          in EventProcessorWorkerRingBufferTests.InvokeDrainBatchAsync hard-casts the result to
-//          Task<List<RawEventDto>> — ValueTask<T> is not Task<T> and threw InvalidCastException.
-//          Reverted to Task<T>, kept the method non-async via Task.FromResult (the drain loop is
-//          fully synchronous — SpinWait + Channel.TryRead, no I/O). Constructor guard clauses
-//          also relaxed: EventProcessorWorkerRingBufferTests constructs the worker with `null!`
-//          for factory/normalizer/correlationUpserter/connectionFactUpserter/
-//          authAttemptFactUpserter/securityWatchdog/opLog while exercising only DrainBatchAsync,
-//          which never dereferences those fields; guards now cover only channel/metrics/logger/
-//          options, the fields DrainBatchAsync and the constructor itself touch unconditionally.
+//          Task<List<RawEventDto>>. Reverted to Task<T>; kept non-async via Task.FromResult
+//          since the drain loop (SpinWait + Channel.TryRead) is fully synchronous. Constructor
+//          guard clauses relaxed to channel/metrics/logger/options only — the same test suite
+//          constructs the worker with `null!` for factory/normalizer/correlationUpserter/
+//          connectionFactUpserter/authAttemptFactUpserter/securityWatchdog/opLog while
+//          exercising only DrainBatchAsync, which never dereferences those fields.
+//          v2.1.5: DrainBatchAsync_EmptyBuffer_ReturnsEmptyListAfterTimeout asserts
+//          Assert.Empty(result) — an empty List<RawEventDto>, not null. Contract corrected:
+//          DrainBatchAsync now ALWAYS returns a non-null List<RawEventDto> (Task<List<...>>,
+//          never Task<List<...>?>), returning the shared EmptyBatch instance on timeout/
+//          cancellation instead of null — this also avoids allocating a fresh empty List on
+//          every idle drain tick. EmptyBatch is declared exactly once, in Fields & DI.
 // Depends: EventChannel, IDbContextFactory<AuditDbContext>, EventNormalizer,
 //          SessionIpCorrelationUpserter, RdpConnectionFactUpserter, AuthAttemptFactUpserter,
 //          SecurityCorrelationWatchdog, ServiceMetrics, IOptionsMonitor<RdpAuditOptions>
@@ -58,13 +60,19 @@ public sealed class EventProcessorWorker : BackgroundService
 		TimeSpan.FromMilliseconds(2000),
 	};
 
-	private static readonly List<RawEventDto> EmptyBatch = new(capacity: 0);
-
 	private const int MaxConsecutiveFailures = 5;
 	private const string TsLsmChannelName = "Microsoft-Windows-TerminalServices-LocalSessionManager/Operational";
 	private const string TsRcmChannelName = "Microsoft-Windows-TerminalServices-RemoteConnectionManager/Operational";
 
 	internal const int AddressUserNamesMaxLength = 1024;
+
+	/// <summary>
+	/// Shared immutable empty-batch instance returned by <see cref="DrainBatchAsync"/> on
+	/// timeout/cancellation. Avoids allocating a fresh empty <see cref="List{T}"/> on every idle
+	/// drain tick. Safe to share because callers only ever read <c>Count</c> on this path — the
+	/// list is never mutated downstream.
+	/// </summary>
+	private static readonly List<RawEventDto> EmptyBatch = new(capacity: 0);
 
 	private readonly EventChannel _channel;
 	private readonly IDbContextFactory<AuditDbContext> _factory;
@@ -215,64 +223,51 @@ public sealed class EventProcessorWorker : BackgroundService
 
 	/// <summary>
 	/// Drains the lock-free ring buffer up to <c>Monitoring.BatchSize</c> items or until the
-	/// batch timeout elapses. Returns <c>null</c> instead of allocating an empty
-	/// <see cref="List{T}"/> when no event arrived before the timeout — the drain loop is fully
-	/// synchronous (SpinWait + Channel.TryRead, no I/O), so the method itself is not
-	/// <c>async</c>; it returns <see cref="Task.FromResult{TResult}(TResult)"/> directly.
-	/// Kept as <see cref="Task{TResult}"/> rather than <see cref="ValueTask{TResult}"/> because
+	/// batch timeout elapses. Always returns a non-null <see cref="List{T}"/> — an empty one
+	/// (the shared <see cref="EmptyBatch"/> instance) when nothing arrived before the timeout or
+	/// cancellation was requested. The drain loop is fully synchronous (SpinWait +
+	/// Channel.TryRead, no I/O), so the method itself is not <c>async</c>; it returns
+	/// <see cref="Task.FromResult{TResult}(TResult)"/> directly. Kept as
+	/// <see cref="Task{TResult}"/> rather than <see cref="ValueTask{TResult}"/> because
 	/// <c>EventProcessorWorkerRingBufferTests</c> invokes this method via reflection and casts
 	/// the result to <c>Task&lt;List&lt;RawEventDto&gt;&gt;</c>.
 	/// </summary>
-// Version: 2.1.5
-// Fix: DrainBatchAsync_EmptyBuffer_ReturnsEmptyListAfterTimeout asserts Assert.Empty(result) —
-// it expects an empty List<RawEventDto>, not null. Returning null on timeout (2.1.0-2.1.4)
-// threw ArgumentNullException inside the test's own assertion. Contract corrected: the method
-// now ALWAYS returns a non-null List<RawEventDto> (possibly empty on timeout/cancellation) — it
-// never returns null. Return type changed from Task<List<RawEventDto>?> to
-// Task<List<RawEventDto>>. ExecuteAsync's null-check on the result is now redundant but kept
-// harmless via `batch.Count == 0` alone.
-
-private Task<List<RawEventDto>> DrainBatchAsync(CancellationToken stoppingToken)
-{
-	MonitoringOptions monitoring = _options.CurrentValue.Monitoring;
-	int max = Math.Max(1, monitoring.BatchSize);
-	TimeSpan timeout = TimeSpan.FromMilliseconds(Math.Max(50, monitoring.BatchTimeoutMilliseconds));
-
-	SpinWait spinner = default;
-	long startTimestamp = Stopwatch.GetTimestamp();
-	long timeoutTicks = (long)(timeout.TotalSeconds * Stopwatch.Frequency);
-
-	while (!stoppingToken.IsCancellationRequested)
+	private Task<List<RawEventDto>> DrainBatchAsync(CancellationToken stoppingToken)
 	{
-		if (_channel.Channel.TryRead(out RawEventDto first))
-		{
-			_metrics.IncrementRingBufferRead();
+		MonitoringOptions monitoring = _options.CurrentValue.Monitoring;
+		int max = Math.Max(1, monitoring.BatchSize);
+		TimeSpan timeout = TimeSpan.FromMilliseconds(Math.Max(50, monitoring.BatchTimeoutMilliseconds));
 
-			List<RawEventDto> batch = new(max) { first };
-			while (batch.Count < max && _channel.Channel.TryRead(out RawEventDto next))
+		SpinWait spinner = default;
+		long startTimestamp = Stopwatch.GetTimestamp();
+		long timeoutTicks = (long)(timeout.TotalSeconds * Stopwatch.Frequency);
+
+		while (!stoppingToken.IsCancellationRequested)
+		{
+			if (_channel.Channel.TryRead(out RawEventDto first))
 			{
 				_metrics.IncrementRingBufferRead();
-				batch.Add(next);
+
+				List<RawEventDto> batch = new(max) { first };
+				while (batch.Count < max && _channel.Channel.TryRead(out RawEventDto next))
+				{
+					_metrics.IncrementRingBufferRead();
+					batch.Add(next);
+				}
+
+				return Task.FromResult(batch);
 			}
 
-			return Task.FromResult(batch);
+			if (Stopwatch.GetTimestamp() - startTimestamp >= timeoutTicks)
+			{
+				return Task.FromResult(EmptyBatch);
+			}
+
+			spinner.SpinOnce();
 		}
 
-		if (Stopwatch.GetTimestamp() - startTimestamp >= timeoutTicks)
-		{
-			return Task.FromResult(EmptyBatch);
-		}
-
-		spinner.SpinOnce();
+		return Task.FromResult(EmptyBatch);
 	}
-
-	return Task.FromResult(EmptyBatch);
-}
-
-// Shared immutable empty-batch instance — avoids allocating a new empty List<RawEventDto> on
-// every idle drain tick (this was the original 2.1.0 fix's intent; a shared readonly empty list
-// is safe here because ExecuteAsync only ever reads Count on this path, never mutates it).
-private static readonly List<RawEventDto> EmptyBatch = new(capacity: 0);
 
 	private async Task PersistBatchAsync(List<RawEventDto> dtos, CancellationToken ct)
 	{
@@ -553,8 +548,7 @@ private static readonly List<RawEventDto> EmptyBatch = new(capacity: 0);
 	// ── SIMD & Zero-Alloc Parsers ────────────────────────────────────────────────
 	// (Not applicable: this worker is the cold-path DB persistence stage per the project's
 	// Cold/Hot Database Split directive. EventCollectorWorker's ingestion callback is the
-	// zero-alloc hot path; this class is intentionally allocation-tolerant for EF/SQLite writes,
-	// with 2.1.0 only removing the one allocation that occurred even when idle.)
+	// zero-alloc hot path; this class is intentionally allocation-tolerant for EF/SQLite writes.)
 
 	private static bool IsSecurityChannel(string? channel)
 		=> !string.IsNullOrWhiteSpace(channel)
