@@ -1,5 +1,5 @@
 /* Project: RDPAudit 2.0 | Author: Mikhail Deynekin | Site: Deynekin.com | Email: Mikhail@Deynekin.com */
-// Version: 1.0.0
+// Version: 1.0.1
 // File   : DatabaseInitializationWorker.cs
 // Project: RdpAudit.Service (RdpAudit.Service)
 // Purpose: Performs one-time database schema initialization and bookmark hydration as the first hosted service during startup.
@@ -47,7 +47,7 @@ public sealed class DatabaseInitializationWorker : IHostedService
 		_logger.LogInformation("Database initialization worker starting.");
 
 		await _dbInitializer.EnsureCreatedAsync(cancellationToken).ConfigureAwait(false);
-		await _bookmarkStore.LoadAllAsync().ConfigureAwait(false);
+		await _bookmarkStore.LoadAllAsync(cancellationToken).ConfigureAwait(false);
 
 		_logger.LogInformation("Database initialization worker completed.");
 	}
