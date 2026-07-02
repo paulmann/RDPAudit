@@ -45,6 +45,18 @@ public sealed class AlertWorker : BackgroundService
 
 	protected override async Task ExecuteAsync(CancellationToken stoppingToken)
 	{
+		// Yield immediately, before anything else runs. .NET's Generic Host calls
+		// IHostedService.StartAsync for every registered service sequentially and synchronously
+		// (dotnet/runtime#116181); BackgroundService.StartAsync executes ExecuteAsync inline up to its
+		// first await, on the same thread that is starting the host. _rules.Count() below forces
+		// immediate resolution/enumeration of every IAlertRule singleton (21 rules registered in
+		// AlertRuleRegistration.Register) -- if any rule's constructor ever does non-trivial work
+		// (I/O, config read, a lock), that work would run synchronously here and starve every
+		// hosted service registered after AlertWorker. Task.Yield() guarantees control returns to the
+		// host immediately, before _rules.Count() or anything else executes, regardless of what the
+		// rest of this method does synchronously.
+		await Task.Yield();
+
 		_logger.LogInformation("{Worker} starting with {Count} alert rules",
 			nameof(AlertWorker),
 			_rules.Count());
