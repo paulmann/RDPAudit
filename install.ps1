@@ -12,7 +12,7 @@
 
 .NOTES
 	Author : Mikhail Deynekin — https://Deynekin.com — Mikhail@Deynekin.com
-	Version: 1.2.2
+	Version: 1.2.3
 
 .FEATURES
 	Detects and reports any previously installed RdpAudit version (with version number).
@@ -875,6 +875,54 @@ function Update-MessagePackPackageReference {
 	}
 }
 
+# ── Test Dependencies ────────────────────────────────────────────────────────
+function Install-MoqPackage {
+    <#
+    .SYNOPSIS
+        Ensures the Moq package is present in RdpAudit.Service.Tests before build/test.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][ValidateNotNullOrEmpty()][string]$RepositoryRoot
+    )
+
+    $testProj = Join-Path -Path $RepositoryRoot -ChildPath 'tests\RdpAudit.Service.Tests\RdpAudit.Service.Tests.csproj'
+
+    if (-not (Test-Path -Path $testProj -PathType Leaf)) {
+        Write-WarningMessage "Test project not found: $testProj — skipping Moq install."
+        return
+    }
+
+    Write-Info 'Checking Moq package in test project ...'
+    [xml]$xml = Get-Content -Path $testProj -Raw -Encoding UTF8
+    $moqRef = $xml.Project.ItemGroup.PackageReference |
+        Where-Object { $_.Include -ieq 'Moq' } |
+        Select-Object -First 1
+
+    if ($null -ne $moqRef) {
+        $ver = if ($moqRef.Version) { "v$($moqRef.Version)" } else { 'version managed centrally' }
+        Write-Ok "Moq already installed ($ver)."
+        return
+    }
+
+    Write-Info 'Moq not found. Installing via dotnet add package ...'
+    Invoke-CheckedCommand `
+        -FilePath 'dotnet' `
+        -Arguments @('add', $testProj, 'package', 'Moq') `
+        -FailureMessage 'Failed to install Moq into RdpAudit.Service.Tests.'
+
+    Write-Ok 'Moq installed successfully.'
+    Add-InstallAction 'Installed missing Moq package into RdpAudit.Service.Tests'
+
+    Invoke-CheckedCommand `
+        -FilePath 'dotnet' `
+        -Arguments @('restore', $testProj) `
+        -FailureMessage 'Failed to restore RdpAudit.Service.Tests after Moq installation.'
+
+    Write-Ok 'Dependencies restored.'
+}
+
+
 function Set-DotNetSdkGlobalJson {
 	Write-Section 'SDK Pin'
 
@@ -1261,6 +1309,7 @@ function Invoke-Main {
 	Update-MessagePackPackageReference
 	Update-Ca1859SourceWarnings
 	Confirm-MikrotikBuildPrerequisites
+	Install-MoqPackage -RepositoryRoot $script:RepositoryDirectory
 	Invoke-RdpAuditBuildPipeline
 	Resolve-InstalledTargetVersion
 	Start-Configurator
