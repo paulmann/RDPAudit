@@ -753,21 +753,39 @@ public sealed class IpcDispatcher
 		int verifiedEnforced = 0;
 		int rdpAuditRuleCount = 0;
 		bool thirdPartySuspected = false;
-		// Collect third-party firewall facts on-demand (SCM query, ~5 ms, safe
-// under LocalSystem; never called from background workers).
-ThirdPartyFirewallSnapshot tpSnapshot = await _thirdPartyProbe
-	.CollectAsync(ct).ConfigureAwait(false);
+// Collect third-party firewall facts on-demand. The probe is optional by design:
+// some hosts / test setups may not register it. Third-party detection is purely
+// informational and must never break the diagnostics response when unavailable.
+FirewallProviderDetectedKind tpKind = FirewallProviderDetectedKind.Unknown;
+string tpName = "Unknown";
+bool thirdPartySuspected = false;
+string? thirdPartyNote = null;
 
-(FirewallProviderDetectedKind tpKind, string tpName) =
-	FirewallProviderClassifier.Classify(
+if (_thirdPartyProbe is not null)
+{
+	ThirdPartyFirewallSnapshot tpSnapshot = await _thirdPartyProbe
+		.CollectAsync(ct)
+		.ConfigureAwait(false);
+
+	(tpKind, tpName) = FirewallProviderClassifier.Classify(
 		tpSnapshot.Services,
 		tpSnapshot.CliTools,
 		tpSnapshot.KasperskyManagesWindowsFirewall);
 
-thirdPartySuspected =
-	tpKind is FirewallProviderDetectedKind.KasperskyDetected
-		   or FirewallProviderDetectedKind.KasperskyManagedWindowsFirewall
-		   or FirewallProviderDetectedKind.ThirdPartyFirewallUnknown;
+	thirdPartySuspected =
+		tpKind is FirewallProviderDetectedKind.KasperskyDetected
+			or FirewallProviderDetectedKind.KasperskyManagedWindowsFirewall
+			or FirewallProviderDetectedKind.ThirdPartyFirewallUnknown;
+
+	if (thirdPartySuspected)
+	{
+		thirdPartyNote = string.Format(
+			System.Globalization.CultureInfo.InvariantCulture,
+			"Detected: {0} (kind={1}). IMPORTANT: detection confirms product presence only; it does not prove NDIS/LWF packet filtering behavior or end-to-end enforcement in the presence of a third-party filter driver.",
+			string.IsNullOrWhiteSpace(tpName) ? "third-party firewall/security product" : tpName,
+			tpKind);
+	}
+}
 
 thirdPartyNote = thirdPartySuspected
 	? string.Format(
