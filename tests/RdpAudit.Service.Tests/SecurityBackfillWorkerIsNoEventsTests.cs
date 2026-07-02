@@ -3,12 +3,11 @@
 // File   : SecurityBackfillWorkerIsNoEventsTests.cs
 // Project: RdpAudit.Service.Tests (RdpAudit.Service.Tests)
 // Purpose: Regression coverage for SecurityBackfillWorker.IsNoEventsMessage classification and
-//          for the structural shape of the per-EventID XPath used by the backfill worker (4647
-//          vs 4634), pinning the fix for the Security::Backfill::4647 QueryFailed diagnostic.
+//          for the structural shape of the per-EventID XPath used by the backfill worker.
 // Depends: SecurityBackfillWorker, SecurityAuthQuery, Xunit
-// Extends: Add new [InlineData] rows here when a new localized "no matching events" message
-//          variant or a new EventLogException wording is discovered on a supported Windows SKU.
+// Extends: Add new localized "no matching events" message variants here when discovered.
 
+using Xunit;
 using RdpAudit.Core.Events;
 using RdpAudit.Service.Workers;
 
