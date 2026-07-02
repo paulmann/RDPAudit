@@ -25,7 +25,7 @@
 
 [CmdletBinding()]
 param(
-	[string]$Version = "1.6.1",
+	[string]$Version = "1.6.3",
 	[string]$Configuration = "Release",
 	# Build SHA stamped into AssemblyInformationalVersion as SemVer build metadata (after '+').
 	# Left empty here on purpose: when not supplied it is auto-resolved from `git rev-parse HEAD`

@@ -4,7 +4,7 @@
 // Extends: Microsoft.Extensions.Hosting.BackgroundService
 // Author:  Mikhail Deynekin
 // Site:    https://Deynekin.com
-// Version: 1.6.3
+// Version: 1.6.4
 
 using System.IO;
 using System.IO.Pipes;
@@ -259,9 +259,13 @@ public sealed class IpcServerWorker : BackgroundService
 	{
 		try
 		{
+			// Co-located with the structured Serilog output (Program.ConfigureSerilog writes to the
+			// same "logs" subfolder) so operators only need to look in one place for every service log
+			// artifact instead of hunting for a stray file directly under %ProgramData%\RdpAudit.
 			string dir = Path.Combine(
 				Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
-				"RdpAudit");
+				"RdpAudit",
+				"logs");
 			Directory.CreateDirectory(dir);
 			string logPath = Path.Combine(dir, "ipc-startup.log");
 			FileInfo fi = new(logPath);

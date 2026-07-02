@@ -10,7 +10,7 @@
 //          array editing), extend LeafRef / BeginInlineEdit / CommitInlineEdit and ParseScalar below.
 // Author:  Mikhail Deynekin
 // Site:    https://Deynekin.com
-// Version: 1.4.4
+// Version: 1.4.5
 
 using System.Diagnostics;
 using System.Globalization;
@@ -42,6 +42,7 @@ public sealed class SettingsPage : TabPage
 	private readonly Label _debugStatus;
 	private readonly Label _debugWarning;
 	private readonly LinkLabel _debugLogLink;
+	private readonly LinkLabel _ipcStartupLogLink;
 	private readonly Label _status;
 
 	// Inline value editor: a borderless TextBox floated over the selected leaf node while editing.
@@ -62,7 +63,7 @@ public sealed class SettingsPage : TabPage
 		_ipc = ipc;
 
 		// --- Global DEBUG section (top) ----------------------------------------------------------
-		Panel debugPanel = new() { Dock = DockStyle.Top, Height = 96, Padding = new Padding(6) };
+		Panel debugPanel = new() { Dock = DockStyle.Top, Height = 118, Padding = new Padding(6) };
 		_debugToggle = new CheckBox
 		{
 			Text = "Enable global DEBUG mode",
@@ -85,7 +86,7 @@ public sealed class SettingsPage : TabPage
 		};
 		// When DEBUG mode is on, the service mirrors every log line into a single persistent file
 		// (RDPAudit_DEBUG_Log.txt) regardless of the day-rolling JSON log — this link opens it (or, if
-		// the service has not written it yet, opens the containing %ProgramData%\RdpAudit directory).
+		// the service has not written it yet, opens the containing %ProgramData%\RdpAudit\logs directory).
 		_debugLogLink = new LinkLabel
 		{
 			Text = "Open DEBUG log file (RDPAudit_DEBUG_Log.txt)",
@@ -93,10 +94,21 @@ public sealed class SettingsPage : TabPage
 			Location = new Point(8, 52),
 		};
 		_debugLogLink.LinkClicked += (_, _) => OpenDebugLogFile();
+		// IpcServerWorker always writes an unconditional startup/fatal breadcrumb here, independent of
+		// DEBUG mode, so this is the first place to look when the Configurator reports "IPC Connected:
+		// no" — it opens even when DEBUG mode has never been enabled.
+		_ipcStartupLogLink = new LinkLabel
+		{
+			Text = "Open IPC startup/fatal log (ipc-startup.log)",
+			AutoSize = true,
+			Location = new Point(8, 74),
+		};
+		_ipcStartupLogLink.LinkClicked += (_, _) => OpenIpcStartupLogFile();
 		debugPanel.Controls.Add(_debugToggle);
 		debugPanel.Controls.Add(_debugStatus);
 		debugPanel.Controls.Add(_debugWarning);
 		debugPanel.Controls.Add(_debugLogLink);
+		debugPanel.Controls.Add(_ipcStartupLogLink);
 
 		// --- Action buttons ----------------------------------------------------------------------
 		FlowLayoutPanel buttons = new() { Dock = DockStyle.Top, Height = 36 };
@@ -611,6 +623,47 @@ public sealed class SettingsPage : TabPage
 		catch (Exception ex)
 		{
 			UpdateStatus("Failed to open DEBUG log: " + ex.Message);
+		}
+	}
+
+	/// <summary>Resolves the IPC accept-loop startup/fatal breadcrumb path IpcServerWorker always
+	/// writes to (regardless of DEBUG mode) — moved under the "logs" subfolder alongside the
+	/// structured Serilog output so every service log artifact lives in one place.</summary>
+	private static string GetIpcStartupLogFilePath()
+	{
+		string programData = Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData);
+		return Path.Combine(programData, "RdpAudit", "logs", "ipc-startup.log");
+	}
+
+	/// <summary>Opens the IPC startup/fatal log; falls back to opening the "logs" folder when the
+	/// file has not been created yet. Never throws to the UI thread.</summary>
+	private void OpenIpcStartupLogFile()
+	{
+		string path = GetIpcStartupLogFilePath();
+		try
+		{
+			if (File.Exists(path))
+			{
+				Process.Start(new ProcessStartInfo { FileName = path, UseShellExecute = true });
+				UpdateStatus("Opened " + path);
+			}
+			else
+			{
+				string? dir = Path.GetDirectoryName(path);
+				if (!string.IsNullOrEmpty(dir) && Directory.Exists(dir))
+				{
+					Process.Start(new ProcessStartInfo { FileName = dir, UseShellExecute = true });
+					UpdateStatus("ipc-startup.log not created yet. Opened the logs folder instead.");
+				}
+				else
+				{
+					UpdateStatus("ipc-startup.log not found and %ProgramData%\\RdpAudit\\logs does not exist yet: " + path);
+				}
+			}
+		}
+		catch (Exception ex)
+		{
+			UpdateStatus("Failed to open ipc-startup.log: " + ex.Message);
 		}
 	}
 
