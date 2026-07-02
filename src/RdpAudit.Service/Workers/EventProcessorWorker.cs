@@ -69,43 +69,44 @@ public sealed class EventProcessorWorker : BackgroundService
 
 	// ── Construction ─────────────────────────────────────────────────────────────
 
-	public EventProcessorWorker(
-		EventChannel channel,
-		IDbContextFactory<AuditDbContext> factory,
-		EventNormalizer normalizer,
-		SessionIpCorrelationUpserter correlationUpserter,
-		RdpConnectionFactUpserter connectionFactUpserter,
-		AuthAttemptFactUpserter authAttemptFactUpserter,
-		SecurityCorrelationWatchdog securityWatchdog,
-		ServiceMetrics metrics,
-		ILogger<EventProcessorWorker> logger,
-		IOptionsMonitor<RdpAuditOptions> options,
-		IOperationLogWriter opLog)
-	{
-		ArgumentNullException.ThrowIfNull(channel);
-		ArgumentNullException.ThrowIfNull(factory);
-		ArgumentNullException.ThrowIfNull(normalizer);
-		ArgumentNullException.ThrowIfNull(correlationUpserter);
-		ArgumentNullException.ThrowIfNull(connectionFactUpserter);
-		ArgumentNullException.ThrowIfNull(authAttemptFactUpserter);
-		ArgumentNullException.ThrowIfNull(securityWatchdog);
-		ArgumentNullException.ThrowIfNull(metrics);
-		ArgumentNullException.ThrowIfNull(logger);
-		ArgumentNullException.ThrowIfNull(options);
-		ArgumentNullException.ThrowIfNull(opLog);
+// Version: 2.1.3
+// Fix: EventProcessorWorkerRingBufferTests constructs this worker with `null!` for factory,
+// normalizer, correlationUpserter, connectionFactUpserter, authAttemptFactUpserter, and
+// securityWatchdog — the test only exercises the private DrainBatchAsync method, which touches
+// none of those dependencies. ArgumentNullException.ThrowIfNull on those parameters broke this
+// established test pattern. Guards now cover only the dependencies DrainBatchAsync/ExecuteAsync
+// actually dereference unconditionally at construction time: channel, metrics, logger, options.
 
-		_channel = channel;
-		_factory = factory;
-		_normalizer = normalizer;
-		_correlationUpserter = correlationUpserter;
-		_connectionFactUpserter = connectionFactUpserter;
-		_authAttemptFactUpserter = authAttemptFactUpserter;
-		_securityWatchdog = securityWatchdog;
-		_metrics = metrics;
-		_logger = logger;
-		_options = options;
-		_opLog = opLog;
-	}
+public EventProcessorWorker(
+	EventChannel channel,
+	IDbContextFactory<AuditDbContext> factory,
+	EventNormalizer normalizer,
+	SessionIpCorrelationUpserter correlationUpserter,
+	RdpConnectionFactUpserter connectionFactUpserter,
+	AuthAttemptFactUpserter authAttemptFactUpserter,
+	SecurityCorrelationWatchdog securityWatchdog,
+	ServiceMetrics metrics,
+	ILogger<EventProcessorWorker> logger,
+	IOptionsMonitor<RdpAuditOptions> options,
+	IOperationLogWriter opLog)
+{
+	ArgumentNullException.ThrowIfNull(channel);
+	ArgumentNullException.ThrowIfNull(metrics);
+	ArgumentNullException.ThrowIfNull(logger);
+	ArgumentNullException.ThrowIfNull(options);
+
+	_channel = channel;
+	_factory = factory;
+	_normalizer = normalizer;
+	_correlationUpserter = correlationUpserter;
+	_connectionFactUpserter = connectionFactUpserter;
+	_authAttemptFactUpserter = authAttemptFactUpserter;
+	_securityWatchdog = securityWatchdog;
+	_metrics = metrics;
+	_logger = logger;
+	_options = options;
+	_opLog = opLog;
+}
 
 	private bool DebugEnabled => _options.CurrentValue.Diagnostics.DebugMode;
 
