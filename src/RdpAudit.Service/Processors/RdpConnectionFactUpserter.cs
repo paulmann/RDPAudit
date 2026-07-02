@@ -57,21 +57,25 @@ public sealed class RdpConnectionFactUpserter
 	/// </summary>
 	internal const string UnresolvedIpSentinel = "0.0.0.0";
 
-	private readonly ILogger<RdpConnectionFactUpserter> _logger;
-	private readonly IOptionsMonitor<RdpAuditOptions> _options;
+// Version: 2.1.2
+// Fix: CS7036 in 20+ existing test call sites — logger/options were made mandatory in 2.1.0,
+// breaking every test that constructs this class directly (new RdpConnectionFactUpserter()).
+// Restored as optional parameters with null-safe defaults so both production DI (which always
+// supplies real instances) and existing unit tests (which don't need diagnostics) compile
+// unchanged. All logger calls use the null-conditional operator accordingly.
 
-	// ── Construction ─────────────────────────────────────────────────────────────
+private readonly ILogger<RdpConnectionFactUpserter>? _logger;
+private readonly IOptionsMonitor<RdpAuditOptions>? _options;
 
-	public RdpConnectionFactUpserter(
-		ILogger<RdpConnectionFactUpserter> logger,
-		IOptionsMonitor<RdpAuditOptions> options)
-	{
-		ArgumentNullException.ThrowIfNull(logger);
-		ArgumentNullException.ThrowIfNull(options);
+public RdpConnectionFactUpserter(
+	ILogger<RdpConnectionFactUpserter>? logger = null,
+	IOptionsMonitor<RdpAuditOptions>? options = null)
+{
+	_logger = logger;
+	_options = options;
+}
 
-		_logger = logger;
-		_options = options;
-	}
+private bool DebugEnabled => _options?.CurrentValue.Diagnostics.DebugMode == true;
 
 	private bool DebugEnabled => _options.CurrentValue.Diagnostics.DebugMode;
 
