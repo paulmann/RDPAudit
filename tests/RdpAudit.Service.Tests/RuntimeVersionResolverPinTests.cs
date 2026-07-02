@@ -20,9 +20,9 @@ namespace RdpAudit.Service.Tests;
 /// placeholder default and the previous 1.5.x release stream from regressing.</summary>
 public class RuntimeVersionResolverPinTests
 {
-	private const string ExpectedSemVer  = "1.6.0";
+	private const string ExpectedSemVer  = "1.6.1";
 	private const string ForbiddenLegacy = "1.0.0";
-	private const string ForbiddenPrev   = "1.5.";
+	private const string ForbiddenPrev   = "1.6.0";
 
 	[Fact]
 	public void Resolve_FromServiceAssembly_ReturnsPinnedSemVer()
@@ -46,5 +46,4 @@ public class RuntimeVersionResolverPinTests
 		Assembly serviceAssembly = typeof(RuntimeVersionResolver).Assembly;
 		string version = RuntimeVersionResolver.Resolve(serviceAssembly, processPath: null);
 		Assert.DoesNotContain(ForbiddenPrev, version, StringComparison.Ordinal);
-	}
-}
+	}}
