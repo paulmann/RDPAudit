@@ -1,9 +1,13 @@
-// File:    src/RdpAudit.Service/Program.cs
-// Module:  RdpAudit.Service
-// Purpose: Process entry point — configures host, DI, logging, and worker registrations.
-// Extends: System.Object
-// Author:  Mikhail Deynekin
-// Site:    https://Deynekin.com
+/* Project: RDPAudit 2.0 | Author: Mikhail Deynekin | Site: Deynekin.com | Email: Mikhail@Deynekin.com */
+// Version: 2.0.0
+// File   : Program.cs
+// Project: RdpAudit.Service (RdpAudit.Service)
+// Purpose: Process entry point — configures host, DI, logging, and ordered worker registrations,
+//          and sequences startup so schema migrations complete before any DB-backed diagnostics run.
+// Depends: HostApplicationBuilder, AuditDbInitializer, DatabaseInitializationWorker, CrashGuard,
+//          Serilog, IOptionsMonitor<RdpAuditOptions>, TimedHostedService
+// Extends: Register a new worker via AddTimedHostedService in the ordered block inside
+//          RegisterServices; add a new DI singleton in the composition block above it.
 
 using System.Diagnostics;
 using System.Net.Http;
@@ -38,6 +42,8 @@ namespace RdpAudit.Service;
 /// <summary>Process entry point — configures host, DI, logging, and worker registrations.</summary>
 public static class Program
 {
+	// ── Public API ───────────────────────────────────────────────────────────────
+
 	public static async Task<int> Main(string[] args)
 	{
 		bool isService = !Debugger.IsAttached
@@ -53,6 +59,7 @@ public static class Program
 		{
 			Directory.CreateDirectory(configDir);
 		}
+
 		if (!File.Exists(configPath))
 		{
 			await File.WriteAllTextAsync(configPath, AppSettingsTemplate.Default).ConfigureAwait(false);
@@ -83,7 +90,15 @@ public static class Program
 			builder.Services.AddWindowsService(o => o.ServiceName = "RdpAuditService");
 		}
 
-		builder.Services.Configure<HostOptions>(o => o.ShutdownTimeout = TimeSpan.FromSeconds(15));
+		builder.Services.Configure<HostOptions>(o =>
+		{
+			o.ShutdownTimeout = TimeSpan.FromSeconds(15);
+
+			// A single faulted BackgroundService must never abort the host. Individual workers
+			// already guard their loops, but this is the process-wide backstop so a fault in one
+			// worker's StartAsync/ExecuteAsync cannot tear the whole service down.
+			o.BackgroundServiceExceptionBehavior = BackgroundServiceExceptionBehavior.Ignore;
+		});
 
 		RegisterServices(builder.Services);
 
@@ -94,12 +109,34 @@ public static class Program
 		// always to the Windows Event Log and a fallback file, instead of dying silently.
 		CrashGuard crashGuard = host.Services.GetRequiredService<CrashGuard>();
 		crashGuard.Install();
-		RdpAuditOptions effectiveOptions = host.Services.GetRequiredService<IOptions<RdpAuditOptions>>().Value;
-		crashGuard.LogStartupDiagnostics(effectiveOptions, configPath);
 
-		await host.RunAsync().ConfigureAwait(false);
+		try
+		{
+			// StartAsync runs the ordered hosted-service chain, whose FIRST member
+			// (DatabaseInitializationWorker) applies EF migrations. Only AFTER it returns is the
+			// schema guaranteed present — so the DB-backed startup diagnostic below can safely write
+			// to OperationLogs. Emitting LogStartupDiagnostics before StartAsync was the direct cause
+			// of the "SQLite Error 1: 'no such table: OperationLogs'" on first launch, because the
+			// OperationLog INSERT raced ahead of the V133OperationLogs migration.
+			await host.StartAsync().ConfigureAwait(false);
+
+			RdpAuditOptions effectiveOptions = host.Services.GetRequiredService<IOptions<RdpAuditOptions>>().Value;
+			crashGuard.LogStartupDiagnostics(effectiveOptions, configPath);
+
+			await host.WaitForShutdownAsync().ConfigureAwait(false);
+		}
+		catch (Exception ex)
+		{
+			// Last-resort: the host itself failed to start or shut down cleanly. CrashGuard's file /
+			// Event Log sinks are already installed, so record and surface a non-zero exit code to SCM.
+			crashGuard.RecordFatal("HostStartup", ex);
+			return 1;
+		}
+
 		return 0;
 	}
+
+	// ── Logging Configuration ────────────────────────────────────────────────────
 
 	private static void ConfigureSerilog(HostApplicationBuilder builder, string programData)
 	{
@@ -109,10 +146,20 @@ public static class Program
 		// DebugMode is read directly from the raw configuration section (not IOptions<T>) because
 		// ConfigureSerilog runs before the DI container is built, so IOptionsMonitor<RdpAuditOptions>
 		// is not yet resolvable. This mirrors RdpAuditOptions.Diagnostics.DebugMode's JSON path.
+		// The RDPAUDIT_RdpAudit__Diagnostics__DebugMode / RDPAUDIT_RdpAudit__LogLevel environment
+		// overrides documented for support are honoured here because AddEnvironmentVariables has
+		// already been layered onto builder.Configuration above.
 		bool debugMode = builder.Configuration
 			.GetSection(RdpAuditOptions.SectionName)
 			.GetSection(nameof(RdpAuditOptions.Diagnostics))
 			.GetValue<bool>(nameof(DiagnosticsOptions.DebugMode));
+
+		string? logLevelOverride = builder.Configuration
+			.GetSection(RdpAuditOptions.SectionName)
+			.GetValue<string?>("LogLevel");
+
+		bool debugFromEnv = string.Equals(logLevelOverride, "Debug", StringComparison.OrdinalIgnoreCase);
+		debugMode = debugMode || debugFromEnv;
 
 		LoggerConfiguration logger = new LoggerConfiguration()
 			.MinimumLevel.Is(debugMode ? Serilog.Events.LogEventLevel.Debug : Serilog.Events.LogEventLevel.Information)
@@ -177,14 +224,17 @@ public static class Program
 			&& ctx.StartsWith("Microsoft.EntityFrameworkCore.Database.Command", StringComparison.Ordinal);
 	}
 
+	// ── Service Composition ──────────────────────────────────────────────────────
+
 	private static void RegisterServices(IServiceCollection services)
 	{
 		services.AddSingleton<SqlitePragmaInterceptor>();
-				if (OperatingSystem.IsWindows())
-				{
-					services.AddSingleton<IThirdPartyFirewallProbe, WindowsServiceThirdPartyFirewallProbe>();
-				}
-		
+
+		if (OperatingSystem.IsWindows())
+		{
+			services.AddSingleton<IThirdPartyFirewallProbe, WindowsServiceThirdPartyFirewallProbe>();
+		}
+
 		services.AddDbContextFactory<AuditDbContext>((sp, options) =>
 		{
 			IOptions<RdpAuditOptions> opts = sp.GetRequiredService<IOptions<RdpAuditOptions>>();
@@ -227,6 +277,7 @@ public static class Program
 		services.AddSingleton<IFirewallProvider>(sp => sp.GetRequiredService<WindowsFirewallProvider>());
 		services.AddSingleton<IFirewallProvider>(sp => sp.GetRequiredService<MikroTikFirewallProvider>());
 		services.AddSingleton<IFirewallProvider>(sp => sp.GetRequiredService<IPsecBlockProvider>());
+
 		if (OperatingSystem.IsWindows())
 		{
 			services.AddSingleton<RouteBlackholeProvider>();
@@ -240,15 +291,18 @@ public static class Program
 		{
 			services.AddSingleton<IFirewallRuleScanner, UnsupportedFirewallRuleScanner>();
 		}
+
 		services.AddSingleton<EnforcementReconciliationService>();
 		services.AddSingleton<ToolsDiagnosticsService>();
 		services.AddSingleton<ApplicationDataPurgeService>();
+
 		if (OperatingSystem.IsWindows())
 		{
 			services.AddSingleton<RdpSessionManager>();
 			services.AddSingleton<ShadowPolicyManager>();
 			services.AddSingleton<RdpConfigurationReader>();
 		}
+
 		services.AddHttpClient("AbuseIpDb");
 		services.AddSingleton<IAbuseIpDbClient, AbuseIpDbClient>();
 
@@ -264,28 +318,33 @@ public static class Program
 
 		AlertRuleRegistration.Register(services);
 
-		// IpcServerWorker is registered FIRST among hosted services, deliberately ahead of
-		// EventCollectorWorker / SecurityBackfillWorker / etc. .NET's Generic Host invokes each
-		// IHostedService.StartAsync sequentially and synchronously in registration order during
-		// host startup (see dotnet/runtime#116181); BackgroundService.StartAsync runs every line of
-		// ExecuteAsync up to its first await inline, on the SAME thread that is starting the host --
-		// so a slow or stuck synchronous prefix in an earlier-registered worker (ETW channel
-		// enumeration, EF Core migration checks, AV-intercepted named-pipe creation, etc.) can delay
-		// or altogether starve a later-registered one. IPC is the Configurator's only line of sight
-		// into the service (status, diagnostics, settings save, log tails) and must come up
-		// independently of whether Event/Security/Alert workers are slow to initialize -- registering
-		// it first guarantees IpcServerWorker.ExecuteAsync (and its unconditional first-line
-		// WriteIpcDebugLine to ipc-startup.log) runs before any other worker gets a chance to block
-		// the startup sequence.
+		// ── Ordered hosted-service chain ─────────────────────────────────────────
+		// .NET's Generic Host invokes each IHostedService.StartAsync sequentially and synchronously
+		// in registration order during host startup (dotnet/runtime#116181); BackgroundService.StartAsync
+		// runs every line of ExecuteAsync up to its first await inline, on the SAME thread that is
+		// starting the host — so a slow or stuck synchronous prefix in an earlier-registered worker
+		// can delay or starve a later-registered one.
+		//
+		// ORDER RATIONALE:
+		//   1. DatabaseInitializationWorker — applies EF migrations FIRST so no later worker (nor
+		//      the post-StartAsync LogStartupDiagnostics call in Main) writes to a missing table.
+		//   2. IpcServerWorker — the Configurator's only line of sight into the service; must come up
+		//      independently of whether the event/security/alert pipeline is slow to initialize.
+		//   3. Collectors → processor → correlation → alerts → maintenance → firewall → stats.
+		//
+		// AttackStatsRefreshWorker MUST precede AbuseIpDbReportWorker and is intentionally close to
+		// the processing workers so RDP Activity (AttackStats) is refreshed promptly after events land
+		// — a stalled processor previously left it starved (empty AttackStats, healthy Live Events).
+		//
 		// Every hosted service is wrapped in TimedHostedService so startup-sequence.log records the
-		// exact begin/end/duration/failure of each IHostedService.StartAsync call in registration
-		// order. This is the direct diagnostic for the class of bug fixed above (a stuck synchronous
-		// prefix in one BackgroundService starving a later-registered one): instead of inferring from
-		// absence of evidence (a missing "{Worker} starting" line in service-*.log), the log now shows
-		// exactly which worker's StartAsync is still running -- or how long each one took -- even if
-		// the process never gets far enough to accept an IPC connection.
+		// exact begin/end/duration/failure of each StartAsync in registration order — a BEGIN line
+		// with no matching END/FAILED line pinpoints the stuck worker.
 		services.AddTimedHostedService<DatabaseInitializationWorker>(nameof(DatabaseInitializationWorker));
 		services.AddTimedHostedService<IpcServerWorker>(nameof(IpcServerWorker));
+
+		// EventCollectorWorker and SecurityBackfillWorker use the factory overload (explicit ctor)
+		// rather than DI activation. The factory produces the instance that TimedHostedService hosts;
+		// no other consumer resolves these types, so a distinct instance is correct and intended.
 		services.AddTimedHostedService(sp => new EventCollectorWorker(
 			sp.GetRequiredService<EventChannel>(),
 			sp.GetRequiredService<BookmarkStore>(),
@@ -294,6 +353,7 @@ public static class Program
 			sp.GetRequiredService<IOptionsMonitor<RdpAuditOptions>>(),
 			sp.GetRequiredService<IDbContextFactory<AuditDbContext>>(),
 			sp.GetRequiredService<IOperationLogWriter>()), nameof(EventCollectorWorker));
+
 		services.AddTimedHostedService(sp => new SecurityBackfillWorker(
 			sp.GetRequiredService<EventChannel>(),
 			sp.GetRequiredService<ServiceMetrics>(),
@@ -302,19 +362,27 @@ public static class Program
 			sp.GetRequiredService<BookmarkStore>(),
 			sp.GetRequiredService<IDbContextFactory<AuditDbContext>>(),
 			sp.GetRequiredService<OverviewProgressState>()), nameof(SecurityBackfillWorker));
+
 		services.AddTimedHostedService<EventProcessorWorker>(nameof(EventProcessorWorker));
 		services.AddTimedHostedService<SessionCorrelationHydrationWorker>(nameof(SessionCorrelationHydrationWorker));
+
+		// Singleton + hosted-service-resolving-the-singleton so the IPC RebuildAttackStats action can
+		// invoke the very same worker instance (sharing its re-entrancy gate) the background loop uses.
+		// Registered AHEAD of the alert/maintenance/firewall workers so a stall there cannot starve
+		// the RDP Activity refresh — the exact failure mode observed when EventProcessorWorker blocked
+		// the startup chain and AttackStats stayed empty.
+		services.AddSingleton<AttackStatsRefreshWorker>();
+		services.AddTimedHostedService(sp => sp.GetRequiredService<AttackStatsRefreshWorker>(), nameof(AttackStatsRefreshWorker));
+
 		services.AddTimedHostedService<AlertWorker>(nameof(AlertWorker));
 		services.AddTimedHostedService<MaintenanceWorker>(nameof(MaintenanceWorker));
 		services.AddTimedHostedService<FirewallAutoBlockWorker>(nameof(FirewallAutoBlockWorker));
 		services.AddTimedHostedService<FirewallExpirationWorker>(nameof(FirewallExpirationWorker));
 		services.AddTimedHostedService<EnforcementReconciliationWorker>(nameof(EnforcementReconciliationWorker));
-		// Singleton + hosted-service-resolving-the-singleton so the IPC RebuildAttackStats action can
-		// invoke the very same worker instance (sharing its re-entrancy gate) the background loop uses.
-		services.AddSingleton<AttackStatsRefreshWorker>();
-		services.AddTimedHostedService(sp => sp.GetRequiredService<AttackStatsRefreshWorker>(), nameof(AttackStatsRefreshWorker));
 		services.AddTimedHostedService<AbuseIpDbReportWorker>(nameof(AbuseIpDbReportWorker));
 	}
+
+	// ── Hosted-Service Registration Helpers ──────────────────────────────────────
 
 	/// <summary>Registers <typeparamref name="T"/> as a singleton and wraps it in a
 	/// <see cref="TimedHostedService"/> so its StartAsync begin/end/duration/failure is recorded to
@@ -335,6 +403,8 @@ public static class Program
 		services.AddSingleton<IHostedService>(sp => new TimedHostedService(factory(sp), name));
 	}
 
+	// ── Startup Diagnostics Infrastructure ───────────────────────────────────────
+
 	/// <summary>Decorates an <see cref="IHostedService"/> so every StartAsync call logs a begin
 	/// timestamp, an end timestamp with elapsed duration, or a failure with the elapsed duration and
 	/// exception detail — all to startup-sequence.log, independent of the Serilog pipeline (which may
@@ -348,8 +418,8 @@ public static class Program
 
 		public TimedHostedService(IHostedService inner, string name)
 		{
-			_inner = inner;
-			_name = name;
+			_inner = inner ?? throw new ArgumentNullException(nameof(inner));
+			_name = name ?? throw new ArgumentNullException(nameof(name));
 		}
 
 		public async Task StartAsync(CancellationToken cancellationToken)
@@ -404,6 +474,8 @@ public static class Program
 			}
 		}
 	}
+
+	// ── Secret Protection ────────────────────────────────────────────────────────
 
 	private static ISecretProtector CreateSecretProtector()
 	{
