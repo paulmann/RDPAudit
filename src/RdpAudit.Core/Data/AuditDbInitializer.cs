@@ -1,5 +1,5 @@
 /* Project: RDPAudit 2.0 | Author: Mikhail Deynekin | Site: Deynekin.com | Email: Mikhail@Deynekin.com */
-// Version: 2.0.0
+// Version: 2.0.1
 // File   : AuditDbInitializer.cs
 // Project: RdpAudit.Core (RdpAudit.Core)
 // Purpose: Applies and serializes database schema initialization before any dependent service component uses SQLite.
@@ -12,7 +12,7 @@ using Microsoft.Extensions.Logging;
 
 namespace RdpAudit.Core.Data;
 
-public sealed class AuditDbInitializer
+public sealed class AuditDbInitializer : IDisposable
 {
 	// ── Fields & DI ──────────────────────────────────────────────────────────────
 
@@ -21,6 +21,7 @@ public sealed class AuditDbInitializer
 	private readonly SemaphoreSlim _initializationGate;
 	private int _isInitialized;
 	private int _initializationAttempted;
+	private bool _disposed;
 
 	// ── Construction ─────────────────────────────────────────────────────────────
 
@@ -37,6 +38,8 @@ public sealed class AuditDbInitializer
 
 	public async Task EnsureCreatedAsync(CancellationToken ct = default)
 	{
+		ObjectDisposedException.ThrowIf(_disposed, this);
+
 		if (Volatile.Read(ref _isInitialized) == 1)
 		{
 			return;
@@ -143,4 +146,15 @@ public sealed class AuditDbInitializer
 	}
 
 	// ── Disposal & Pool Returns ──────────────────────────────────────────────────
+
+	public void Dispose()
+	{
+		if (_disposed)
+		{
+			return;
+		}
+
+		_initializationGate.Dispose();
+		_disposed = true;
+	}
 }
