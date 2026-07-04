@@ -1,2339 +1,929 @@
-# 1st-RDPMon — RdpAudit .NET 8 Solution
+# RDPAudit — Windows RDP Security Monitoring & Auto-Block Platform
 
 [![Version](https://img.shields.io/badge/version-2.0.0-blue.svg)](https://github.com/paulmann/RDPAudit)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![.NET](https://img.shields.io/badge/dotnet-8.0--windows-blue.svg)](https://dotnet.microsoft.com/)
-[![Platform](https://img.shields.io/badge/platform-Windows%2010%2B%2FServer-blue.svg)](https://www.microsoft.com/windows/)
-[![SQLite](https://img.shields.io/badge/sqlite-WAL-orange.svg)](https://sqlite.org/)
+[![Platform](https://img.shields.io/badge/platform-Windows%2010%2B%20%2F%20Server%202016%2B-blue.svg)](https://www.microsoft.com/windows/)
+[![SQLite](https://img.shields.io/badge/sqlite-WAL%20mode-orange.svg)](https://sqlite.org/)
 
-> **What is this repository?** It contains two generations of the same project:
->
-> 1. **RdpAudit (v2)** — a production-grade .NET 8 Worker Service plus a WinForms Configurator
->    that monitors Windows RDP / Security / Terminal Services event channels in real time, raises
->    21 high-quality alert rules, persists to SQLite via EF Core, and exposes a named-pipe IPC
->    surface restricted to BUILTIN\Administrators. This is the actively developed flagship.
-> 2. **1st-RdpMonSecurityAnalyzer.ps1 (v1)** — the original PowerShell analyzer that reads
->    Cameyo RDPMon's LiteDB. Documented below for historical reference.
+> **RDPAudit** — это production-ready платформа мониторинга и реагирования на RDP-угрозы для Windows.  
+> Состоит из **Windows Service** (фоновый сборщик событий + 21 правило тревог + автоблокировка) и **WinForms Configurator** (GUI для управления, просмотра статистики и настройки).
 
-## RdpAudit (v2) — at a glance
+---
 
-| Layer | Project | Responsibility |
-|-------|---------|----------------|
-| Service | `src/RdpAudit.Service` | Captures events with `EventLogWatcher`, batches into SQLite, runs 21 alert rules, hosts named-pipe IPC, applies firewall auto-blocks. |
-| Configurator | `src/RdpAudit.Configurator` | WinForms UI: prerequisites, audit-policy / SACL apply, service install, settings, live event tail. Runs as `requireAdministrator`. |
-| Core | `src/RdpAudit.Core` | EF Core 8 entities & migrations, IPC contracts, event catalog (GUID-based audit subcategories), shared utilities. |
+## Оглавление
 
-### Quick start (RdpAudit)
+- [1. Обзор продукта](#1-обзор-продукта)
+  - [1.1. Назначение](#11-назначение)
+  - [1.2. Архитектура решения](#12-архитектура-решения)
+  - [1.3. Ключевые возможности](#13-ключевые-возможности)
+- [2. Системные требования](#2-системные-требования)
+  - [2.1. Минимальные требования](#21-минимальные-требования)
+  - [2.2. Требования к аудиту Windows](#22-требования-к-аудиту-windows)
+- [3. Структура решения](#3-структура-решения)
+  - [3.1. Проекты и слои](#31-проекты-и-слои)
+  - [3.2. Дерево директорий](#32-дерево-директорий)
+- [4. Быстрый старт](#4-быстрый-старт)
+  - [4.1. Сборка](#41-сборка)
+  - [4.2. Установка сервиса](#42-установка-сервиса)
+  - [4.3. Первый запуск Configurator](#43-первый-запуск-configurator)
+- [5. RdpAudit.Service — Служба мониторинга](#5-rdpauditservice--служба-мониторинга)
+  - [5.1. Сбор событий](#51-сбор-событий)
+  - [5.2. Отслеживаемые Event ID](#52-отслеживаемые-event-id)
+  - [5.3. Хранилище данных (SQLite)](#53-хранилище-данных-sqlite)
+  - [5.4. Система тревог — 21 правило](#54-система-тревог--21-правило)
+  - [5.5. Автоблокировка Windows Firewall](#55-автоблокировка-windows-firewall)
+  - [5.6. IPC через Named Pipe](#56-ipc-через-named-pipe)
+  - [5.7. Надёжность и устойчивость](#57-надёжность-и-устойчивость)
+- [6. RdpAudit.Configurator — GUI](#6-rdpauditconfigurator--gui)
+  - [6.1. Вкладка Overview](#61-вкладка-overview)
+  - [6.2. Вкладка Prerequisites](#62-вкладка-prerequisites)
+  - [6.3. Вкладка Audit Policy](#63-вкладка-audit-policy)
+  - [6.4. Вкладка Service](#64-вкладка-service)
+  - [6.5. Вкладка Settings](#65-вкладка-settings)
+  - [6.6. Вкладка Live Events](#66-вкладка-live-events)
+  - [6.7. Вкладка Firewall](#67-вкладка-firewall)
+  - [6.8. Вкладка Attack Statistics](#68-вкладка-attack-statistics)
+  - [6.9. Вкладка Remote RDP Clients](#69-вкладка-remote-rdp-clients)
+  - [6.10. Вкладка AbuseIPDB](#610-вкладка-abuseipdb)
+  - [6.11. Вкладка MikroTik](#611-вкладка-mikrotik)
+  - [6.12. Вкладка Logs](#612-вкладка-logs)
+  - [6.13. Вкладка Diagnostics](#613-вкладка-diagnostics)
+- [7. RdpAudit.Core — Общая библиотека](#7-rdpauditcore--общая-библиотека)
+  - [7.1. Модели данных](#71-модели-данных)
+  - [7.2. Entity Framework Core & Миграции](#72-entity-framework-core--миграции)
+  - [7.3. IPC-контракты (MessagePack)](#73-ipc-контракты-messagepack)
+- [8. Интеграции с внешними системами](#8-интеграции-с-внешними-системами)
+  - [8.1. AbuseIPDB](#81-abuseipdb)
+  - [8.2. MikroTik RouterOS v7](#82-mikrotik-routeros-v7)
+- [9. Механизм автоблокировки](#9-механизм-автоблокировки)
+  - [9.1. Порог срабатывания](#91-порог-срабатывания)
+  - [9.2. Windows Firewall (локальный)](#92-windows-firewall-локальный)
+  - [9.3. MikroTik Firewall (удалённый)](#93-mikrotik-firewall-удалённый)
+  - [9.4. Whitelist — защита доверенных IP](#94-whitelist--защита-доверенных-ip)
+- [10. Обслуживание данных](#10-обслуживание-данных)
+  - [10.1. Политика хранения (Retention Pruning)](#101-политика-хранения-retention-pruning)
+  - [10.2. Резервное копирование и восстановление](#102-резервное-копирование-и-восстановление)
+- [11. Безопасность и аудит](#11-безопасность-и-аудит)
+  - [11.1. Разграничение прав](#111-разграничение-прав)
+  - [11.2. SACL-конфигурация](#112-sacl-конфигурация)
+  - [11.3. Защита секретов (DPAPI)](#113-защита-секретов-dpapi)
+- [12. Конфигурация](#12-конфигурация)
+  - [12.1. appsettings.json](#121-appsettingsjson)
+  - [12.2. Переменные окружения](#122-переменные-окружения)
+- [13. Отладка и диагностика](#13-отладка-и-диагностика)
+  - [13.1. Консольный режим](#131-консольный-режим)
+  - [13.2. Логи Serilog](#132-логи-serilog)
+  - [13.3. SQLite-база напрямую](#133-sqlite-база-напрямую)
+  - [13.4. Вкладка Diagnostics](#134-вкладка-diagnostics)
+- [14. Сборка и тестирование](#14-сборка-и-тестирование)
+  - [14.1. Сборка](#141-сборка)
+  - [14.2. Тесты](#142-тесты)
+  - [14.3. Publish](#143-publish)
+- [15. Устранение неисправностей](#15-устранение-неисправностей)
+- [16. Дорожная карта (v2.0 → v3.0)](#16-дорожная-карта-v20--v30)
+- [17. Лицензия и автор](#17-лицензия-и-автор)
+
+---
+
+## 1. Обзор продукта
+
+### 1.1. Назначение
+
+**RDPAudit** решает задачу непрерывного мониторинга RDP-активности на Windows-серверах и рабочих станциях. Продукт работает в фоне как системная служба — даже при отсутствии залогиненных пользователей — записывает все попытки подключения, аутентификации и изменения системы, оценивает угрозы по 21 правилу и автоматически блокирует атакующих через Windows Firewall и/или MikroTik RouterOS.
+
+**Типичные сценарии применения:**
+- Защита RDP-портов, открытых в Интернет, от брутфорс-атак
+- Аудит соответствия требованиям SOC2 / ISO 27001 по доступу к серверам
+- Обнаружение компрометации учётных записей (успешный вход после серии неудач)
+- Выявление backdoor через accessibility binaries (Sticky Keys, Utilman)
+- Обнаружение атак на LSA/LSASS, Kerberos spraying, изменения RDP-порта
+- Интеграция с MikroTik: единый blocklist на уровне пограничного маршрутизатора
+
+### 1.2. Архитектура решения
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│                     Windows Event Log                            │
+│  Security │ TerminalServices-RemoteConnectionManager │ LocalSession│
+└───────────────────────────┬──────────────────────────────────────┘
+                            │  EventLogWatcher
+                            ▼
+┌──────────────────────────────────────────────────────────────────┐
+│               RdpAudit.Service  (Windows Service)                │
+│                                                                  │
+│  EventCollectorWorker ──► EventNormalizerWorker                  │
+│                                   │                             │
+│                                   ▼                             │
+│                         AlertEvaluatorWorker ──► 21 Alert Rules  │
+│                                   │                             │
+│                                   ▼                             │
+│                         FirewallAutoBlockWorker                  │
+│                         (Windows FW + MikroTik REST)             │
+│                                   │                             │
+│                                   ▼                             │
+│                    SQLite  (WAL, %ProgramData%\RdpAudit)         │
+│                                   │                             │
+│                         Named Pipe IPC Server                    │
+└───────────────────────────────────┬──────────────────────────────┘
+                                    │  MessagePack over NamedPipe
+                                    ▼
+┌──────────────────────────────────────────────────────────────────┐
+│              RdpAudit.Configurator  (WinForms GUI)               │
+│                                                                  │
+│  Overview │ Prerequisites │ AuditPolicy │ Service │ Settings     │
+│  LiveEvents │ Firewall │ AttackStatistics │ RemoteRdpClients     │
+│  AbuseIPDB │ MikroTik │ Logs │ Diagnostics                       │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+### 1.3. Ключевые возможности
+
+- **Мониторинг в реальном времени** — `EventLogWatcher` подписывается на события без опроса
+- **21 правило обнаружения угроз** — от брутфорса до LSASS-атак и Kerberos Spraying
+- **Автоблокировка** — per-IP правила Windows Firewall, идемпотентные, с возможностью ручной отмены
+- **Интеграция MikroTik** — управление address-list через RouterOS v7 REST API с DPAPI-шифрованием учётных данных
+- **Репортинг в AbuseIPDB** — автоматическая отправка данных об атакующих IP с локальной дедупликацией
+- **Статистика угроз** — агрегация по IP, стране, временным интервалам, уровню угрозы
+- **Корреляция сессий и IP** — связывание RDP-сессий с источниковыми IP-адресами
+- **Retention Pruning** — автоматическая очистка устаревших данных с защитой от SQLITE_BUSY
+- **Backup/Restore** — снапшоты конфигурации с DPAPI-конвертами (без plaintext-секретов)
+- **Named Pipe IPC** — защищённый канал между сервисом и GUI, только для BUILTIN\Administrators
+
+---
+
+## 2. Системные требования
+
+### 2.1. Минимальные требования
+
+| Компонент | Требование |
+|-----------|-----------|
+| ОС | Windows 10 / Windows Server 2016 или новее (x64) |
+| .NET Runtime | .NET 8.0 (Windows, x64) |
+| Права | Локальный администратор для установки службы |
+| Диск | 200 МБ для бинарников + место для БД (растёт ~1 МБ/1000 событий) |
+| ОЗУ | 64 МБ для службы в рабочем режиме |
+
+### 2.2. Требования к аудиту Windows
+
+RDPAudit использует Windows Security Audit для получения событий. Для корректной работы необходимы:
+
+| Категория аудита | GUID подкатегории | Зачем |
+|-----------------|-------------------|-------|
+| Logon / Logoff | `{0CCE9215-69AE-11D9-BED3-505054503030}` | Events 4624, 4625, 4634 |
+| Account Logon | `{0CCE9240-69AE-11D9-BED3-505054503030}` | Kerberos events |
+| Process Creation | `{0CCE922B-69AE-11D9-BED3-505054503030}` | Event 4688 (LSASS access) |
+| Object Access | `{0CCE9217-69AE-11D9-BED3-505054503030}` | SACL events 4656, 4663 |
+| Policy Change | `{0CCE922F-69AE-11D9-BED3-505054503030}` | Event 4954 (FW rule change) |
+
+Configurator настраивает политику аудита автоматически через `auditpol.exe` с GUID-идентификаторами (locale-independent).
+
+---
+
+## 3. Структура решения
+
+### 3.1. Проекты и слои
+
+| Проект | Тип | Назначение |
+|--------|-----|-----------|
+| `RdpAudit.Core` | Class Library (net8.0-windows) | Сущности, EF Core DbContext, миграции, IPC-контракты (MessagePack), общие утилиты |
+| `RdpAudit.Service` | Worker Service (net8.0-windows, win-x64) | Сборщик событий, нормализатор, движок тревог, автоблокировка, IPC-сервер |
+| `RdpAudit.Configurator` | WinForms App (net8.0-windows) | GUI: все вкладки, IPC-клиент, prerequisite-проверки, управление сервисом |
+| `RdpAudit.Core.Tests` | xUnit | Юнит-тесты моделей и утилит |
+| `RdpAudit.Service.Tests` | xUnit | Юнит-тесты правил тревог (threshold + whitelist + zero-alloc) |
+| `RdpAudit.Benchmarks` | BenchmarkDotNet | Бенчмарки горячих путей |
+
+### 3.2. Дерево директорий
+
+```
+RdpAudit.sln
+├── src/
+│   ├── RdpAudit.Core/
+│   │   ├── Models/              — 28 сущностей и перечислений
+│   │   ├── Data/                — AppDbContext, EF Core миграции
+│   │   ├── IPC/                 — MessagePack-контракты запросов/ответов
+│   │   └── Services/            — Общие сервисы (geo, scoring, formatting)
+│   ├── RdpAudit.Service/
+│   │   ├── Workers/             — BackgroundService-воркеры
+│   │   ├── Alerts/              — 21 правило тревог
+│   │   ├── Firewall/            — Провайдеры Windows FW и MikroTik
+│   │   ├── Collectors/          — EventLogWatcher-обёртки
+│   │   └── Program.cs           — DI, Serilog, HostBuilder
+│   └── RdpAudit.Configurator/
+│       ├── Forms/               — 13 страниц (TabPage) GUI
+│       ├── IPC/                 — Named Pipe клиент
+│       └── Program.cs           — requireAdministrator, DPI-aware
+├── tests/
+│   ├── RdpAudit.Core.Tests/
+│   ├── RdpAudit.Service.Tests/
+│   └── RdpAudit.Benchmarks/
+├── docs/
+│   ├── 90-windows-validation.md
+│   └── 91-troubleshooting.md
+└── publish.ps1
+```
+
+---
+
+## 4. Быстрый старт
+
+### 4.1. Сборка
 
 ```powershell
-# 1. Build & publish single-file binaries
+# Требует .NET 8 SDK
+git clone https://github.com/paulmann/RDPAudit.git
+cd RDPAudit
+dotnet build RdpAudit.sln -c Release
+```
+
+### 4.2. Установка сервиса
+
+```powershell
+# Опубликовать бинарники
 ./publish.ps1
 
-# 2. Copy the published Service folder under Program Files
-Copy-Item -Recurse publish/Service "$env:ProgramFiles/RdpAudit/Service"
+# Скопировать Service в Program Files
+Copy-Item -Recurse publish/Service "$env:ProgramFiles\RdpAudit\Service"
 
-# 3. Use the Configurator to install the service, apply audit policy, and configure SACLs
+# Установить как Windows Service (через Configurator или вручную)
+sc.exe create RdpAudit binPath= "$env:ProgramFiles\RdpAudit\Service\RdpAudit.Service.exe" start= auto
+sc.exe description RdpAudit "RDP Security Monitoring & Auto-Block Service"
+sc.exe start RdpAudit
+```
+
+### 4.3. Первый запуск Configurator
+
+```powershell
+# Запустить от имени Администратора
 publish/Configurator/RdpAudit.Configurator.exe
 ```
 
-### Highlights of v2
-
-- **Real audit-policy apply** via `auditpol.exe` with **GUID** subcategory identifiers (locale-independent).
-- **Real SACL configuration** for IFEO accessibility binaries, RDP-Tcp, and LSA registry keys.
-- **Real Windows Firewall block** (per-IP, sanitised arguments, idempotent add/remove) tied to brute-force thresholds.
-- **Bookmark durability**: every 100 events **and** every 30 seconds — no more than 99 events lost on crash.
-- **Bulk batch persistence**: one transaction, prefetched address map, single `AddRange/SaveChanges`.
-- **EF Core migrations** applied on startup (no more `EnsureCreated` only).
-- **Named-pipe IPC** with admin-only ACL, hard per-connection deadline, sanitised error text.
-- **Atomic settings save** over IPC; UI never writes service-owned config files directly.
-- 21 alert rules including `STICKY_KEYS_BACKDOOR`, `RDP_PORT_CHANGED`, `LSASS_PPL_TAMPER`,
-  `LSASS_ACCESS` (bitwise mask check), `KERBEROS_SPRAY`, `BRUTE_FORCE_NTLM` with cooldown to
-  prevent alert flood, `OFF_HOURS_LOGIN` with explicit time-zone (UTC by default).
-- **External provider integrations.** AbuseIPDB reputation reporting with local dedup and
-  rate-limit awareness (Stage 8); MikroTik RouterOS v7 REST firewall provider (Stage 9) with
-  DPAPI-protected credentials and idempotent rule management.
-- **Configurator UX.** Overview, Prerequisites, Audit Policy, Service, Settings, Live Events,
-  Firewall, Attack Statistics, Remote RDP Clients, AbuseIPDB, MikroTik — each tab surfaces
-  status / result feedback, destructive actions confirm with **No** as default, and no plaintext
-  secret is ever displayed or copied to the clipboard.
-- **Retention pruning** (Stage 10) for `RawEvents`, `Alerts`, `AbuseReports`, inactive
-  `ActiveBlocks` and stale `AttackStats`. All deletes are batched, cancellable, and tolerate
-  `SQLITE_BUSY` with exponential backoff so the writer lock is short on huge databases.
-- **Backup / restore.** Snapshots capture `appsettings.json` (DPAPI envelopes only, never
-  plaintext), audit policy CSV, RdpAudit registry keys (IFEO, RDP-Tcp, LSA, audit policy) and
-  `sc.exe qc` configuration. Restore never touches the audit event database and always captures
-  a pre-restore safety snapshot first.
-
-### Build & test
-
-```powershell
-dotnet build  RdpAudit.sln -c Release
-dotnet test   RdpAudit.sln -c Release
-./publish.ps1
-```
-
-### Windows validation & troubleshooting
-
-Stage 10 release-readiness ships two new operator-facing documents:
-
-- [`docs/90-windows-validation.md`](docs/90-windows-validation.md) — end-to-end manual checklist
-  to run on a Windows host before declaring a build shippable.
-- [`docs/91-troubleshooting.md`](docs/91-troubleshooting.md) — common failures (ProgramData
-  ACL, `sc.exe` 1639, locked publish files, audit-policy `?`, firewall unavailable, AbuseIPDB
-  HTTP 429, MikroTik TLS / auth) with copy-paste fixes.
+При первом запуске Configurator:
+1. Вкладка **Prerequisites** — проверяет и при необходимости включает нужные каналы EventLog
+2. Вкладка **Audit Policy** — применяет политику аудита через `auditpol.exe` с GUID (независимо от локали)
+3. Вкладка **Service** — устанавливает, запускает и контролирует статус Windows Service
+4. Вкладка **Settings** — настраивает пороги тревог, whitelist IP, параметры интеграций
 
 ---
 
-# 1st RDP Monitor Security Analyzer (legacy PowerShell, v1)
+## 5. RdpAudit.Service — Служба мониторинга
 
-The remainder of this README documents the original PowerShell analyzer. It remains useful for
-sites already running Cameyo RDPMon and is left here for backwards compatibility.
+### 5.1. Сбор событий
 
-[![PowerShell](https://img.shields.io/badge/powershell-7.5%2B-blue.svg)](https://docs.microsoft.com/en-us/powershell/)
-[![LiteDB](https://img.shields.io/badge/litedb-4.1.4-orange.svg)](https://www.nuget.org/packages/LiteDB)
+Служба использует `System.Diagnostics.Eventing.Reader.EventLogWatcher` для подписки на события в режиме реального времени (push-модель, без опроса). Абстракция `IEventSource` позволяет заменить реализацию на прямой ETW (`OpenTrace`/`ProcessTrace`) в v3.0 без изменения бизнес-логики.
 
-- [1. Overview](#1-overview)
-- [2. Key Features](#2-key-features)
-- [3. System Requirements](#3-system-requirements)
-- [4. Quick Start Guide](#4-quick-start-guide)
-- [5. Installation & Setup](#5-installation--setup)
-- [6. Understanding RDPMon & LiteDB Integration](#6-understanding-rdpmon--litedb-integration)
-- [7. IP Banning Mechanism](#7-ip-banning-mechanism)
-- [8. How It Works](#8-how-it-works)
-- [9. Architecture & Components](#9-architecture--components)
-- [10. Usage Examples](#10-usage-examples)
-- [11. Parameters Reference](#11-parameters-reference)
-- [12. Output Formats](#12-output-formats)
-- [13. Advanced Scenarios](#13-advanced-scenarios)
-- [14. Troubleshooting & Debugging](#14-troubleshooting--debugging)
-- [15. Performance Optimization](#15-performance-optimization)
-- [16. Security Considerations](#16-security-considerations)
-- [17. Contributing](#17-contributing)
-- [18. License & Acknowledgments](#18-license--acknowledgments)
+**Отслеживаемые каналы:**
+- `Security` — события входа, выхода, доступа к объектам, смены политик
+- `Microsoft-Windows-TerminalServices-RemoteConnectionManager/Operational` — RDP-соединения (Event 1149)
+- `Microsoft-Windows-TerminalServices-LocalSessionManager/Operational` — сессии (Events 21, 23, 24, 25)
 
-***
+### 5.2. Отслеживаемые Event ID
 
-## 1. Overview
+| Event ID | Канал | Описание |
+|----------|-------|----------|
+| 4624 | Security | Успешный вход (тип 10 = RemoteInteractive) |
+| 4625 | Security | Неудачный вход |
+| 4634 | Security | Выход из системы |
+| 4647 | Security | Инициированный пользователем выход |
+| 4648 | Security | Вход с явными учётными данными |
+| 4688 | Security | Создание процесса (для LSASS access) |
+| 4720 | Security | Создание учётной записи |
+| 4723 / 4724 | Security | Изменение / сброс пароля |
+| 4740 | Security | Блокировка учётной записи |
+| 4769 | Security | Запрос Kerberos Service Ticket |
+| 4771 | Security | Ошибка Kerberos Pre-auth |
+| 4776 | Security | NTLM-аутентификация |
+| 4954 | Security | Изменение правил Windows Firewall |
+| 1149 | TerminalServices-RCM | RDP-подключение (с IP-адресом источника) |
+| 21, 23, 24, 25 | TerminalServices-LSM | Начало, восстановление, отключение, завершение сессии |
 
-**1st RDP Monitor Security Analyzer** (v1.0.0) is an enterprise-grade PowerShell module designed to query, analyze, and report on RDP authentication attempts stored in Cameyo RDPMon's LiteDB database. This advanced security tool provides comprehensive filtering, multiple output formats, modern HTML reporting with auto-refresh capabilities, and automatic LiteDB installation from GitHub releases for seamless deployment.
+### 5.3. Хранилище данных (SQLite)
 
-### Primary Purpose
+База данных находится по адресу `%ProgramData%\RdpAudit\rdpaudit.db`.
 
-The analyzer transforms raw RDP authentication data into actionable security intelligence, enabling security teams to:
-- Identify brute force attacks and unauthorized access attempts
-- Track suspicious login patterns from specific IP addresses
-- Generate compliance-ready reports for security audits
-- Automate security monitoring and incident response workflows
-- Correlate RDP events with external threat intelligence
-
-### Version Highlights (v1.0.0)
-
-- ✨ **Advanced Debug Mode** - Step-by-step execution logging with timestamps
-- 🔍 **Database Diagnostics** - Safe analysis of potentially corrupted databases
-- 🛠️ **Emergency Recovery** - Export and repair functionality for damaged databases
-- 📊 **Enhanced Analytics** - Improved charting and data visualization
-- 🔄 **Automatic LiteDB Installation** - Seamless dependency management from GitHub
-- 💾 **Multiple Output Formats** - Table, List, JSON, CSV, XML, HTML, Text, YAML, Markdown, and direct object access
-- 🎨 **Modern HTML Interface** - Responsive design with Tailwind CSS and interactive charts
-- ⚡ **Performance Optimizations** - Efficient event processing and memory management
-
-***
-
-## 2. Key Features
-
-### 2.1 Comprehensive RDP Event Analysis
-
-- **Event Type Filtering**: All, Attack, Legit, Unknown classifications
-- **IP Address Matching**: Single IPs, CIDR ranges, wildcard patterns
-- **Temporal Analysis**: Flexible time window filtering with start/end dates
-- **Connection Details**: Failed/successful attempt counts, user names, connection types
-- **Duration Calculation**: Automatic calculation of attack/session durations
-- **DNS Resolution**: Optional hostname resolution for IP addresses
-
-### 2.2 Advanced Database Integration
-
-- **LiteDB 4.1.4 Compatibility**: Specifically designed for RDPMon's LiteDB version
-- **Addr Collection Processing**: Extracts IP-based authentication data
-- **Session Collection Parsing**: Analyzes detailed session information
-- **Prop Collection Metadata**: Reads database statistics and metadata
-- **Safe Database Access**: Read-only connections prevent data corruption
-- **Database Diagnostics**: Safe structure analysis without accessing potentially corrupted records
-
-### 2.3 Multiple Output Formats
-
-- **Text**: Formatted console output with comprehensive summaries
-- **CSV**: Structured data for Excel and analysis tools
-- **JSON**: API-friendly format for integrations
-- **XML**: Structured format for enterprise systems
-- **HTML**: Interactive web reports with charts and filtering
-- **YAML**: Configuration-friendly format
-- **Markdown**: Documentation-ready output
-- **Object**: Direct PowerShell object access for scripting
-
-### 2.4 Enterprise Reporting Capabilities
-
-- **Auto-Refresh HTML Reports**: Configurable refresh intervals (5-3600 seconds)
-- **Responsive Design**: Mobile-friendly using Tailwind CSS CDN
-- **Interactive Charts**: Chart.js integration for visual analysis
-- **Summary Statistics**: Automatic calculation of key metrics
-- **Color-Coded Results**: Visual distinction of attack vs. legitimate connections
-- **Sortable Tables**: JavaScript-enabled sorting and filtering
-
-### 2.5 Flexible Filtering & Customization
-
-- **Connection Type Filter**: All, Attack, Legit, Unknown
-- **Failed Attempt Threshold**: Minimum failed login count filtering
-- **Custom Time Ranges**: Both relative (last N hours/days) and absolute (specific dates)
-- **Output Sorting**: Sort by IP, FailCount, SuccessCount, FirstLocal, LastLocal, Duration
-- **Result Limiting**: Configurable result set size
-- **DNS Resolution**: Optional hostname lookup for IP addresses
-- **Include Resolved**: Toggle for showing resolved hostnames in reports
-
-### 2.6 Automatic Dependency Management
-
-- **GitHub Integration**: Automatic LiteDB download from official releases
-- **Version Management**: Support for specific LiteDB versions (default: 4.1.4 for RDPMon compatibility)
-- **Force Reinstallation**: Option to rebuild LiteDB installation
-- **Custom Installation Paths**: Flexible directory configuration
-- **Fallback Mechanisms**: Multiple search paths and recovery options
-- **Internet-Optional**: Skip installation if not available (SkipLiteDbInstall)
-
-### 2.7 Advanced Debugging & Diagnostics
-
-- **Debug Mode**: Detailed step-by-step execution logging
-- **Phase Tracking**: Clear visibility into script execution phases
-- **Operation Timing**: Performance metrics for each operation
-- **Error Context**: Detailed error messages with resolution suggestions
-- **Database Analysis**: Safe structure diagnosis without data loss
-- **Progress Reporting**: Configurable progress indicators
-
-### 2.8 Database Recovery Tools
-
-- **Data Export**: Emergency export to CSV for damaged databases
-- **Database Repair**: Rebuild corrupted LiteDB files
-- **Safe Mode Analysis**: Read-only diagnostics for damaged data
-- **Backup Creation**: Automatic backups before repair attempts
-- **Recovery Verification**: Validation of repair success
-
-***
-
-## 3. System Requirements
-
-### 3.1 Minimum Requirements
-
-- **Operating System**: Windows 10, Windows Server 2012 R2 or later
-- **PowerShell**: Version 7.5+ (PowerShell Core with `#requires -PSEdition Core`)
-- **Memory**: 2 GB RAM minimum (4+ GB recommended for large databases)
-- **Storage**: 500 MB free space for LiteDB and output files
-- **Permissions**: Local Administrator privileges (required for Windows event log access in related operations)
-- **.NET Framework**: Core .NET support through PowerShell 7.5+
-
-### 3.2 Recommended Enterprise Configuration
-
-- **Operating System**: Windows Server 2016/2019/2022
-- **PowerShell**: PowerShell 7.5+ with latest security updates
-- **Memory**: 8 GB RAM for processing large RDPMon databases
-- **Storage**: SSD storage with 2+ GB free space
-- **Network**: Stable internet connection for automatic LiteDB download
-- **Antivirus**: May require exclusions for script execution
-
-### 3.3 Dependency Requirements
-
-- **LiteDB Assembly**: Version 4.1.4 (automatically installed from GitHub)
-- **RDPMon Database**: Access to Cameyo RDPMon LiteDB database (.db file)
-- **HTTP/HTTPS**: Internet connectivity for GitHub release downloads (optional, can skip with -SkipLiteDbInstall)
-- **Character Encoding**: UTF-8 support for report generation
-
-### 3.4 Feature-Specific Requirements
-
-#### HTML Report Generation
-- Modern web browser with JavaScript support
-- Tailwind CSS CDN access (or offline CSS)
-- Chart.js library (from CDN or locally hosted)
-
-#### Database Repair & Recovery
-- Write permissions to target directory for backup creation
-- Sufficient disk space for database duplication during repair
-
-#### Time-Based Filtering
-- System clock accuracy for proper time range filtering
-- Local timezone configuration
-
-***
-
-## 4. Quick Start Guide
-
-### 4.1 Complete PowerShell Setup (5 Minutes)
-
-**Step 1: Open PowerShell 7.5+ as Administrator**
-```powershell
-# Right-click PowerShell and select "Run as Administrator"
-# OR open Command Prompt and type: pwsh -NoExit
+**Настройки SQLite:**
+```sql
+PRAGMA journal_mode = WAL;
+PRAGMA synchronous = NORMAL;
 ```
 
-**Step 2: Set Execution Policy**
-```powershell
-# Set execution policy for current user (recommended)
-Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser -Force
+**Ключевые таблицы:**
 
-# Alternative: Bypass for single session only
-powershell -ExecutionPolicy Bypass
-```
+| Таблица | Назначение |
+|---------|-----------|
+| `RawEvents` | Все нормализованные события (EventId, TimeUtc, SourceIp, UserId, Payload) |
+| `RdpConnectionFacts` | Факты RDP-подключений с IP, пользователем, статусом |
+| `AuthAttemptFacts` | Факты попыток аутентификации (успех/неудача) |
+| `Sessions` | RDP-сессии с временными метками и статусом |
+| `SessionIpCorrelations` | Связь Session ID → Source IP |
+| `AttackStats` | Агрегированная статистика атак по IP |
+| `ActiveBlocks` | Активные автоблокировки (IP, причина, время, провайдер) |
+| `Alerts` | Сработавшие тревоги (RuleId, Severity, Details) |
+| `WhitelistEntries` | Доверенные IP/CIDR, исключённые из автоблокировки |
+| `BlocklistEntries` | Постоянные правила блокировки и их источники |
+| `AbuseIpDbReportHistory` | История репортов в AbuseIPDB (дедупликация) |
+| `OperationLogs` | Лог операций сервиса (для вкладки Logs в GUI) |
+| `DbProps` | Хранилище ключ-значение для метаданных БД |
+| `Bookmarks` | Закладки прогресса обработки событий (crash recovery) |
+| `LoginRules` | Правила ограничения входа по времени суток / дням |
 
-**Step 3: Navigate to Script Directory**
-```powershell
-# Go to the directory containing the script
-cd "C:\Path\To\Script"
+**Пакетная запись:** служба использует `SqliteCommand` с явной транзакцией, батчи по 1000+ строк за один `COMMIT`.
 
-# Validate PowerShell version compliance - ensures modern security features and performance
-if ($PSVersionTable.PSVersion.Major -lt 7) {
-    throw "PowerShell 7.0 or higher required for enhanced security modules and performance optimizations"
-}
+**Bookmark-устойчивость:** позиция обработки сохраняется каждые 100 событий И каждые 30 секунд — не более 99 событий теряется при сбое.
 
-# Clean up previous installation artifacts to ensure fresh deployment
-if (Test-Path "1st-RDPMon") {
-    Remove-Item "1st-RDPMon" -Recurse -Force
-}
+### 5.4. Система тревог — 21 правило
 
-# Fetch latest repository snapshot from GitHub main branch
-# Using secure TLS 1.2+ protocol with automatic redirect handling
-Invoke-WebRequest "https://github.com/paulmann/RDPAudit/archive/refs/heads/main.zip" -OutFile "tmp.zip"
+Все правила реализуют интерфейс `AlertRuleBase` и оцениваются в `AlertEvaluatorWorker`.
 
-# Extract archive contents while preserving directory structure and metadata
-# Clean up temporary archive to maintain storage efficiency
-Expand-Archive "tmp.zip" -DestinationPath .
-Remove-Item "tmp.zip"
+| # | RuleId | Severity | Описание |
+|---|--------|----------|----------|
+| 1 | `BRUTE_FORCE` | High | Превышение порога неудачных входов с одного IP |
+| 2 | `BRUTE_FORCE_NTLM` | High | NTLM brute-force с cooldown для предотвращения alert flood |
+| 3 | `KERBEROS_SPRAY` | High | Kerberos password spraying (Event 4771 / 4769) |
+| 4 | `SUCCESSFUL_AFTER_FAILS` | Medium | Успешный вход после серии неудач — возможная компрометация |
+| 5 | `OFF_HOURS_LOGIN` | Medium | Вход в нерабочее время (UTC, настраиваемое расписание) |
+| 6 | `ACCOUNT_LOCKOUT` | Medium | Блокировка учётной записи (Event 4740) |
+| 7 | `NEW_ACCOUNT_CREATED` | Medium | Создание нового аккаунта (Event 4720) |
+| 8 | `PASSWORD_RESET` | Low | Смена/сброс пароля (Events 4723, 4724) |
+| 9 | `MULTIPLE_ACCOUNTS_SAME_IP` | High | Перебор имён пользователей с одного IP |
+| 10 | `STICKY_KEYS_BACKDOOR` | Critical | Запуск cmd.exe/powershell вместо sethc.exe/utilman (Event 4688 + IFEO) |
+| 11 | `LSASS_ACCESS` | Critical | Доступ к LSASS с подозрительной маской доступа (Event 4656, bitwise) |
+| 12 | `LSASS_PPL_TAMPER` | Critical | Попытка отключить PPL-защиту LSASS (реестр LSA) |
+| 13 | `RDP_PORT_CHANGED` | High | Изменение порта RDP (реестр `TerminalServer-TCP`) |
+| 14 | `FIREWALL_RULE_CHANGED` | Medium | Изменение правил Windows Firewall (Event 4954) |
+| 15 | `EXPLICIT_CREDENTIALS` | Medium | Вход с явными учётными данными (Event 4648, runas-pattern) |
+| 16 | `LOGON_TYPE_NETWORK` | Low | Сетевой вход на защищённый ресурс |
+| 17 | `CONCURRENT_SESSIONS` | Low | Превышение допустимого числа одновременных сессий |
+| 18 | `GEO_ANOMALY` | Medium | Вход из страны, не включённой в allow-list |
+| 19 | `IP_REPUTATION` | High | IP попал в публичные blocklist (загружаемые через `BlocklistSource`) |
+| 20 | `SESSION_HIJACK_SUSPECT` | High | Несоответствие Session ID и IP-адреса источника |
+| 21 | `RAPID_RECONNECT` | Medium | Подозрительно частые переподключения с одного IP |
 
-# Standardize directory naming convention for consistent tool access
-Rename-Item "1st-RDPMon-main" "1st-RDPMon" -ErrorAction Stop
+### 5.5. Автоблокировка Windows Firewall
 
-# Transition to tool directory for subsequent operations
-Set-Location "1st-RDPMon"
-
-# Execute primary analyzer with help parameter to verify functionality
-# Using call operator (&) for secure script execution in isolated scope
-& (Get-ChildItem -Recurse -Filter "1st-RdpMonSecurityAnalyzer.ps1" | Select-Object -First 1).FullName -?
-
-# Provide deployment confirmation with comprehensive asset inventory
-Write-Host "✅ Deployment completed: $((Get-ChildItem -Recurse -File | Measure-Object).Count) files initialized" -ForegroundColor Green
-```
-
-**Step 4: Verify LiteDB Availability**
-```powershell
-# Run with automatic LiteDB installation
-.\1st-RdpMonSecurityAnalyzer.ps1 -DbPath "C:\Path\To\RdpMon.db" -AutoInstallLiteDb
-```
-
-**Step 5: Basic Analysis**
-```powershell
-# Quick console analysis (no file output)
-.\1st-RdpMonSecurityAnalyzer.ps1 -DbPath "C:\Path\To\RdpMon.db" -Type All
-
-# Generate HTML report
-.\1st-RdpMonSecurityAnalyzer.ps1 -DbPath "C:\Path\To\RdpMon.db" -OutputFormat Html -ExportPath "report.html"
-```
-
-### 4.2 Basic Command Examples
+При срабатывании правил `BRUTE_FORCE`, `BRUTE_FORCE_NTLM`, `IP_REPUTATION` и настраиваемого порога:
 
 ```powershell
-# ✅ Simplest usage - just specify database path
-.\1st-RdpMonSecurityAnalyzer.ps1 -DbPath "C:\RdpMon\RdpMon.db"
-
-# ✅ Generate interactive HTML report
-.\1st-RdpMonSecurityAnalyzer.ps1 -DbPath "C:\RdpMon\RdpMon.db" -OutputFormat Html -ExportPath "daily-report.html"
-
-# ✅ Export to JSON for integration
-.\1st-RdpMonSecurityAnalyzer.ps1 -DbPath "C:\RdpMon\RdpMon.db" -OutputFormat Json -ExportPath "events.json"
-
-# ✅ Analyze last 24 hours
-.\1st-RdpMonSecurityAnalyzer.ps1 -DbPath "C:\RdpMon\RdpMon.db" -From (Get-Date).AddDays(-1) -To (Get-Date)
-
-# ✅ Filter only attack attempts (failed logins)
-.\1st-RdpMonSecurityAnalyzer.ps1 -DbPath "C:\RdpMon\RdpMon.db" -Type Attack -MinFails 5
-
-# ✅ Sort by most active IPs
-.\1st-RdpMonSecurityAnalyzer.ps1 -DbPath "C:\RdpMon\RdpMon.db" -SortBy FailCount -Descending
-
-# ✅ With DNS resolution
-.\1st-RdpMonSecurityAnalyzer.ps1 -DbPath "C:\RdpMon\RdpMon.db" -IncludeResolved
+# Служба вызывает эквивалент (через netsh / Windows Firewall COM API):
+netsh advfirewall firewall add rule `
+  name="RdpAudit_Block_<IP>" `
+  dir=in action=block remoteip=<IP> `
+  protocol=any enable=yes
 ```
 
-### 4.3 Permissions & Execution
+Реализация:
+- **Идемпотентна** — повторное добавление для уже заблокированного IP не создаёт дублей
+- **Санитизирует аргументы** — IP-адрес проверяется до передачи в shell
+- **Reversible** — блокировка снимается из вкладки Firewall или по истечению TTL
+- **Журналируется** — все операции блокировки записываются в `ActiveBlocks` и `OperationLogs`
 
-#### Elevate to Administrator (If Needed)
+### 5.6. IPC через Named Pipe
 
-```powershell
-# Check if running as admin
-$isAdmin = (New-Object Security.Principal.WindowsPrincipal(
-    [Security.Principal.WindowsIdentity]::GetCurrent()
-)).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+Канал: `\\.\pipe\RdpAuditService`
 
-if (-not $isAdmin) {
-    Write-Host "Not running as administrator. Elevating..." -ForegroundColor Red
-    Start-Process -FilePath "pwsh" -ArgumentList "-File `"$PSCommandPath`"" -Verb RunAs
-    exit
-}
+ACL: только `BUILTIN\Administrators` (устанавливается через `PipeAccessRule`).
+
+Протокол: MessagePack-сериализованные запросы/ответы (`IPC/` в `RdpAudit.Core`).
+
+Жёсткий дедлайн на подключение: предотвращает зависание GUI при недоступности сервиса.
+
+Атомарное сохранение настроек: GUI отправляет изменения через IPC — сервис применяет их как единую транзакцию, без прямого доступа GUI к файлам конфигурации.
+
+### 5.7. Надёжность и устойчивость
+
+- **Exponential backoff** при ошибках БД (`SQLITE_BUSY`)
+- **CancellationToken** на всех async-путях, нет `.Result` и `.Wait()`
+- **Graceful shutdown** — все воркеры корректно завершаются при `StopAsync`
+- **EF Core Migrations** применяются при старте (не только `EnsureCreated`)
+- **EventLog source** регистрируется при установке сервиса
+
+---
+
+## 6. RdpAudit.Configurator — GUI
+
+Запускается с манифестом `requireAdministrator`, DPI-aware. Взаимодействует с сервисом исключительно через Named Pipe IPC.
+
+### 6.1. Вкладка Overview
+
+Сводная панель состояния: статус сервиса, число активных блокировок, последние тревоги, счётчик событий за сутки. Предоставляет быстрый доступ к запуску/остановке сервиса.
+
+### 6.2. Вкладка Prerequisites
+
+Автоматически проверяет условия, необходимые для работы сервиса:
+- Включён ли канал `Security` EventLog
+- Включены ли каналы TerminalServices (RCM и LSM)
+- Включена ли политика аудита для нужных подкатегорий
+- Установлена ли служба
+
+Для каждого пункта отображается статус и кнопка «Fix» с немедленным применением.
+
+### 6.3. Вкладка Audit Policy
+
+Отображает текущее состояние политики аудита Windows, полученное через `auditpol.exe /get /category:*`. Применяет нужные подкатегории через `auditpol.exe` с **GUID** (работает на любой локали Windows).
+
+Настраивает SACL для:
+- Accessibility binaries (sethc.exe, utilman.exe, osk.exe) в IFEO
+- Ключа реестра `TerminalServer-TCP` (RDP-порт)
+- Ключей LSA (PPL-защита LSASS)
+
+### 6.4. Вкладка Service
+
+- Установка / удаление сервиса (`sc.exe create/delete`)
+- Запуск / остановка / перезапуск
+- Отображение текущего статуса и PID
+- Настройка типа запуска (Automatic / Manual)
+
+### 6.5. Вкладка Settings
+
+Полная настройка параметров сервиса через IPC:
+- Пороги тревог (количество неудачных входов, интервал подсчёта)
+- Расписание «рабочих часов» для `OFF_HOURS_LOGIN`
+- Период retention для каждого типа данных
+- Настройки AbuseIPDB (API key, категории отчётов)
+- Настройки MikroTik (адрес, учётные данные, TLS)
+- Параметры геофильтрации
+
+Изменения отправляются как атомарная транзакция через IPC — сервис применяет их без перезапуска.
+
+### 6.6. Вкладка Live Events
+
+Потоковый вывод событий в реальном времени (tail-режим). Раскраска по типу события:
+- 🔴 Красный — неудачные входы, тревоги Critical/High
+- 🟡 Жёлтый — предупреждения Medium
+- 🟢 Зелёный — успешные входы, информационные события
+
+Поддерживает фильтрацию по EventId и IP-адресу.
+
+### 6.7. Вкладка Firewall
+
+Отображает все активные правила блокировки (`ActiveBlocks`):
+- IP-адрес, причина, дата блокировки, провайдер (Windows FW / MikroTik)
+- Ручное добавление IP в blocklist
+- Снятие блокировки с подтверждением (деструктивное действие — кнопка «No» по умолчанию)
+- Импорт/экспорт blocklist
+
+### 6.8. Вкладка Attack Statistics
+
+Агрегированная статистика атак (`AttackStats`):
+- Топ-N атакующих IP с числом попыток, уровнем угрозы (`AttackThreatLevel`), страной
+- График активности по часам/дням
+- Тепловая карта по странам
+- Экспорт в CSV
+
+Уровни угрозы (из `AttackThreatScoring`): `Low` → `Medium` → `High` → `Critical`, рассчитываются на основе числа попыток, разнообразия имён пользователей, времени активности и наличия в публичных blocklist.
+
+### 6.9. Вкладка Remote RDP Clients
+
+История подключений (`RdpConnectionFacts` + `SessionIpCorrelations`):
+- Список уникальных IP с числом успешных и неудачных подключений
+- Цветовая индикация: 🟢 зелёный — легитимные, 🔴 красный — высокоинтенсивные атаки, 🟡 жёлтый — низкоинтенсивные
+- Детализация по IP: список сессий, имён пользователей, временных меток
+
+### 6.10. Вкладка AbuseIPDB
+
+Управление интеграцией с [AbuseIPDB](https://www.abuseipdb.com/):
+- Настройка API-ключа (хранится с DPAPI-шифрованием)
+- Ручная и автоматическая отправка репортов
+- История отправленных репортов с дедупликацией
+- Учёт rate-limit API (1000 репортов/сутки на бесплатном тарифе)
+- Не отображает и не копирует API-ключ в plaintext в UI
+
+### 6.11. Вкладка MikroTik
+
+Управление интеграцией с MikroTik RouterOS v7:
+- Настройка адреса, порта, учётных данных (DPAPI), TLS-проверки
+- Просмотр текущего address-list на роутере
+- Синхронизация blocklist: добавление/удаление записей через REST API
+- Идемпотентное управление правилами (не создаёт дубли)
+- Тест соединения с диагностическими сообщениями
+
+### 6.12. Вкладка Logs
+
+Просмотр журнала операций сервиса (`OperationLogs`) с фильтрацией по уровню серьёзности:
+- `Info` — штатные операции
+- `Warning` — некритичные аномалии
+- `Error` — ошибки, требующие внимания
+- `Critical` — критические инциденты безопасности
+
+### 6.13. Вкладка Diagnostics
+
+Инструменты диагностики для операторов:
+- Статус компонентов сервиса (Workers, DB connection, IPC)
+- Счётчики производительности (события в секунду, очередь воркеров)
+- Размер и состояние БД SQLite
+- Проверка связи с внешними сервисами (AbuseIPDB API, MikroTik REST)
+- Экспорт диагностического дампа для поддержки
+
+---
+
+## 7. RdpAudit.Core — Общая библиотека
+
+### 7.1. Модели данных
+
+Основные сущности (все в `src/RdpAudit.Core/Models/`):
+
+| Класс | Описание |
+|-------|----------|
+| `RdpConnectionFact` | Факт RDP-подключения: IP, пользователь, статус, время |
+| `AuthAttemptFact` | Факт попытки аутентификации |
+| `Session` | RDP-сессия: SessionId, StartTime, EndTime, статус |
+| `SessionIpCorrelation` | Связь Session ↔ Source IP |
+| `AttackStat` | Статистика атак по IP (счётчики, временные метки) |
+| `AttackThreatLevel` | Перечисление уровней угрозы: Low/Medium/High/Critical |
+| `AttackThreatScoring` | Алгоритм расчёта уровня угрозы |
+| `AttackStatProjection` | DTO для отображения в GUI |
+| `ActiveBlock` | Активная автоблокировка |
+| `ActiveBlockStatus` | Перечисление статусов блокировки |
+| `BlocklistEntry` | Запись в blocklist |
+| `BlocklistSource` | Источник blocklist (builtin, AbuseIPDB, manual) |
+| `WhitelistEntry` | Запись в whitelist (IP или CIDR) |
+| `Alert` | Сработавшая тревога |
+| `AlertSeverity` | Перечисление: Low/Medium/High/Critical |
+| `AbuseReport` | Репорт, отправленный в AbuseIPDB |
+| `AbuseIpDbReportHistory` | История репортов (дедупликация) |
+| `RawEvent` | Нормализованное событие EventLog |
+| `OperationLog` | Запись журнала операций сервиса |
+| `LoginRule` | Правило ограничения входа (время, дни недели) |
+| `Bookmark` | Закладка прогресса обработки событий |
+| `DbProp` | Ключ-значение в таблице свойств БД |
+| `Address` | IP-адрес с геолокацией |
+| `UnresolvedIpReason` | Причина невозможности разрешить IP |
+
+### 7.2. Entity Framework Core & Миграции
+
+- EF Core 8 + `Microsoft.EntityFrameworkCore.Sqlite`
+- `AppDbContext` настроен на SQLite с WAL
+- Миграции применяются автоматически при старте сервиса (`context.Database.MigrateAsync()`)
+- EF Core используется ТОЛЬКО для конфигурации, миграций и чтения в GUI
+- Запись в горячем пути — только raw `SqliteCommand` с явными транзакциями
+
+### 7.3. IPC-контракты (MessagePack)
+
+Все запросы и ответы между Configurator и Service сериализованы через **MessagePack** (библиотека `MessagePack v2.5.301`). Контракты определены в `RdpAudit.Core/IPC/`:
+
+- `GetStatusRequest` / `GetStatusResponse` — состояние сервиса
+- `GetEventsRequest` / `GetEventsResponse` — потоковая выдача событий
+- `GetFirewallBlocksRequest` / `GetFirewallBlocksResponse` — список блокировок
+- `AddBlockRequest` / `AddBlockResponse` — добавление блокировки
+- `RemoveBlockRequest` / `RemoveBlockResponse` — снятие блокировки
+- `GetSettingsRequest` / `GetSettingsResponse` — чтение конфигурации
+- `SaveSettingsRequest` / `SaveSettingsResponse` — атомарное сохранение конфигурации
+- `GetAttackStatsRequest` / `GetAttackStatsResponse` — статистика атак
+- `GetOperationLogsRequest` / `GetOperationLogsResponse` — журнал операций
+
+---
+
+## 8. Интеграции с внешними системами
+
+### 8.1. AbuseIPDB
+
+**Что делает:** автоматически репортит атакующие IP-адреса в базу данных [AbuseIPDB](https://www.abuseipdb.com/) при срабатывании правил брутфорса или высокого уровня угрозы.
+
+**Реализация:**
+- API-ключ хранится в `appsettings.json` в DPAPI-конверте, plaintext никогда не записывается
+- Локальная дедупликация: таблица `AbuseIpDbReportHistory` предотвращает повторный репорт одного IP
+- Учёт rate-limit: счётчик суточных репортов, при достижении лимита — backoff до следующих суток
+- Категории репортов настраиваемые (18 = Brute-Force, 22 = Hacking по умолчанию)
+
+### 8.2. MikroTik RouterOS v7
+
+**Что делает:** при автоблокировке добавляет IP в address-list на MikroTik-роутере через RouterOS v7 REST API, что позволяет блокировать трафик на периметре до достижения Windows-сервера.
+
+**Реализация:**
+- REST API: `https://<router>/rest/ip/firewall/address-list`
+- TLS-верификация настраиваема (можно отключить для self-signed сертификатов)
+- Учётные данные шифруются DPAPI, хранятся в `appsettings.json`
+- Идемпотентность: перед добавлением проверяет наличие записи
+- Удаление записей при снятии блокировки через GUI
+- При недоступности роутера — fallback на Windows Firewall, операция журналируется
+
+---
+
+## 9. Механизм автоблокировки
+
+### 9.1. Порог срабатывания
+
+По умолчанию:
+- **10 неудачных входов** с одного IP за **10 минут** → автоблокировка
+- Пороги настраиваются на вкладке **Settings**
+- Блокировка не срабатывает для IP из **Whitelist**
+
+### 9.2. Windows Firewall (локальный)
+
+```
+Провайдер: WindowsFirewallProvider
+Действие:  Создать inbound-правило "RdpAudit_Block_<IP>" (block, any protocol)
+Reversal:  Удалить правило по имени
+Проверка:  netsh advfirewall firewall show rule name="RdpAudit_Block_<IP>"
 ```
 
-#### Bypass Execution Policy (Temporary)
+### 9.3. MikroTik Firewall (удалённый)
 
-```powershell
-# For a single command
-powershell -ExecutionPolicy Bypass -Command ".\1st-RdpMonSecurityAnalyzer.ps1 -DbPath 'C:\RdpMon.db'"
-
-# For a session
-powershell -ExecutionPolicy Bypass -NoExit
-# Then run your commands
+```
+Провайдер: MikroTikFirewallProvider
+Действие:  PUT /rest/ip/firewall/address-list { address: <IP>, list: "RdpAudit-Blocklist" }
+Reversal:  DELETE /rest/ip/firewall/address-list/<id>
+Проверка:  GET /rest/ip/firewall/address-list?address=<IP>
 ```
 
-#### Permanent Execution Policy (User-Scoped)
+### 9.4. Whitelist — защита доверенных IP
 
-```powershell
-# Recommended: RemoteSigned policy
-Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser -Force
+- Поддерживаются одиночные IP (`192.168.1.1`) и CIDR-диапазоны (`10.0.0.0/8`)
+- Whitelist проверяется ДО применения любой блокировки
+- Настраивается на вкладке **Settings** и хранится в таблице `WhitelistEntries`
+- Хранит метку — кто и когда добавил запись
 
-# Verify
-Get-ExecutionPolicy -Scope CurrentUser
-```
+---
 
-### 4.4 First-Time Verification
+## 10. Обслуживание данных
 
-```powershell
-# 1. Verify RDPMon database exists
-Test-Path "C:\Path\To\RdpMon.db" -PathType Leaf
+### 10.1. Политика хранения (Retention Pruning)
 
-# 2. Test script syntax
-[System.Management.Automation.PSParser]::Tokenize((Get-Content "1st-RdpMonSecurityAnalyzer.ps1" -Raw), [ref]$null)
+`RetentionPrunerWorker` запускается по расписанию и удаляет устаревшие записи:
 
-# 3. Run with debug information
-.\1st-RdpMonSecurityAnalyzer.ps1 -DbPath "C:\RdpMon.db" -DebugMode
+| Таблица | Retention по умолчанию | Настраиваемо |
+|---------|----------------------|-------------|
+| `RawEvents` | 90 дней | Да |
+| `Alerts` | 180 дней | Да |
+| `AbuseIpDbReportHistory` | 365 дней | Да |
+| `ActiveBlocks` (неактивные) | 30 дней | Да |
+| `AttackStats` | 365 дней | Да |
 
-# 4. Generate sample report
-.\1st-RdpMonSecurityAnalyzer.ps1 -DbPath "C:\RdpMon.db" -OutputFormat Html -ExportPath "test-report.html" -Limit 100
-```
+**Технические детали:**
+- Удаление батчами (по 1000 строк) во избежание длительной блокировки WAL
+- Экспоненциальный backoff при `SQLITE_BUSY`
+- CancellationToken на всех операциях
+- Операция журналируется в `OperationLogs`
 
-***
+### 10.2. Резервное копирование и восстановление
 
-## 5. Installation & Setup
+`BackupRestoreWorker` создаёт снапшоты конфигурации:
 
-### 5.1 Deployment Methods
+**В снапшот включается:**
+- `appsettings.json` — только DPAPI-конверты, без plaintext секретов
+- Экспорт политики аудита (`auditpol /backup`)
+- Ключи реестра RdpAudit (IFEO, RDP-TCP, LSA, audit policy)
+- Конфигурация сервиса (`sc.exe qc`)
 
-#### Method A: Automated One-Line Installation
+**В снапшот НЕ включается:**
+- База данных событий (`rdpaudit.db`) — только конфигурация
 
-```powershell
-# Download, setup, and run with automatic LiteDB installation
-$scriptUrl = "https://raw.githubusercontent.com/paulmann/RDPAudit/main/1st-RdpMonSecurityAnalyzer.ps1"
-Invoke-WebRequest -Uri $scriptUrl -OutFile "1st-RdpMonSecurityAnalyzer.ps1"
-Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser -Force
-.\1st-RdpMonSecurityAnalyzer.ps1 -DbPath "C:\RdpMon.db" -AutoInstallLiteDb -LiteDbVersion "4.1.4"
-```
+**Restore:** перед восстановлением автоматически создаётся pre-restore safety snapshot. Операция никогда не трогает базу данных событий.
 
-#### Method B: Enterprise Manual Installation
+---
 
-**Step 1: Create Directory Structure**
-```powershell
-# Create secure directory structure
-$toolPath = "C:\Program Files\SecurityTools\1stRdpMonAnalyzer"
-$reportPath = "C:\SecurityReports\RdpMonAnalysis"
+## 11. Безопасность и аудит
 
-New-Item -ItemType Directory -Path $toolPath -Force | Out-Null
-New-Item -ItemType Directory -Path $reportPath -Force | Out-Null
+### 11.1. Разграничение прав
 
-# Set restrictive permissions
-icacls $toolPath /inheritance:r /grant:r "Administrators:(OI)(CI)F" "System:(OI)(CI)F"
-icacls $reportPath /grant:r "Administrators:(OI)(CI)F" "Everyone:(OI)(CI)M"
-```
+| Компонент | Права |
+|-----------|-------|
+| `RdpAudit.Service` | SYSTEM или выделенный сервисный аккаунт |
+| Named Pipe IPC | Только `BUILTIN\Administrators` |
+| `RdpAudit.Configurator` | `requireAdministrator` (manifest) |
+| SQLite DB | ACL: только SYSTEM + Administrators |
+| `appsettings.json` | ACL: только SYSTEM + Administrators |
 
-**Step 2: Download Script**
-```powershell
-# Download from GitHub
-$scriptUrl = "https://raw.githubusercontent.com/paulmann/RDPAudit/main/1st-RdpMonSecurityAnalyzer.ps1"
-$scriptPath = "$toolPath\1st-RdpMonSecurityAnalyzer.ps1"
+### 11.2. SACL-конфигурация
 
-Invoke-WebRequest -Uri $scriptUrl -OutFile $scriptPath -UseBasicParsing
-Write-Host "Script downloaded to: $scriptPath" -ForegroundColor Green
-```
+Configurator настраивает SACL (System Access Control Lists) для обнаружения попыток манипуляции:
 
-**Step 3: Configure Execution**
-```powershell
-# Set execution policy for current user
-Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser -Force
+- **IFEO accessibility keys** (`sethc.exe`, `utilman.exe`, `osk.exe`, `magnify.exe`) — обнаружение Sticky Keys backdoor
+- **`HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp`** — обнаружение смены RDP-порта
+- **`HKLM\SYSTEM\CurrentControlSet\Control\Lsa`** — обнаружение отключения PPL для LSASS
 
-# Verify
-Get-ExecutionPolicy -Scope CurrentUser
-```
+### 11.3. Защита секретов (DPAPI)
 
-**Step 4: Validate Installation**
-```powershell
-# Test script syntax
-$null = [System.Management.Automation.PSParser]::Tokenize(
-    (Get-Content $scriptPath -Raw), 
-    [ref]$null
-)
-Write-Host "Script syntax validation: ✓ PASSED" -ForegroundColor Green
+- Все API-ключи (AbuseIPDB) и учётные данные (MikroTik) шифруются **Windows DPAPI** (`ProtectedData.Protect`, scope: `LocalMachine`)
+- В `appsettings.json` хранятся только Base64-encoded DPAPI-конверты
+- GUI никогда не отображает и не копирует секреты в plaintext
+- Backup включает только DPAPI-конверты — при восстановлении на другой машине секреты потребуют повторного ввода
 
-# Verify RDPMon database
-if (Test-Path "C:\RdpMon\RdpMon.db") {
-    Write-Host "RDPMon database found: ✓" -ForegroundColor Green
-} else {
-    Write-Host "WARNING: RDPMon database not found at standard location" -ForegroundColor Yellow
-}
-```
+---
 
-### 5.2 LiteDB Dependency Management
+## 12. Конфигурация
 
-#### Understanding LiteDB Installation
+### 12.1. appsettings.json
 
-LiteDB is a lightweight embedded NoSQL database used by Cameyo RDPMon to store RDP authentication records. This script requires **LiteDB version 4.1.4** for compatibility with RDPMon's database schema.
-
-**Version Compatibility:**
-- ✅ LiteDB 4.1.4 - **Recommended** (RDPMon compatible)
-- ❌ LiteDB 5.x - Not compatible with RDPMon database format
-
-#### Automatic Installation from GitHub
-
-```powershell
-# Option 1: Auto-install with default settings
-.\1st-RdpMonSecurityAnalyzer.ps1 `
-  -DbPath "C:\RdpMon\RdpMon.db" `
-  -AutoInstallLiteDb
-
-# Option 2: Specify custom installation directory
-.\1st-RdpMonSecurityAnalyzer.ps1 `
-  -DbPath "C:\RdpMon\RdpMon.db" `
-  -AutoInstallLiteDb `
-  -LiteDbInstallPath "C:\Libraries\LiteDB" `
-  -LiteDbVersion "4.1.4"
-
-# Option 3: Force reinstall (if corrupted)
-.\1st-RdpMonSecurityAnalyzer.ps1 `
-  -DbPath "C:\RdpMon\RdpMon.db" `
-  -AutoInstallLiteDb `
-  -ForceLiteDbInstall
-```
-
-#### Manual LiteDB Installation
-
-```powershell
-# Download LiteDB directly from NuGet
-$liteDbUrl = "https://www.nuget.org/api/v2/package/LiteDB/4.1.4"
-$liteDbPath = "$PSScriptRoot\LiteDB"
-$tempFile = "$env:TEMP\LiteDB.4.1.4.nupkg"
-
-# Create directory
-New-Item -ItemType Directory -Path $liteDbPath -Force | Out-Null
-
-# Download NuGet package (which is a ZIP file)
-Invoke-WebRequest -Uri $liteDbUrl -OutFile $tempFile -UseBasicParsing
-
-# Extract package
-Expand-Archive -Path $tempFile -DestinationPath $liteDbPath -Force
-
-# Find LiteDB.dll in extracted files
-$dllFile = Get-ChildItem -Path $liteDbPath -Filter "LiteDB.dll" -Recurse | 
-    Select-Object -First 1
-
-if ($dllFile) {
-    Write-Host "LiteDB installed: $($dllFile.FullName)" -ForegroundColor Green
-} else {
-    Write-Error "Failed to locate LiteDB.dll in extracted files"
-}
-```
-
-#### Using Existing LiteDB Installation
-
-```powershell
-# If you already have LiteDB installed elsewhere
-$existingLiteDbPath = "C:\MyLibraries\LiteDB\LiteDB.dll"
-
-# Use it with the script
-.\1st-RdpMonSecurityAnalyzer.ps1 `
-  -DbPath "C:\RdpMon\RdpMon.db" `
-  -LiteDbPath $existingLiteDbPath `
-  -SkipLiteDbInstall
-```
-
-***
-
-## 6. Understanding RDPMon & LiteDB Integration
-
-### 6.1 What is Cameyo RDPMon?
-
-**Cameyo RDPMon** is an advanced RDP monitoring solution that tracks all RDP connection attempts (successful and failed) on Windows systems. It maintains a detailed audit log in a LiteDB database, capturing:
-- Source IP addresses of connection attempts
-- User accounts used in logon attempts
-- Timestamps of each connection attempt
-- Logon success/failure status
-- Connection duration and session details
-
-### 6.2 LiteDB Database Structure
-
-RDPMon uses LiteDB's document-based storage with the following collection structure:
-
-#### Addr Collection (Primary Data)
-```json
+```jsonc
 {
-  "_id": "192.168.1.100",
-  "FailCount": 45,
-  "SuccessCount": 2,
-  "First": "2025-12-20T10:30:15Z",
-  "Last": "2025-12-28T23:45:00Z",
-  "UserNames": ["admin", "root", "test"],
-  "ConnectionType": "Attack"
-}
-```
-
-**Field Descriptions:**
-- `_id` - IP address (primary key)
-- `FailCount` - Number of failed login attempts
-- `SuccessCount` - Number of successful logins
-- `First` - First connection attempt timestamp
-- `Last` - Most recent connection attempt timestamp
-- `UserNames` - Array of user accounts attempted
-- `ConnectionType` - Classification (Attack/Legit/Mixed/Unknown)
-
-#### Session Collection
-Contains detailed session information including:
-- Session ID
-- Source IP address
-- Username
-- Session start/end times
-- Session duration
-- Session flags and Windows Terminal Services ID
-
-#### Prop Collection (Metadata)
-Stores database properties:
-- `LastAddrChange` - Last modification to Addr collection
-- `LastSessionChange` - Last modification to Session collection
-- `LastProcessChange` - Last modification to Process collection
-- Database version information
-
-### 6.3 Script Integration with RDPMon
-
-The script performs the following operations:
-
-1. **Connects to LiteDB Database** (Read-only)
-   ```powershell
-   $connectionString = "Filename=$DbPath;ReadOnly=true;Utc=true"
-   $database = [LiteDB.LiteDatabase]::new($connectionString)
-   ```
-
-2. **Queries Addr Collection** for IP-based statistics
-   ```powershell
-   $addrCollection = $database.GetCollection("Addr")
-   $allRecords = $addrCollection.FindAll()
-   ```
-
-3. **Extracts and Processes Data**
-   - Converts BsonDocuments to PowerShell objects
-   - Applies filtering (Type, MinFails, time range)
-   - Calculates statistics and metrics
-
-4. **Generates Reports** in multiple formats
-   - Formats data according to output format selection
-   - Exports to file or displays in console
-   - Creates interactive HTML reports if requested
-
-### 6.4 Data Flow Diagram
-
-```
-┌─────────────────────────┐
-│  RDPMon Service         │
-│  (Monitors RDP Events)  │
-└──────────┬──────────────┘
-           │
-           ▼
-┌─────────────────────────┐
-│  LiteDB Database        │
-│  (RdpMon.db)            │
-├─────────────────────────┤
-│ Addr Collection         │
-│ Session Collection      │
-│ Prop Collection         │
-└──────────┬──────────────┘
-           │
-           ▼
-┌──────────────────────────────────┐
-│ 1st RDP Monitor Analyzer         │
-│ (This Script)                    │
-├──────────────────────────────────┤
-│ • Read RDPMon data               │
-│ • Filter & analyze               │
-│ • Calculate statistics           │
-│ • Generate reports               │
-└──────────┬───────────────────────┘
-           │
-           ▼
-   ┌───────────────────────────────────────┐
-   │  Output Formats                       │
-   ├───────────────────────────────────────┤
-   │ Table │ CSV │ JSON │ HTML │ Markdown │
-   └───────────────────────────────────────┘
-```
-
-***
-
-## 7. IP Banning Mechanism
-
-### 7.1 Understanding IP Banning in RDPMon Context
-
-The analyzer provides comprehensive data to support **manual IP banning decisions** based on RDP attack patterns. Here's how the process works:
-
-### 7.2 Identifying Ban-Worthy IPs
-
-The script helps identify IPs that should be banned by analyzing:
-
-```powershell
-# Identify high-risk IPs
-$banCandidates = .\1st-RdpMonSecurityAnalyzer.ps1 `
-  -DbPath "C:\RdpMon\RdpMon.db" `
-  -Type Attack `
-  -MinFails 10 `
-  -OutputFormat Json | ConvertFrom-Json
-
-# Filter IPs with specific attack patterns
-$criticalAttacks = $banCandidates.AddrResults | 
-  Where-Object { $_.FailCount -gt 50 -and $_.ConnectionType -eq "Attack" } |
-  Sort-Object FailCount -Descending
-```
-
-**Ban Decision Criteria:**
-- **FailCount > 50**: Multiple brute force attempts
-- **Duration > 24 hours**: Persistent attack over time
-- **Multiple user targets**: Attempts against various accounts
-- **Known malicious IPs**: Cross-reference with threat intelligence
-
-### 7.3 Manual Firewall Banning Process
-
-#### Windows Firewall (Local)
-
-```powershell
-# Get high-risk IPs from analyzer
-$riskyIPs = @("192.168.1.100", "203.0.113.45", "198.51.100.10")
-
-# Create firewall rule for each IP
-foreach ($ip in $riskyIPs) {
-    $ruleName = "Block_RDP_Attack_$ip"
-    
-    New-NetFirewallRule `
-        -DisplayName $ruleName `
-        -Direction Inbound `
-        -Action Block `
-        -RemoteAddress $ip `
-        -Protocol TCP `
-        -LocalPort 3389 `
-        -Enabled $true
-    
-    Write-Host "Blocked IP via firewall: $ip" -ForegroundColor Green
-}
-
-# List all blocking rules
-Get-NetFirewallRule -DisplayName "Block_RDP_Attack_*" | Format-Table DisplayName, Enabled
-```
-
-#### Automated Ban List Management
-
-```powershell
-# Create dynamic ban list from analyzer output
-function Update-RDPBanList {
-    param(
-        [string]$DbPath,
-        [int]$FailThreshold = 50
-    )
-    
-    # Get attack data
-    $attackData = .\1st-RdpMonSecurityAnalyzer.ps1 `
-        -DbPath $DbPath `
-        -Type Attack `
-        -MinFails $FailThreshold `
-        -OutputFormat Json | ConvertFrom-Json
-    
-    # Extract IPs to ban
-    $banIPs = $attackData.AddrResults | 
-        Select-Object -ExpandProperty IP
-    
-    # Export to ban list file
-    $banIPs | Out-File "C:\SecurityConfig\rdp_ban_list.txt" -Force
-    
-    # Create PowerShell script to apply bans
-    $banScript = @"
-# Auto-generated RDP ban list
-# Generated: $(Get-Date)
-`$banIPs = @(
-    $($banIPs | ForEach-Object { "'$_'" } | Join-String -Separator ',')
-)
-
-foreach (`$ip in `$banIPs) {
-    New-NetFirewallRule -DisplayName "Auto_Block_RDP_`$ip" `
-        -Direction Inbound -Action Block -RemoteAddress `$ip `
-        -Protocol TCP -LocalPort 3389 -Enabled `$true -ErrorAction SilentlyContinue
-}
-"@
-    
-    $banScript | Out-File "C:\SecurityConfig\apply_rdp_bans.ps1" -Force
-    
-    Write-Host "Ban list updated with $($banIPs.Count) IPs" -ForegroundColor Green
-}
-
-# Usage
-Update-RDPBanList -DbPath "C:\RdpMon\RdpMon.db" -FailThreshold 50
-```
-
-#### IP Whitelist Protection
-
-```powershell
-# Whitelist legitimate IPs to prevent accidental blocking
-$whitelistIPs = @(
-    "10.0.0.5",      # Corporate VPN
-    "203.0.113.1",   # Admin subnet
-    "198.51.100.0/24" # Trusted network
-)
-
-# When creating ban rules, exclude whitelisted IPs
-$analyzerOutput = .\1st-RdpMonSecurityAnalyzer.ps1 `
-    -DbPath "C:\RdpMon\RdpMon.db" `
-    -Type Attack `
-    -OutputFormat Json | ConvertFrom-Json
-
-$banIPs = $analyzerOutput.AddrResults | 
-    Where-Object { $_.IP -notin $whitelistIPs } |
-    Select-Object -ExpandProperty IP
-
-Write-Host "IPs to ban (after whitelist filter): $($banIPs.Count)" -ForegroundColor Cyan
-```
-
-### 7.4 Third-Party Integration for IP Banning
-
-#### Azure Sentinel Integration
-
-```
-# Send ban list to Azure Sentinel
-function Send-BanListToAzureSentinel {
-    param(
-        [string]$DbPath,
-        [string]$WorkspaceId,
-        [string]$SharedKey
-    )
-    
-    # Get attack data
-    $attackData = .\1st-RdpMonSecurityAnalyzer.ps1 `
-        -DbPath $DbPath `
-        -Type Attack `
-        -MinFails 10 `
-        -OutputFormat Json | ConvertFrom-Json
-    
-    # Prepare JSON payload
-    $banList = $attackData.AddrResults | Select-Object -Property @{
-        Name = "TimeGenerated"
-        Expression = { Get-Date -Format o }
-    }, @{
-        Name = "IpAddress"
-        Expression = { $_.IP }
-    }, @{
-        Name = "FailureCount"
-        Expression = { $_.FailCount }
-    }, @{
-        Name = "ActionType"
-        Expression = { "RecommendedBan" }
-    }
-    
-    # Send to Log Analytics
-    $json = $banList | ConvertTo-Json
-    
-    $headers = @{
-        "Log-Type" = "RDPMonBanList"
-        "x-ms-date" = (Get-Date -Format r)
-    }
-    
-    # Construct and send (requires Log Analytics integration)
-    # This is a template - actual implementation requires Log Analytics API details
-    
-    Write-Host "Sent $($banList.Count) ban recommendations to Azure Sentinel" -ForegroundColor Green
-}
-```
-
-#### Splunk Integration
-
-```
-# Stream attack data to Splunk HEC (HTTP Event Collector)
-function Send-ToSplunk {
-    param(
-        [string]$DbPath,
-        [string]$SplunkHecUrl,
-        [string]$SplunkToken
-    )
-    
-    # Get attack data
-    $attackData = .\1st-RdpMonSecurityAnalyzer.ps1 `
-        -DbPath $DbPath `
-        -Type Attack `
-        -OutputFormat Json | ConvertFrom-Json
-    
-    # Prepare headers
-    $headers = @{
-        "Authorization" = "Splunk $SplunkToken"
-        "Content-Type" = "application/json"
-    }
-    
-    # Send each event to Splunk
-    foreach ($event in $attackData.AddrResults) {
-        $splunkEvent = @{
-            event = @{
-                source = "RDPMon"
-                sourcetype = "rdp:attack"
-                host = $env:COMPUTERNAME
-                time = [int](Get-Date -UFormat %s)
-                data = $event
-            }
-        } | ConvertTo-Json
-        
-        try {
-            Invoke-RestMethod -Uri $SplunkHecUrl -Method Post `
-                -Headers $headers -Body $splunkEvent -ErrorAction Stop
-        } catch {
-            Write-Warning "Failed to send event to Splunk: $_"
-        }
-    }
-    
-    Write-Host "Sent attack data to Splunk HEC" -ForegroundColor Green
-}
-```
-
-### 7.5 Ban List Export for External Systems
-
-```
-# Export ban list in various formats for different systems
-
-# Format 1: CSV for Excel/database import
-function Export-BanListCsv {
-    param([string]$DbPath, [string]$OutputPath)
-    
-    .\1st-RdpMonSecurityAnalyzer.ps1 `
-        -DbPath $DbPath `
-        -Type Attack `
-        -MinFails 10 `
-        -OutputFormat Csv `
-        -ExportPath $OutputPath
-    
-    Write-Host "Ban list exported to CSV: $OutputPath" -ForegroundColor Green
-}
-
-# Format 2: IP list for firewall blocklists
-function Export-BanListIpOnly {
-    param([string]$DbPath, [string]$OutputPath)
-    
-    $data = .\1st-RdpMonSecurityAnalyzer.ps1 `
-        -DbPath $DbPath `
-        -Type Attack `
-        -MinFails 10 `
-        -OutputFormat Json | ConvertFrom-Json
-    
-    $data.AddrResults.IP | Out-File -FilePath $OutputPath -Force
-    
-    Write-Host "IP blocklist exported to: $OutputPath" -ForegroundColor Green
-}
-
-# Format 3: JSON for API consumption
-function Export-BanListJson {
-    param([string]$DbPath, [string]$OutputPath)
-    
-    .\1st-RdpMonSecurityAnalyzer.ps1 `
-        -DbPath $DbPath `
-        -Type Attack `
-        -MinFails 10 `
-        -OutputFormat Json `
-        -ExportPath $OutputPath
-    
-    Write-Host "Ban list exported to JSON: $OutputPath" -ForegroundColor Green
-}
-
-# Format 4: MikroTik firewall format
-function Export-BanListMikroTik {
-    param([string]$DbPath, [string]$OutputPath)
-    
-    $data = .\1st-RdpMonSecurityAnalyzer.ps1 `
-        -DbPath $DbPath `
-        -Type Attack `
-        -MinFails 10 `
-        -OutputFormat Json | ConvertFrom-Json
-    
-    $mikrotikScript = @"
-# MikroTik firewall rules for RDP ban list
-# Generated: $(Get-Date)
-`n
-"@
-    
-    foreach ($ip in $data.AddrResults.IP) {
-        $mikrotikScript += "/ip firewall address-list add list=RDP_ATTACKERS address=$ip`n"
-    }
-    
-    $mikrotikScript | Out-File -FilePath $OutputPath -Force
-    
-    Write-Host "MikroTik rules exported to: $OutputPath" -ForegroundColor Green
-}
-```
-
----
-
-## 8. How It Works - Complete Architecture
-
-### 8.1 Execution Flow Diagram
-
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                      Script Initialization                          │
-├─────────────────────────────────────────────────────────────────────┤
-│ -  Validate PowerShell version (7.5+)                                │
-│ -  Check parameter validity                                          │
-│ -  Initialize global configuration                                   │
-│ -  Set up debug/logging if enabled                                   │
-└──────────────────────┬──────────────────────────────────────────────┘
-                       │
-                       ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                    Dependency Resolution                            │
-├─────────────────────────────────────────────────────────────────────┤
-│ -  Check if LiteDB assembly is loaded                                │
-│ -  Search standard locations for LiteDB.dll                          │
-│ -  If not found and AutoInstallLiteDb:                               │
-│   - Download v4.1.4 from GitHub releases                            │
-│   - Extract to installation directory                               │
-│   - Verify assembly integrity                                       │
-└──────────────────────┬──────────────────────────────────────────────┘
-                       │
-                       ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                   Database Connection                               │
-├─────────────────────────────────────────────────────────────────────┤
-│ -  Establish read-only connection to RDPMon.db                       │
-│ -  Load LiteDB assembly if needed                                    │
-│ -  Verify database accessibility                                     │
-│ -  Run safe diagnostics on database structure                        │
-└──────────────────────┬──────────────────────────────────────────────┘
-                       │
-                       ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                   Data Extraction Phase                             │
-├─────────────────────────────────────────────────────────────────────┤
-│ -  Query Addr collection for IP-based data                           │
-│ -  Extract Session collection for detailed sessions                  │
-│ -  Read Prop collection for metadata                                 │
-│ -  Convert BsonDocuments to PowerShell objects                       │
-└──────────────────────┬──────────────────────────────────────────────┘
-                       │
-                       ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                   Data Processing & Filtering                       │
-├─────────────────────────────────────────────────────────────────────┤
-│ -  Apply Type filter (All/Attack/Legit/Unknown)                      │
-│ -  Filter by MinFails threshold                                      │
-│ -  Apply date/time range filtering (From/To)                         │
-│ -  Sort results (SortBy, Descending)                                 │
-│ -  Apply limit to result set                                         │
-│ -  Optionally resolve hostnames (IncludeResolved)                    │
-│ -  Calculate metrics and statistics                                  │
-└──────────────────────┬──────────────────────────────────────────────┘
-                       │
-                       ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                   Output Format Selection                           │
-├─────────────────────────────────────────────────────────────────────┤
-│ -  Table: PowerShell Format-Table output                             │
-│ -  List: Detailed list format                                        │
-│ -  JSON: Structured JSON serialization                               │
-│ -  CSV: Comma-separated values for Excel                             │
-│ -  XML: XML document structure                                       │
-│ -  HTML: Interactive web report with charts                          │
-│ -  YAML: YAML configuration format                                   │
-│ -  Text: Formatted text output                                       │
-│ -  Markdown: Documentation-ready format                              │
-│ -  Object: Raw PowerShell objects for scripting                      │
-└──────────────────────┬──────────────────────────────────────────────┘
-                       │
-                       ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                      Output Delivery                                │
-├─────────────────────────────────────────────────────────────────────┤
-│ If ExportPath specified:                                            │
-│ -  Create output directory if needed                                 │
-│ -  Write formatted data to file                                      │
-│ -  Set appropriate file encoding (UTF-8)                             │
-│                                                                     │
-│ If console display requested:                                       │
-│ -  Display results in console with color coding                      │
-│ -  Show summary statistics                                           │
-│ -  Display execution duration                                        │
-└─────────────────────────────────────────────────────────────────────┘
-```
-
-### 8.2 Detailed Processing Steps
-
-#### Step 1: LiteDB Loading
-
-```
-# Script attempts to load LiteDB in this order:
-# 1. Check if already loaded in current domain
-# 2. User-specified path (-LiteDbPath)
-# 3. Script directory (./LiteDB/LiteDB.dll)
-# 4. Database directory
-# 5. Current directory
-# 6. Windows PATH directories
-# 7. Program Files directories
-# 8. If AutoInstallLiteDb: Download and install from GitHub
-```
-
-#### Step 2: Database Query
-
-```
-# Read-only connection string
-$connectionString = "Filename=$DbPath;ReadOnly=true;Utc=true"
-
-# Opens database
-$database = [LiteDB.LiteDatabase]::new($connectionString)
-
-# Gets collections
-$addrCollection = $database.GetCollection("Addr")
-$sessionCollection = $database.GetCollection("Session")
-$propCollection = $database.GetCollection("Prop")
-
-# Queries all records
-$allAddr = $addrCollection.FindAll()
-$allSessions = $sessionCollection.FindAll()
-```
-
-#### Step 3: Data Transformation
-
-```
-# Converts each BsonDocument to PowerShell object
-foreach ($record in $allAddr) {
-    $psObject = @{
-        IP = $record["_id"]
-        FailCount = $record["FailCount"]
-        SuccessCount = $record["SuccessCount"]
-        FirstLocal = $record["First"]
-        LastLocal = $record["Last"]
-        UserNames = $record["UserNames"]
-        ConnectionType = # Calculated from FailCount/SuccessCount
-        Duration = # Calculated: Last - First
-        Hostname = # Optionally resolved via DNS
-    }
-    
-    # Apply filters
-    if ($psObject.FailCount -ge $MinFails -and
-        $psObject.LastLocal -ge $From -and
-        $psObject.FirstLocal -le $To) {
-        
-        # Add to results
-        $results += $psObject
-    }
-}
-```
-
-#### Step 4: Sorting and Limiting
-
-```
-# Sort results
-$sorted = $results | Sort-Object -Property $SortBy `
-    -Descending:$Descending
-
-# Apply limit
-$final = $sorted | Select-Object -First $Limit
-```
-
-#### Step 5: Report Generation
-
-```
-# Format according to OutputFormat
-switch ($OutputFormat) {
-    "Html" {
-        $html = @"
-        <!DOCTYPE html>
-        <html>
-        <head>
-            <title>RDP Monitor Report</title>
-            <link href="https://cdn.tailwindcss.com" rel="stylesheet">
-            <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-        </head>
-        <body>
-            <div class="container mx-auto p-6">
-                <!-- Header -->
-                <h1>RDP Security Analysis Report</h1>
-                
-                <!-- Statistics -->
-                <div class="grid grid-cols-4 gap-4">
-                    <!-- Summary cards -->
-                </div>
-                
-                <!-- Charts -->
-                anvas id="attackChart"></canvas>
-                
-                <!-- Table -->
-                <table>
-                    <!-- Data rows -->
-                </table>
-            </div>
-        </body>
-        </html>
-        "@
-        
-        $html | Out-File -FilePath $ExportPath
-    }
-    
-    "Csv" {
-        $final | Export-Csv -Path $ExportPath -NoTypeInformation
-    }
-    
-    "Json" {
-        $final | ConvertTo-Json -Depth 5 | Out-File -FilePath $ExportPath
-    }
-    
-    # ... other formats
-}
-```
-
----
-
-## 9. Technical Components
-
-### 9.1 Core Functions (Continued)
-
-#### Process-EnhancedRdpMonData
-
-**Purpose**: Applies filters and generates metrics
-
-**Processing Steps**:
-1. Apply type filtering (Attack/Legit/Mixed/Unknown)
-2. Apply failure count threshold
-3. Apply date/time range filtering
-4. Calculate connection type classification
-5. Resolve hostnames (if requested)
-6. Generate statistical summaries
-7. Create timeline data for charts
-
-**Returns**: Hashtable with:
-- AddrResults: Filtered IP records
-- SessionResults: Filtered session records
-- SummaryStats: Attack count, legit count, etc.
-- EnhancedData: Chart data and statistics
-
-#### ConvertTo-HtmlReport & ConvertTo-EnhancedHtmlReport
-
-**Purpose**: Generate interactive HTML reports
-
-**Features**:
-- Responsive design with Tailwind CSS
-- Interactive charts using Chart.js
-- Color-coded result tables
-- Auto-refresh capability
-- Summary statistics display
-- Mobile-friendly layout
-
-### 9.2 Support Functions
-
-#### Install-LiteDbAutomatically
-
-```
-# Downloads and installs LiteDB from GitHub
-# Parameters:
-#   -InstallPath: Directory to install to
-#   -Version: Specific version (default: "4.1.4")
-#   -Force: Force reinstallation
-#   -NoProgress: Suppress progress indicators
-
-# Returns: Path to installed LiteDB.dll assembly
-```
-
-#### Test-LiteDbInstallation
-
-```
-# Checks if LiteDB is properly installed
-# Returns: Hashtable with:
-#   Installed: Boolean
-#   Version: Version number
-#   AssemblyPath: Full path to assembly
-#   IsValid: Can assembly be loaded
-#   Error: Any error messages
-```
-
-#### Get-RdpMonDatabaseStructure
-
-```
-# Safely analyzes database structure
-# Returns: Hashtable with:
-#   Collections: List of collections
-#   Structure: Detailed structure info
-#   Errors: Any errors encountered
-#   IsCorrupted: Boolean indicating corruption
-```
-
-#### Export-RdpMonDataToCsv
-
-```
-# Emergency export for corrupted databases
-# Extracts readable data to CSV
-# Skips corrupted records gracefully
-```
-
-#### Repair-RdpMonDatabase
-
-```
-# Attempts to repair corrupted database
-# Process:
-#   1. Opens corrupted database in read-only
-#   2. Creates new database file
-#   3. Copies readable records only
-#   4. Creates backup of original
-#   5. Returns path to repaired database
-```
-
-### 9.3 Output Formatters
-
-| Format | Function | Use Case |
-|--------|----------|----------|
-| **Table** | Format-Table | Console display |
-| **List** | Format-List | Detailed console view |
-| **JSON** | ConvertTo-Json | API/SIEM integration |
-| **CSV** | Export-Csv | Excel/data analysis |
-| **XML** | ConvertTo-Xml | Enterprise systems |
-| **HTML** | ConvertTo-HtmlReport | Web reports |
-| **YAML** | Custom formatter | Configuration files |
-| **Markdown** | Custom formatter | Documentation |
-| **Text** | Custom formatter | Simple text output |
-
----
-
-## 10. Usage Examples
-
-### 10.1 Basic Analysis
-
-```
-# Simplest possible usage
-.\1st-RdpMonSecurityAnalyzer.ps1 -DbPath "C:\RdpMon\RdpMon.db"
-
-# View in console with color coding
-.\1st-RdpMonSecurityAnalyzer.ps1 -DbPath "C:\RdpMon\RdpMon.db" -OutputFormat Table
-
-# Export to file
-.\1st-RdpMonSecurityAnalyzer.ps1 `
-  -DbPath "C:\RdpMon\RdpMon.db" `
-  -OutputFormat Csv `
-  -ExportPath "rdpmon_report.csv"
-```
-
-### 10.2 Security Analysis
-
-```
-# Find all brute force attacks (50+ failures)
-.\1st-RdpMonSecurityAnalyzer.ps1 `
-  -DbPath "C:\RdpMon\RdpMon.db" `
-  -Type Attack `
-  -MinFails 50 `
-  -OutputFormat Html `
-  -ExportPath "brute_force_attacks.html"
-
-# Identify persistent attackers (attacking for >7 days)
-.\1st-RdpMonSecurityAnalyzer.ps1 `
-  -DbPath "C:\RdpMon\RdpMon.db" `
-  -From (Get-Date).AddDays(-30) `
-  -OutputFormat Json | 
-  ConvertFrom-Json |
-  Select-Object -ExpandProperty AddrResults |
-  Where-Object { $_.Duration.TotalDays -gt 7 }
-
-# Find mixed activity (both success and failures = compromised account?)
-.\1st-RdpMonSecurityAnalyzer.ps1 `
-  -DbPath "C:\RdpMon\RdpMon.db" `
-  -Type Legit `
-  -MinFails 1 `
-  -OutputFormat Csv `
-  -ExportPath "suspicious_accounts.csv"
-```
-
-### 10.3 Threat Intelligence
-
-```
-# Get top 10 attacker IPs
-.\1st-RdpMonSecurityAnalyzer.ps1 `
-  -DbPath "C:\RdpMon\RdpMon.db" `
-  -Type Attack `
-  -SortBy FailCount `
-  -Descending `
-  -Limit 10 `
-  -IncludeResolved
-
-# Export for threat intelligence platform
-.\1st-RdpMonSecurityAnalyzer.ps1 `
-  -DbPath "C:\RdpMon\RdpMon.db" `
-  -Type Attack `
-  -OutputFormat Json `
-  -ExportPath "threat_intel_export.json"
-```
-
-### 10.4 Compliance & Auditing
-
-```
-# 90-day audit trail
-.\1st-RdpMonSecurityAnalyzer.ps1 `
-  -DbPath "C:\RdpMon\RdpMon.db" `
-  -From (Get-Date).AddDays(-90) `
-  -OutputFormat Html `
-  -ExportPath "quarterly_audit.html"
-
-# Monthly report with auto-refresh
-.\1st-RdpMonSecurityAnalyzer.ps1 `
-  -DbPath "C:\RdpMon\RdpMon.db" `
-  -From (Get-Date).AddMonths(-1) `
-  -OutputFormat Html `
-  -ExportPath "monthly_report.html" `
-  -AutoRefreshInterval 300
-```
-
-### 10.5 Advanced Filtering
-
-```
-# Attacks in specific time window
-.\1st-RdpMonSecurityAnalyzer.ps1 `
-  -DbPath "C:\RdpMon\RdpMon.db" `
-  -From "2025-12-20 00:00:00" `
-  -To "2025-12-28 23:59:59" `
-  -Type Attack
-
-# Sort by duration (longest running attacks)
-.\1st-RdpMonSecurityAnalyzer.ps1 `
-  -DbPath "C:\RdpMon\RdpMon.db" `
-  -SortBy Duration `
-  -Descending `
-  -Limit 20
-
-# Limit to top 5 by success count
-.\1st-RdpMonSecurityAnalyzer.ps1 `
-  -DbPath "C:\RdpMon\RdpMon.db" `
-  -SortBy SuccessCount `
-  -Descending `
-  -Limit 5 `
-  -Type Legit
-```
-
-### 10.6 Database Troubleshooting
-
-```
-# Diagnose database issues
-.\1st-RdpMonSecurityAnalyzer.ps1 `
-  -DbPath "C:\RdpMon\RdpMon.db" `
-  -DebugMode
-
-# Emergency export from potentially corrupted database
-.\1st-RdpMonSecurityAnalyzer.ps1 `
-  -DbPath "C:\RdpMon\RdpMon.db" `
-  -ExportRawData `
-  -RawExportPath "emergency_backup.csv"
-
-# Repair corrupted database
-.\1st-RdpMonSecurityAnalyzer.ps1 `
-  -DbPath "C:\RdpMon\RdpMon.db" `
-  -RepairDatabase `
-  -RepairOutputPath "C:\Backups\RdpMon_Repaired.db"
-```
-
----
-
-## 11. Parameters Reference
-
-### 11.1 Database Parameters
-
-| Parameter | Type | Required | Description | Example |
-|-----------|------|----------|-------------|---------|
-| `DbPath` | String | **YES** | Path to RDPMon LiteDB database file | `"C:\RdpMon\RdpMon.db"` |
-| `LiteDbPath` | String | No | Custom path to LiteDB.dll or directory | `"C:\Libraries\LiteDB"` |
-| `LiteDbInstallPath` | String | No | Installation directory for auto-install | `"C:\LiteDB"` |
-| `AutoInstallLiteDb` | Switch | No | Download LiteDB from GitHub if missing | `-AutoInstallLiteDb` |
-| `LiteDbVersion` | String | No | Specific LiteDB version to install | `-LiteDbVersion "4.1.4"` |
-| `ForceLiteDbInstall` | Switch | No | Force reinstall even if exists | `-ForceLiteDbInstall` |
-| `SkipLiteDbInstall` | Switch | No | Skip auto-installation | `-SkipLiteDbInstall` |
-
-### 11.2 Filtering Parameters
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `Type` | String | "All" | Filter by type: All, Attack, Legit, Unknown |
-| `MinFails` | Int32 | 0 | Minimum failed attempts to include |
-| `From` | DateTime | MinValue | Start date filter (local time) |
-| `To` | DateTime | MaxValue | End date filter (local time) |
-| `Limit` | Int32 | MaxValue | Maximum results to return |
-| `IncludeResolved` | Switch | $false | Include DNS-resolved hostnames |
-
-### 11.3 Output Parameters
-
-| Parameter | Type | Default | Options |
-|-----------|------|---------|---------|
-| `OutputFormat` | String | "Table" | Table, List, Json, Csv, Xml, Html, Text, Yaml, Markdown, Object |
-| `ExportPath` | String | - | File path for output |
-| `SortBy` | String | "LastLocal" | IP, FailCount, SuccessCount, FirstLocal, LastLocal, Duration |
-| `Descending` | Switch | $false | Sort in reverse order |
-| `AutoRefreshInterval` | Int32 | 30 | HTML report refresh in seconds (5-3600) |
-| `HtmlTemplatePath` | String | - | Custom HTML template file |
-
-### 11.4 Debugging Parameters
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `DebugMode` | Switch | $false | Enable detailed debug logging |
-| `NoProgress` | Switch | $false | Disable progress bars |
-| `GitHubToken` | String | - | GitHub API token for higher rate limits |
-| `RepairDatabase` | Switch | $false | Attempt database repair |
-| `RepairOutputPath` | String | - | Output path for repaired database |
-| `ExportRawData` | Switch | $false | Export raw data from damaged DB |
-| `RawExportPath` | String | "RdpMon_RawExport.csv" | Output path for raw export |
-
----
-
-## 12. Output Formats
-
-### 12.1 Table Format (Default)
-
-```
-IP Address     Type     Failed  Success  Total  First Attempt           Last Attempt            Duration
-----------     ----     ------  -------  -----  --------------          ----------------        --------
-192.168.1.100  Attack   145     0        145    2025-12-15 08:30:00     2025-12-28 18:45:00     13d 10h
-10.0.0.50      Legit    5       12       17     2025-12-20 10:15:00     2025-12-28 14:20:00     8d 04h
-203.0.113.25   Attack   89      0        89     2025-12-18 14:22:00     2025-12-28 09:55:00     10d
-```
-
-### 12.2 JSON Format
-
-```
-{
-  "AddrResults": [
-    {
-      "IP": "192.168.1.100",
-      "Hostname": null,
-      "FailCount": 145,
-      "SuccessCount": 0,
-      "TotalAttempts": 145,
-      "FirstLocal": "2025-12-15T08:30:00",
-      "LastLocal": "2025-12-28T18:45:00",
-      "ConnectionType": "Attack",
-      "Duration": {
-        "Days": 13,
-        "Hours": 10,
-        "Minutes": 15,
-        "Seconds": 0,
-        "TotalDays": 13.427083,
-        "TotalHours": 322.25
+  "RdpAudit": {
+    "DatabasePath": "%ProgramData%\\RdpAudit\\rdpaudit.db",
+    "EnabledEventIds": [4624, 4625, 4634, 4648, 4688, 4720, 4723, 4724, 4740, 4769, 4771, 4776, 4954, 1149, 21, 23, 24, 25],
+    "AlertRules": {
+      "BruteForce": {
+        "IsEnabled": true,
+        "FailThreshold": 10,
+        "WindowSeconds": 600
+      },
+      "OffHoursLogin": {
+        "IsEnabled": true,
+        "WorkHoursStart": "08:00",
+        "WorkHoursEnd": "20:00",
+        "WorkDays": ["Monday","Tuesday","Wednesday","Thursday","Friday"],
+        "TimeZoneId": "UTC"
       }
+      // ... остальные правила
+    },
+    "AutoBlock": {
+      "IsEnabled": true,
+      "Providers": ["WindowsFirewall"],  // + "MikroTik" при настройке
+      "BlockTtlHours": 0                 // 0 = permanent
+    },
+    "Retention": {
+      "RawEventsDays": 90,
+      "AlertsDays": 180,
+      "AttackStatsDays": 365
+    },
+    "AbuseIpDb": {
+      "IsEnabled": false,
+      "ApiKeyDpapi": "",  // DPAPI-конверт
+      "Categories": [18, 22]
+    },
+    "MikroTik": {
+      "IsEnabled": false,
+      "Address": "",
+      "Port": 443,
+      "UsernameDpapi": "",  // DPAPI-конверт
+      "PasswordDpapi": "",  // DPAPI-конверт
+      "VerifyTls": true,
+      "AddressListName": "RdpAudit-Blocklist"
     }
-  ],
-  "SummaryStats": {
-    "TotalRecords": 145,
-    "UniqueIPs": 42,
-    "AttackCount": 28,
-    "LegitCount": 12,
-    "MixedCount": 2
+  },
+  "Serilog": {
+    "MinimumLevel": { "Default": "Information" },
+    "WriteTo": [
+      { "Name": "File", "Args": { "path": "%ProgramData%\\RdpAudit\\logs\\rdpaudit-.log", "rollingInterval": "Day" } },
+      { "Name": "EventLog", "Args": { "source": "RdpAudit", "logName": "Application" } }
+    ]
   }
 }
 ```
 
-### 12.3 CSV Format
+### 12.2. Переменные окружения
+
+Для переопределения конфигурации без редактирования файла (полезно для CI/CD и отладки):
 
 ```
-IP,Type,FailCount,SuccessCount,TotalAttempts,FirstLocal,LastLocal,Duration
-192.168.1.100,Attack,145,0,145,2025-12-15T08:30:00,2025-12-28T18:45:00,13.427083
-10.0.0.50,Legit,5,12,17,2025-12-20T10:15:00,2025-12-28T14:20:00,8.176389
-203.0.113.25,Attack,89,0,89,2025-12-18T14:22:00,2025-12-28T09:55:00,9.814167
-```
-
-### 12.4 HTML Format
-
-Features:
-- Responsive design with Tailwind CSS
-- Interactive Chart.js visualizations
-- Sortable data tables
-- Auto-refresh capability
-- Summary statistics
-- Mobile-friendly layout
-- Dark mode support
-- Real-time filtering
-
----
-
-## 13. Advanced Scenarios
-
-### 13.1 Automated Daily Security Reports
-
-```
-# Create scheduled task for daily reports
-$scriptPath = "C:\Scripts\1st-RdpMonSecurityAnalyzer.ps1"
-$reportPath = "C:\Reports\Daily-$(Get-Date -Format 'yyyyMMdd').html"
-
-$action = New-ScheduledTaskAction -Execute "PowerShell.exe" -Argument `
-  "-NoProfile -ExecutionPolicy Bypass -File `"$scriptPath`" " + `
-  "-DbPath `"C:\RdpMon\RdpMon.db`" " + `
-  "-OutputFormat Html " + `
-  "-ExportPath `"$reportPath`" " + `
-  "-AutoRefreshInterval 300"
-
-$trigger = New-ScheduledTaskTrigger -Daily -At "02:00"
-
-Register-ScheduledTask -TaskName "RDP Security Daily Report" `
-  -Action $action -Trigger $trigger -RunLevel Highest -Force
-
-Write-Host "Daily report task created - runs at 2:00 AM daily" -ForegroundColor Green
-```
-
-### 13.2 Real-Time Monitoring with Alerts
-
-```
-# Monitor for new attacks and trigger alerts
-function Start-RdpMonRealTimeMonitoring {
-    param(
-        [string]$DbPath,
-        [int]$AlertThreshold = 50,
-        [int]$CheckIntervalSeconds = 300
-    )
-    
-    $lastCheck = Get-Date
-    
-    while ($true) {
-        try {
-            # Get current data
-            $current = .\1st-RdpMonSecurityAnalyzer.ps1 `
-                -DbPath $DbPath `
-                -Type Attack `
-                -MinFails $AlertThreshold `
-                -OutputFormat Json | ConvertFrom-Json
-            
-            # Count critical attacks
-            $criticalCount = ($current.AddrResults | 
-                Where-Object { $_.FailCount -gt 100 }).Count
-            
-            if ($criticalCount -gt 0) {
-                # Send alert
-                $alertMessage = "ALERT: $criticalCount critical RDP attacks detected!"
-                Write-Host $alertMessage -ForegroundColor Red
-                
-                # Could integrate with email/Teams/Slack here
-                # Send-AlertToTeams -Message $alertMessage
-                
-                # Log to event log
-                Write-EventLog -LogName "Application" `
-                    -Source "RDPMonAnalyzer" `
-                    -EventId 1001 `
-                    -Message $alertMessage
-            }
-            
-            # Wait for next check
-            Start-Sleep -Seconds $CheckIntervalSeconds
-            
-        } catch {
-            Write-Warning "Monitoring error: $_"
-            Start-Sleep -Seconds 60
-        }
-    }
-}
-
-# Usage: Run in background
-# Start-RdpMonRealTimeMonitoring -DbPath "C:\RdpMon\RdpMon.db" -AlertThreshold 50
-```
-
-### 13.3 SIEM Integration (Splunk/ELK)
-
-```
-# Export data to Splunk HEC
-function Send-RdpMonToSplunk {
-    param(
-        [string]$DbPath,
-        [string]$SplunkHecUrl,
-        [string]$SplunkToken
-    )
-    
-    $data = .\1st-RdpMonSecurityAnalyzer.ps1 `
-        -DbPath $DbPath `
-        -OutputFormat Json | ConvertFrom-Json
-    
-    $headers = @{
-        "Authorization" = "Splunk $SplunkToken"
-        "Content-Type" = "application/json"
-    }
-    
-    foreach ($record in $data.AddrResults) {
-        $event = @{
-            event = $record
-            source = "rdpmon"
-            sourcetype = "rdp:attempt"
-            host = $env:COMPUTERNAME
-            time = [int](Get-Date -UFormat %s)
-        } | ConvertTo-Json
-        
-        try {
-            Invoke-RestMethod -Uri $SplunkHecUrl -Method Post `
-                -Headers $headers -Body $event -ErrorAction Stop
-        } catch {
-            Write-Warning "Failed to send to Splunk: $_"
-        }
-    }
-    
-    Write-Host "Sent $($data.AddrResults.Count) records to Splunk" -ForegroundColor Green
-}
-
-# Usage
-# Send-RdpMonToSplunk -DbPath "C:\RdpMon\RdpMon.db" `
-#   -SplunkHecUrl "https://splunk.company.com:8088/services/collector" `
-#   -SplunkToken "your-token-here"
-```
-
-### 13.4 Threat Intelligence Correlation
-
-```
-# Cross-reference with external threat intelligence
-function Get-ThreatIntelligence {
-    param(
-        [string]$IpAddress,
-        [string]$AbuseIpDbToken
-    )
-    
-    # Query AbuseIPDB for IP reputation
-    $uri = "https://api.abuseipdb.com/api/v2/check"
-    
-    $body = @{
-        ipAddress = $IpAddress
-        maxAgeInDays = 90
-    }
-    
-    $headers = @{
-        "Key" = $AbuseIpDbToken
-        "Accept" = "application/json"
-    }
-    
-    try {
-        $response = Invoke-RestMethod -Uri $uri -Method Get `
-            -Body $body -Headers $headers
-        
-        return @{
-            IpAddress = $IpAddress
-            AbuseScore = $response.data.abuseConfidenceScore
-            TotalReports = $response.data.totalReports
-            ReportCategories = $response.data.reports.categories
-        }
-    } catch {
-        Write-Warning "Failed to query threat intelligence: $_"
-        return $null
-    }
-}
-
-# Correlate RDPMon attacks with threat intelligence
-function Correlate-WithThreatIntel {
-    param(
-        [string]$DbPath,
-        [string]$AbuseIpDbToken
-    )
-    
-    $attacks = .\1st-RdpMonSecurityAnalyzer.ps1 `
-        -DbPath $DbPath `
-        -Type Attack `
-        -MinFails 20 `
-        -OutputFormat Json | ConvertFrom-Json
-    
-    $results = @()
-    
-    foreach ($attack in $attacks.AddrResults) {
-        $intel = Get-ThreatIntelligence -IpAddress $attack.IP `
-            -AbuseIpDbToken $AbuseIpDbToken
-        
-        $results += @{
-            IP = $attack.IP
-            LocalFailures = $attack.FailCount
-            ExternalReports = $intel.TotalReports
-            AbuseScore = $intel.AbuseScore
-            RiskLevel = if ($intel.AbuseScore -gt 75) { "CRITICAL" } `
-                       elseif ($intel.AbuseScore -gt 50) { "HIGH" } `
-                       else { "MEDIUM" }
-        }
-    }
-    
-    return $results | Sort-Object -Property AbuseScore -Descending
-}
-```
-
-### 13.5 Multi-Server Aggregation
-
-```
-# Aggregate RDP monitoring data from multiple servers
-function Aggregate-RdpMonServers {
-    param(
-        [string[]]$ServerNames,
-        [string]$OutputPath
-    )
-    
-    $allData = @()
-    
-    foreach ($server in $ServerNames) {
-        Write-Host "Collecting from $server..." -ForegroundColor Cyan
-        
-        try {
-            # Copy remote database locally
-            $remoteDb = "\\$server\C$\RdpMon\RdpMon.db"
-            $localDb = "$env:TEMP\RdpMon_$server.db"
-            
-            Copy-Item -Path $remoteDb -Destination $localDb -Force
-            
-            # Analyze remote data
-            $serverData = .\1st-RdpMonSecurityAnalyzer.ps1 `
-                -DbPath $localDb `
-                -OutputFormat Json | ConvertFrom-Json
-            
-            # Add server identifier
-            $serverData.AddrResults | ForEach-Object {
-                $_ | Add-Member -NotePropertyName "SourceServer" -NotePropertyValue $server
-            }
-            
-            $allData += $serverData.AddrResults
-            
-        } catch {
-            Write-Warning "Failed to collect from $server : $_"
-        }
-    }
-    
-    # Export aggregated data
-    $allData | Sort-Object -Property FailCount -Descending |
-        Export-Csv -Path $OutputPath -NoTypeInformation -Force
-    
-    Write-Host "Aggregated data from $($ServerNames.Count) servers" -ForegroundColor Green
-    Write-Host "Results saved to: $OutputPath" -ForegroundColor Green
-}
-
-# Usage
-# Aggregate-RdpMonServers -ServerNames @("SRV01", "SRV02", "SRV03") `
-#   -OutputPath "C:\Reports\aggregated_rdp_attacks.csv"
+RDPAUDIT_RdpAudit__LogLevel=Debug
+RDPAUDIT_RdpAudit__AlertRules__BruteForce__FailThreshold=5
 ```
 
 ---
 
-## 14. Troubleshooting & Debugging
+## 13. Отладка и диагностика
 
-### 14.1 Common Issues & Solutions
+### 13.1. Консольный режим
 
-#### Issue: "LiteDB assembly not found"
-
-**Cause**: LiteDB.dll is not installed or not found in search paths
-
-**Solutions**:
-
-```
-# Solution 1: Auto-install from GitHub
-.\1st-RdpMonSecurityAnalyzer.ps1 `
-  -DbPath "C:\RdpMon\RdpMon.db" `
-  -AutoInstallLiteDb `
-  -LiteDbVersion "4.1.4"
-
-# Solution 2: Specify custom path
-.\1st-RdpMonSecurityAnalyzer.ps1 `
-  -DbPath "C:\RdpMon\RdpMon.db" `
-  -LiteDbPath "C:\Libraries\LiteDB\LiteDB.dll"
-
-# Solution 3: Manual download and install
-$tempFile = "$env:TEMP\LiteDB.4.1.4.nupkg"
-Invoke-WebRequest -Uri "https://www.nuget.org/api/v2/package/LiteDB/4.1.4" `
-  -OutFile $tempFile
-Expand-Archive -Path $tempFile -DestinationPath "$PSScriptRoot\LiteDB" -Force
-```
-
-#### Issue: "Database file not found"
-
-**Cause**: RDPMon database path is incorrect
-
-**Solutions**:
-
-```
-# Find RDPMon database location
-Get-ChildItem -Path "C:\" -Name "RdpMon.db" -Recurse -ErrorAction SilentlyContinue
-
-# Check common installation paths
-Test-Path "C:\RdpMon\RdpMon.db"
-Test-Path "C:\Program Files\Cameyo\RdpMon.db"
-Test-Path "$env:APPDATA\Cameyo\RdpMon.db"
-```
-
-#### Issue: "Cannot open database - corrupted"
-
-**Cause**: Database file is corrupted or locked
-
-**Solutions**:
-
-```
-# Check if file is locked
-Get-Process | Where-Object { $_.Handles -contains "RdpMon.db" }
-
-# Stop RDPMon service if running
-Stop-Service -Name "CameyoRdpMon" -Force -ErrorAction SilentlyContinue
-
-# Attempt repair
-.\1st-RdpMonSecurityAnalyzer.ps1 `
-  -DbPath "C:\RdpMon\RdpMon.db" `
-  -RepairDatabase `
-  -RepairOutputPath "C:\RdpMon\RdpMon_Repaired.db"
-
-# Or emergency export
-.\1st-RdpMonSecurityAnalyzer.ps1 `
-  -DbPath "C:\RdpMon\RdpMon.db" `
-  -ExportRawData `
-  -RawExportPath "emergency_data.csv"
-```
-
-#### Issue: "Execution policy prevents running"
-
-**Cause**: PowerShell execution policy blocks script execution
-
-**Solutions**:
-
-```
-# Check current policy
-Get-ExecutionPolicy -Scope CurrentUser
-
-# Set user-level policy
-Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser -Force
-
-# Or bypass for single command
-powershell -ExecutionPolicy Bypass -File "1st-RdpMonSecurityAnalyzer.ps1" `
-  -DbPath "C:\RdpMon\RdpMon.db"
-```
-
-### 14.2 Debug Mode Detailed Output
-
-```
-# Enable comprehensive debugging
-.\1st-RdpMonSecurityAnalyzer.ps1 `
-  -DbPath "C:\RdpMon\RdpMon.db" `
-  -DebugMode `
-  -OutputFormat Html `
-  -ExportPath "debug_report.html"
-
-# This will show:
-# - Script initialization details
-# - LiteDB loading progress
-# - Database connection info
-# - Data extraction steps
-# - Filter application
-# - Output generation
-# - Execution timing for each phase
-```
-
-## 14.3 Health Check Script
-
-```
-function Test-RdpMonAnalyzerHealth {
-    Write-Host "🔍 RDP Monitor Analyzer Health Check" -ForegroundColor Cyan
-    Write-Host "=" * 60
-    
-    $psVersion = $PSVersionTable.PSVersion
-    Write-Host "PowerShell Version: $psVersion" -ForegroundColor $(
-        if ($psVersion -ge "7.5") { "Green" } else { "Red" }
-    )
-    
-    $scriptExists = Test-Path "1st-RdpMonSecurityAnalyzer.ps1"
-    Write-Host "Script File: $(if($scriptExists) { '✓' } else { '✗' })" -ForegroundColor $(
-        if ($scriptExists) { "Green" } else { "Red" }
-    )
-    
-    $dbExists = Test-Path "C:\RdpMon\RdpMon.db"
-    Write-Host "RDPMon Database: $(if($dbExists) { '✓' } else { '✗' })" -ForegroundColor $(
-        if ($dbExists) { "Green" } else { "Red" }
-    )
-    
-    try {
-        $null = Add-Type -AssemblyName "LiteDB" -ErrorAction Stop
-        Write-Host "LiteDB Assembly: ✓" -ForegroundColor Green
-    } catch {
-        Write-Host "LiteDB Assembly: ✗ (can auto-install)" -ForegroundColor Yellow
-    }
-    
-    $policy = Get-ExecutionPolicy -Scope CurrentUser
-    Write-Host "Execution Policy: $policy" -ForegroundColor $(
-        if ($policy -in @("RemoteSigned", "Unrestricted", "Bypass")) { "Green" } else { "Red" }
-    )
-    
-    try {
-        $testFile = "$env:TEMP\rdpmon_test_$([guid]::NewGuid()).tmp"
-        New-Item -Path $testFile -Force | Out-Null
-        Remove-Item -Path $testFile -Force
-        Write-Host "Write Permissions: ✓" -ForegroundColor Green
-    } catch {
-        Write-Host "Write Permissions: ✗" -ForegroundColor Red
-    }
-    
-    Write-Host "=" * 60
-    Write-Host "Health check complete." -ForegroundColor Cyan
-}
-
-Test-RdpMonAnalyzerHealth
-```
-
-## 15. Performance Optimization
-
-### 15.1 Large Database Handling
-
-```
-function Process-LargeDatabase-ByMonth {
-    param([string]$DbPath)
-    
-    $months = 12
-    
-    for ($i = 0; $i -lt $months; $i++) {
-        $startDate = (Get-Date).AddMonths(-$i).AddDays(-30)
-        $endDate = (Get-Date).AddMonths(-$i)
-        
-        Write-Host "Processing $($startDate.ToString('MMMM yyyy'))..." -ForegroundColor Cyan
-        
-        .\1st-RdpMonSecurityAnalyzer.ps1 `
-            -DbPath $DbPath `
-            -From $startDate `
-            -To $endDate `
-            -OutputFormat Csv `
-            -ExportPath "rdpmon_$($startDate.ToString('yyyyMM')).csv"
-    }
-}
-
-function Get-TopAttackers {
-    param([string]$DbPath, [int]$Count = 100)
-    
-    .\1st-RdpMonSecurityAnalyzer.ps1 `
-        -DbPath $DbPath `
-        -Type Attack `
-        -MinFails 50 `
-        -SortBy FailCount `
-        -Descending `
-        -Limit $Count `
-        -OutputFormat Json | ConvertFrom-Json
-}
-
-function Process-MultipleServers-Parallel {
-    param(
-        [string[]]$Servers,
-        [string]$DbPath = "C:\RdpMon\RdpMon.db"
-    )
-    
-    $scriptBlock = {
-        param($Server, $DbPath, $ScriptPath)
-        
-        $remoteDb = "\\$Server\C$\$(($DbPath -split '\\')[-1])"
-        
-        if (Test-Path $remoteDb) {
-            & $ScriptPath -DbPath $remoteDb -OutputFormat Json
-        }
-    }
-    
-    $results = Invoke-Command -ComputerName $Servers `
-        -ScriptBlock $scriptBlock `
-        -ArgumentList @($null, $DbPath, (Get-Location)) `
-        -ThrottleLimit 10
-    
-    return $results
-}
-```
-
-### 15.2 Memory Management
-
-```
-function Monitor-ScriptMemory {
-    param([string]$DbPath)
-    
-    $process = Get-Process -Id $PID
-    $initialMemory = $process.WorkingSet / 1MB
-    
-    Write-Host "Initial Memory: $initialMemory MB" -ForegroundColor Gray
-    
-    $result = .\1st-RdpMonSecurityAnalyzer.ps1 `
-        -DbPath $DbPath `
-        -OutputFormat Json | ConvertFrom-Json
-    
-    $process = Get-Process -Id $PID
-    $finalMemory = $process.WorkingSet / 1MB
-    $used = $finalMemory - $initialMemory
-    
-    Write-Host "Final Memory: $finalMemory MB" -ForegroundColor Gray
-    Write-Host "Memory Used: $used MB" -ForegroundColor Green
-    
-    return $result
-}
-
-function Process-AndCleanup {
-    param([string]$DbPath)
-    
-    try {
-        $data = .\1st-RdpMonSecurityAnalyzer.ps1 `
-            -DbPath $DbPath `
-            -OutputFormat Json | ConvertFrom-Json
-        
-        return $data
-    } finally {
-        [gc]::Collect()
-        [gc]::WaitForPendingFinalizers()
-    }
-}
-```
-
-### 15.3 Network Optimization
-
-```
-function Analyze-RemoteRdpMon {
-    param(
-        [string]$ComputerName,
-        [string]$RemoteDbPath = "C:\RdpMon\RdpMon.db"
-    )
-    
-    $cacheDir = "$env:TEMP\RdpMonCache"
-    New-Item -ItemType Directory -Path $cacheDir -Force | Out-Null
-    
-    $cacheFile = Join-Path $cacheDir "RdpMon_$ComputerName.db"
-    $remoteFile = "\\$ComputerName\$(($RemoteDbPath -split ':\\').Replace('\', '$'))"[1]
-    
-    if (-not (Test-Path $cacheFile) -or 
-        ((Get-Item $cacheFile).LastWriteTime -lt (Get-Date).AddHours(-1))) {
-        
-        Write-Host "Updating cache from $ComputerName..." -ForegroundColor Cyan
-        Copy-Item -Path $remoteFile -Destination $cacheFile -Force
-    }
-    
-    .\1st-RdpMonSecurityAnalyzer.ps1 `
-        -DbPath $cacheFile `
-        -OutputFormat Json | ConvertFrom-Json
-}
-```
-
----
-
-## 16. Security Considerations
-
-### 16.1 Data Protection
-
-```
-function Protect-AnalysisReport {
-    param(
-        [string]$ReportPath,
-        [string[]]$AdminGroupMembers
-    )
-    
-    icacls $ReportPath /inheritance:r
-    icacls $ReportPath /grant:r "Administrators:(F)"
-    
-    foreach ($user in $AdminGroupMembers) {
-        icacls $ReportPath /grant:r "$user:(F)"
-    }
-    
-    Write-Host "Report permissions secured: $ReportPath" -ForegroundColor Green
-}
-
-function Export-EncryptedReport {
-    param(
-        [string]$DbPath,
-        [string]$OutputPath,
-        [securestring]$EncryptionKey
-    )
-    
-    $report = .\1st-RdpMonSecurityAnalyzer.ps1 `
-        -DbPath $DbPath `
-        -OutputFormat Json -ExportPath $OutputPath
-    
-    $plainText = Get-Content -Path $OutputPath -Raw
-    $encryptedBytes = ConvertTo-SecureString -String $plainText -AsPlainText -Force
-    $encryptedContent = $encryptedBytes | ConvertFrom-SecureString -SecureKey $EncryptionKey
-    
-    $encryptedContent | Out-File -FilePath "$OutputPath.encrypted" -Force
-    Remove-Item -Path $OutputPath -Force
-    
-    Write-Host "Report encrypted: $OutputPath.encrypted" -ForegroundColor Green
-}
-```
-
-### 16.2 Audit Logging
-
-```
-function Enable-RdpMonAuditLogging {
-    if (-not [System.Diagnostics.EventLog]::SourceExists("RDPMonAnalyzer")) {
-        New-EventLog -LogName "Application" -Source "RDPMonAnalyzer"
-    }
-    
-    Write-Host "Audit logging enabled" -ForegroundColor Green
-}
-
-function Log-RdpMonExecution {
-    param(
-        [string]$DbPath,
-        [string]$OutputFormat,
-        [string]$ExportPath,
-        [hashtable]$Filters
-    )
-    
-    $message = @"
-RDPMon Analysis Execution
-Database: $DbPath
-Format: $OutputFormat
-Export: $ExportPath
-Filters: $($Filters | ConvertTo-Json -Compress)
-Timestamp: $(Get-Date -Format o)
-User: $env:USERNAME
-Computer: $env:COMPUTERNAME
-"@
-    
-    Write-EventLog -LogName "Application" -Source "RDPMonAnalyzer" `
-        -EventId 1000 -Message $message -EntryType Information
-}
-```
-
-### 16.3 Access Control
-
-```
-function Set-RdpMonExecutionPolicy {
-    param(
-        [string[]]$AuthorizedUsers,
-        [string]$ScriptPath
-    )
-    
-    $allowedAccounts = $AuthorizedUsers | ForEach-Object { "BUILTIN\$_" }
-    
-    $acl = Get-Acl -Path $ScriptPath
-    $acl.SetAccessRuleProtection($true, $false)
-    
-    foreach ($account in $allowedAccounts) {
-        $rule = New-Object System.Security.AccessControl.FileSystemAccessRule(
-            $account, "ReadAndExecute", "Allow"
-        )
-        $acl.AddAccessRule($rule)
-    }
-    
-    Set-Acl -Path $ScriptPath -AclObject $acl
-    
-    Write-Host "Execution policy set for: $($allowedAccounts -join ', ')" -ForegroundColor Green
-}
-```
-
----
-
-## 17. Contributing
-
-### 17.1 Development Guidelines
-
-```
-git clone https://github.com/paulmann/RDPAudit.git
-cd 1st-RDPMon
-
-git checkout -b feature/your-feature-name
-
-.\1st-RdpMonSecurityAnalyzer.ps1 -DbPath "test_database.db" -DebugMode
-```
-
-### 17.2 Testing Requirements
-
-- Test with various database sizes (small, medium, large)
-- Verify all output formats work correctly
-- Test with corrupted database scenarios
-- Validate parameter combinations
-- Check memory usage and performance
-
-### 17.3 Code Quality Standards
-
-- Follow PowerShell best practices
-- Use proper error handling with try/catch
-- Include descriptive comments
-- Maintain function documentation
-- Use consistent naming conventions
-
-### 17.4 Submission Process
-
-1. Fork the repository
-2. Create a feature branch
-3. Make your improvements
-4. Test thoroughly
-5. Submit a pull request with detailed description
-
----
-
-## 18. License & Acknowledgments
-
-### 18.1 License
-
-This project is licensed under the **MIT License**.
-
-**MIT License Summary:**
-- ✅ Commercial use permitted
-- ✅ Modification allowed
-- ✅ Distribution permitted
-- ✅ Private use allowed
-- ⚠️ Include license in distributions
-- ⚠️ Include copyright notice
-
-### 18.2 Copyright
-
-Copyright © 2025 Mikhail Deynekin. All rights reserved.
-
-**Author**: Mikhail Deynekin
-- Email: [m@deynekin.com](mailto:m@deynekin.com)
-- Website: [https://deynekin.com](https://deynekin.com)
-- GitHub: [https://github.com/paulmann](https://github.com/paulmann)
-
-### 18.3 Acknowledgments
-
-- **Cameyo** - For the RDPMon monitoring solution
-- **LiteDB Community** - For the lightweight database engine
-- **PowerShell Team** - For the powerful scripting platform
-- **Security Community** - For threat intelligence and best practices
-
-### 18.4 Support & Documentation
-
-- **GitHub Repository**: https://github.com/paulmann/RDPAudit
-- **Issues & Support**: https://github.com/paulmann/RDPAudit/issues
-- **Related Projects**:
-  - [Get-Windows-Security-Events-By-IP](https://github.com/paulmann/Get-Windows-Security-Events-By-IP)
-  - [sr-search-replace](https://github.com/paulmann/sr-search-replace)
-
----
-
-## 🚀 Quick Start & Deployment
-
-Get started in under a minute. This example uses the essential parameters for a security audit.
+При запуске с подключённым отладчиком (`Debugger.IsAttached`) сервис работает как **консольное приложение**, а не Windows Service. Это позволяет прикрепить VS/Rider без установки сервиса:
 
 ```powershell
-# Download and execute the security analyzer
-Invoke-WebRequest -Uri "https://raw.githubusercontent.com/paulmann/RDPAudit/main/1st-RdpMonSecurityAnalyzer.ps1" `
-    -OutFile "1st-RdpMonSecurityAnalyzer.ps1"
-
-# Enable script execution (if needed)
-Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser -Force
-
-# Run a comprehensive analysis with HTML report
-.\1st-RdpMonSecurityAnalyzer.ps1 `
-    -DbPath "C:\Logs\RdpMon.db" `
-    -AutoInstallLiteDb `
-    -OutputFormat Html `
-    -ExportPath "Rdp_Security_Audit_Report.html"
+# Запустить как консоль (без установки сервиса)
+cd src\RdpAudit.Service
+dotnet run --configuration Debug
 ```
 
-> **Note:** Run PowerShell as Administrator for full system access. Use `-Help` parameter to see all advanced options.
+### 13.2. Логи Serilog
+
+Логи записываются в:
+- **Файл:** `%ProgramData%\RdpAudit\logs\rdpaudit-<date>.log` (ротация по дням)
+- **Windows Event Log:** `Application`, источник `RdpAudit`
+
+Уровень `Debug` включается через переменную окружения:
+```powershell
+$env:RDPAUDIT_RdpAudit__LogLevel = "Debug"
+```
+
+### 13.3. SQLite-база напрямую
+
+```powershell
+# Открыть в DB Browser for SQLite
+& "C:\Program Files\DB Browser for SQLite\DB Browser for SQLite.exe" `
+  "$env:ProgramData\RdpAudit\rdpaudit.db"
+```
+
+Полезные запросы:
+```sql
+-- Последние 100 событий
+SELECT * FROM RawEvents ORDER BY TimeUtc DESC LIMIT 100;
+
+-- Активные блокировки
+SELECT * FROM ActiveBlocks WHERE Status = 'Active';
+
+-- Топ атакующих IP
+SELECT SourceIp, SUM(FailCount) AS Fails
+FROM AttackStats GROUP BY SourceIp ORDER BY Fails DESC LIMIT 20;
+```
+
+### 13.4. Вкладка Diagnostics
+
+GUI-инструмент в Configurator показывает:
+- Живые счётчики событий в секунду
+- Статус каждого Background Worker
+- Состояние IPC-соединения
+- Размер и фрагментацию БД
+- Пинг внешних API
 
 ---
 
-## ⭐ Support the Project
+## 14. Сборка и тестирование
 
-If this tool has made your security auditing easier or helped secure your systems, please consider giving it a star on GitHub. It helps others discover the project and motivates further development.
+### 14.1. Сборка
 
-[![GitHub Stars](https://img.shields.io/github/stars/paulmann/RDPAudit?style=social)](https://github.com/paulmann/RDPAudit/stargazers)
+```powershell
+# Полная сборка
+dotnet build RdpAudit.sln -c Release
+
+# Только Service
+dotnet build src/RdpAudit.Service/RdpAudit.Service.csproj -c Release
+```
+
+### 14.2. Тесты
+
+```powershell
+# Все тесты
+dotnet test RdpAudit.sln -c Release
+
+# С покрытием
+dotnet test RdpAudit.sln -c Release --collect:"XPlat Code Coverage"
+
+# Только service-тесты
+dotnet test tests/RdpAudit.Service.Tests/RdpAudit.Service.Tests.csproj
+```
+
+Каждый тест правила тревоги проверяет:
+1. Граничные условия порога срабатывания
+2. Корректное игнорирование IP из whitelist
+3. Нулевое выделение памяти на хипе (`GC.GetAllocatedBytesForCurrentThread` delta == 0 на 10k итерациях)
+
+### 14.3. Publish
+
+```powershell
+# Публикует Service и Configurator в ./publish/
+./publish.ps1
+```
+
+Результат:
+```
+publish/
+├── Service/     — все файлы RdpAudit.Service (SelfContained=false, win-x64)
+└── Configurator/ — все файлы RdpAudit.Configurator
+```
 
 ---
 
-## 📬 Connect & Contribute
+## 15. Устранение неисправностей
 
-We welcome feedback, questions, and contributions to make this tool better for everyone.
+Подробные решения типовых проблем: [`docs/91-troubleshooting.md`](docs/91-troubleshooting.md)
 
-| Channel | Purpose | Link |
-| :--- | :--- | :--- |
-| **🐛 Issues** | Report bugs, request features, or ask questions. | [GitHub Issues](https://github.com/paulmann/RDPAudit/issues) |
-| **📧 Email** | For direct, private, or sensitive inquiries. | [m@deynekin.com](mailto:m@deynekin.com) |
-| **💡 Suggestion** | Have an idea? Open an issue with the `enhancement` label. | [Open Suggestion](https://github.com/paulmann/RDPAudit/issues/new?labels=enhancement) |
+| Симптом | Первый шаг диагностики |
+|---------|----------------------|
+| Служба не стартует | `sc.exe query RdpAudit` → `eventvwr.msc` → Application log, источник RdpAudit |
+| Нет событий в Live Events | Вкладка Prerequisites → проверить статус аудита |
+| GUI не подключается к сервису | Убедиться, что сервис запущен; проверить ACL пайпа: `Get-Acl \\.\pipe\RdpAuditService` |
+| `sc.exe error 1639` | Путь к exe содержит пробелы — заключить в кавычки |
+| AbuseIPDB HTTP 429 | Rate-limit исчерпан; счётчик сбросится в полночь UTC |
+| MikroTik TLS error | Установить `VerifyTls: false` для self-signed или импортировать сертификат |
+| `SQLITE_BUSY` в логах | Нормально при кратковременной конкуренции; exponential backoff срабатывает автоматически |
+| Политика аудита показывает `?` | Запустить `auditpol /get /category:*` от SYSTEM; вкладка Audit Policy → Apply |
+| ProgramData ACL проблемы | `icacls "%ProgramData%\RdpAudit" /grant "NT AUTHORITY\SYSTEM:(OI)(CI)F"` |
 
-**Before reporting an issue**, please check the existing issues to avoid duplicates.
+Руководство по ручной валидации на Windows-хосте перед деплоем: [`docs/90-windows-validation.md`](docs/90-windows-validation.md)
 
 ---
 
-**v1.0.0** • **December 2025** • **`Enterprise-Ready`** • **`Active`**  
-**Transform RDP Monitoring into Actionable Security Intelligence.**
+## 16. Дорожная карта (v2.0 → v3.0)
 
-© 2025 Paulmann. This project is released under its respective [License](LICENSE).
+| Функция | Статус |
+|---------|--------|
+| ETW-провайдер (`OpenTrace`/`ProcessTrace`) вместо `EventLogWatcher` | Запланировано v3.0 |
+| Прямой парсинг EVTX через `Span<byte>` (bypass XML) | Запланировано v3.0 |
+| Lock-free MPMC Ring Buffer (10M events/sec) | Запланировано v3.0 |
+| SIMD IPv4/CIDR matching (`Sse42`, `Avx2`) | Запланировано v3.0 |
+| Zero-alloc нормализация (`ref struct` парсеры) | Запланировано v3.0 |
+| NDIS LWF фильтр для перехвата MS-RDPBCGR/RDPEUDP на уровне сети | Исследование |
+| Web UI (Blazor Server) как альтернатива WinForms | Запланировано v3.0 |
+| Интеграция Elastic/OpenSearch для SIEM | Roadmap |
+| Multi-server aggregation через central collector | Roadmap |
+
+---
+
+## 17. Лицензия и автор
+
+**Лицензия:** [MIT License](LICENSE) — свободное использование, модификация и распространение с сохранением copyright-нотиса.
+
+**Автор:** Mikhail Deynekin
+- 🌐 Website: [deynekin.com](https://deynekin.com)
+- 📧 Email: [Mikhail@Deynekin.com](mailto:Mikhail@Deynekin.com)
+- 🐙 GitHub: [github.com/paulmann](https://github.com/paulmann)
+
+**Репозиторий:** [github.com/paulmann/RDPAudit](https://github.com/paulmann/RDPAudit)
+
+**Сопутствующие ресурсы:**
+- [Техническая спецификация v1.0](https://github.com/paulmann/1st-RDPMon/wiki/RdpAudit-Service-%E2%80%90-Technical-Specification-v1.0)
+- [Техническая спецификация v2.0](https://github.com/paulmann/1st-RDPMon/wiki/RdpAudit-Service-%E2%80%90-Technical-Specification-v2.0)
+- [Issues & Feature Requests](https://github.com/paulmann/RDPAudit/issues)
+
+---
+
+> © 2025–2026 Mikhail Deynekin. Released under the [MIT License](LICENSE).
