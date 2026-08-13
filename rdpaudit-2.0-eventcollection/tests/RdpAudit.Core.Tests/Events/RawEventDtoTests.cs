@@ -3,9 +3,10 @@
 // File   : RawEventDtoTests.cs
 // Project: RdpAudit.Core.Tests (RdpAudit.Core.Tests.Events)
 // Purpose: Contract tests for RawEventDto: the v1.0 four-field object-initialiser must keep
-//          working (backward compatibility) and every new v2.0 field must default to a safe
-//          "not set" value so partial constructions cannot leak stale correlation ids into
-//          persisted rows.
+//          working (backward compatibility) and every new v2.0/v2.2 field must default to a
+//          safe "not set" value so partial constructions cannot leak stale correlation ids
+//          into persisted rows. Also covers BookmarkXml round-trip semantics used by
+//          EventProcessorWorker's unified-commit path.
 // Depends: xUnit, RdpAudit.Core.Events
 // Extends: Add a coverage row here whenever a new nullable/defaulted field is introduced.
 
@@ -48,10 +49,42 @@ public sealed class RawEventDtoTests
 		Assert.Equal(0, dto.SourceIpAddressFamily);
 		Assert.Equal(0, dto.SourceIpConfidence);
 
+		// v2.2 field: bookmark must default to null so processors can distinguish
+		// "no bookmark captured" (skip unified-commit path) from "empty bookmark"
+		// (a bug — EventLogWatcher never produces an empty string).
+		Assert.Null(dto.BookmarkXml);
+
 		// v1.0 optional fields still default the same way.
 		Assert.Null(dto.SourceIp);
 		Assert.Null(dto.UserName);
 		Assert.Null(dto.Domain);
+	}
+
+	[Fact]
+	public void BookmarkXml_IsRoundTrippableViaSetter()
+	{
+		// The bookmark XML is what EventLogWatcher.Bookmark serialises to. Its exact
+		// shape is opaque to the processor — it is passed through verbatim to the
+		// BookmarkStore. This test just proves the property is a plain settable string,
+		// preserving whatever bytes the collector captured.
+		const string bookmark =
+			"<BookmarkList><Bookmark Channel='Security' RecordId='9876' IsCurrent='true'/></BookmarkList>";
+
+		RawEventDto dto = new()
+		{
+			EventId = 4624,
+			Channel = "Security",
+			TimeUtc = DateTime.UtcNow,
+			BookmarkXml = bookmark,
+		};
+
+		Assert.Equal(bookmark, dto.BookmarkXml);
+
+		// Same DTO must accept a fresh bookmark (later event on same channel replaces
+		// the earlier one during processor batch-collection).
+		dto.BookmarkXml =
+			"<BookmarkList><Bookmark Channel='Security' RecordId='9877' IsCurrent='true'/></BookmarkList>";
+		Assert.Contains("9877", dto.BookmarkXml);
 	}
 
 	[Fact]
@@ -79,6 +112,7 @@ public sealed class RawEventDtoTests
 			SourceIpBinary = ip,
 			SourceIpAddressFamily = 4,
 			SourceIpConfidence = 100,
+			BookmarkXml = "<BookmarkList/>",
 		};
 
 		Assert.Equal(activityId, dto.ActivityId);
@@ -90,5 +124,6 @@ public sealed class RawEventDtoTests
 		Assert.Equal(16, dto.SourceIpBinary!.Length);
 		Assert.Equal(4, dto.SourceIpAddressFamily);
 		Assert.Equal(100, dto.SourceIpConfidence);
+		Assert.Equal("<BookmarkList/>", dto.BookmarkXml);
 	}
 }
