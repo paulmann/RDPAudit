@@ -280,10 +280,10 @@ public static class Program
 		services.AddSingleton<ServiceMetrics>();
 
 		// v2 event-collection composition. The IEventPipe adapter reuses the same underlying
-		// ring-buffer instance that lives inside EventChannel, so the legacy EventProcessorWorker
-		// (still reading through EventChannel directly) and the new EventCollectorHostedWorker
-		// (writing through IEventPipe) share a single physical transport — no duplication, no
-		// dropped pipeline hop.
+		// ring-buffer instance that lives inside EventChannel, so every hosted worker — the
+		// EventCollectorHostedWorker producer, the SecurityBackfillWorker producer (iter16), and
+		// the EventProcessorWorker consumer (iter17) — shares a single physical transport with
+		// no duplication, no dropped pipeline hop, and a semaphore-backed wake on every write.
 		services.AddSingleton<ChannelHealthPolicy>();
 		services.AddSingleton<IEventPipe>(sp =>
 			new RingBufferEventPipe(sp.GetRequiredService<EventChannel>()));

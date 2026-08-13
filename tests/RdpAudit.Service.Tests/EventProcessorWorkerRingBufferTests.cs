@@ -1,9 +1,13 @@
 /* Project: RDPAudit 2.0 | Module: RdpAudit.Service.Tests.EventProcessor | Author: Mikhail Deynekin | Site: Deynekin.com | Email: Mikhail@Deynekin.com */
-// Version: 2.0.2
+// Version: 2.1.0
 
 // File:    tests/RdpAudit.Service.Tests/EventProcessorWorkerRingBufferTests.cs
 // Module:  RdpAudit.Service.Tests
 // Purpose: Validates EventProcessorWorker integration with the Lock-Free SPSC Ring Buffer.
+//          v2.1.0 (iter17): worker now consumes via IEventPipe (RingBufferEventPipe over the
+//          same EventChannel-backed ring). The test writes through channel.Channel.TryWrite
+//          as before — the pipe is a thin adapter and reads out of the exact same physical
+//          ring, so the reflection-invoked DrainBatchAsync still observes every enqueued DTO.
 
 using System;
 using System.Collections.Generic;
@@ -35,19 +39,27 @@ public sealed class EventProcessorWorkerRingBufferTests
         _metrics = new ServiceMetrics();
     }
 
-    private EventProcessorWorker CreateWorker(EventChannel channel, IOptionsMonitor<RdpAuditOptions> optionsMonitor) => new(
-        channel,
-        null!, // IDbContextFactory
-        null!, // EventNormalizer
-        null!, // SessionIpCorrelationUpserter
-        null!, // RdpConnectionFactUpserter
-        null!, // AuthAttemptFactUpserter
-        null!, // SecurityCorrelationWatchdog
-        _metrics,
-        _loggerMock.Object,
-        optionsMonitor,
-        null!  // IOperationLogWriter
-    );
+    // iter17: worker constructor takes IEventPipe instead of EventChannel. We wire a real
+    // RingBufferEventPipe around the caller's EventChannel so tests keep writing through
+    // channel.Channel.TryWrite while the worker reads through the pipe abstraction — the
+    // pipe forwards to channel.Channel internally, so there is exactly one ring in play.
+    private EventProcessorWorker CreateWorker(EventChannel channel, IOptionsMonitor<RdpAuditOptions> optionsMonitor)
+    {
+        IEventPipe pipe = new RingBufferEventPipe(channel);
+        return new EventProcessorWorker(
+            pipe,
+            null!, // IDbContextFactory
+            null!, // EventNormalizer
+            null!, // SessionIpCorrelationUpserter
+            null!, // RdpConnectionFactUpserter
+            null!, // AuthAttemptFactUpserter
+            null!, // SecurityCorrelationWatchdog
+            _metrics,
+            _loggerMock.Object,
+            optionsMonitor,
+            null!  // IOperationLogWriter
+        );
+    }
 
     [Fact]
     public async Task DrainBatchAsync_EmptyBuffer_ReturnsEmptyListAfterTimeout()
