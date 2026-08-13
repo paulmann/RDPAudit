@@ -1,9 +1,9 @@
 /* Project: RDPAudit 2.0 | Author: Mikhail Deynekin | Site: Deynekin.com | Email: Mikhail@Deynekin.com */
-// Version: 2.0.0
+// Version: 2.0.1
 
 // File:    src/RdpAudit.Service/EventChannel.cs
 // Module:  RdpAudit.Service
-// Purpose: Zero-allocation Ring Buffer bridging EventCollectorWorker writers to EventProcessorWorker reader.
+// Purpose: Zero-allocation Ring Buffer bridging EventCollectorHostedWorker / backfill writers to EventProcessorWorker reader.
 // Extends: System.Object
 
 using System;
@@ -14,8 +14,9 @@ using RdpAudit.Service.Infrastructure;
 namespace RdpAudit.Service;
 
 /// <summary>
-/// Zero-allocation lock-free SPSC Ring Buffer bridging the EventCollectorWorker writers to the
-/// EventProcessorWorker reader. Replaces System.Threading.Channels to eliminate GC pressure.
+/// Zero-allocation lock-free SPSC Ring Buffer bridging EventCollectorHostedWorker and
+/// SecurityBackfillWorker / TerminalServicesBackfillWorker writers to the EventProcessorWorker
+/// reader. Replaces System.Threading.Channels to eliminate GC pressure.
 /// Internally implements DropOldest policy so a runaway log spike never blocks the EventLogWatcher callback.
 /// </summary>
 public sealed class EventChannel

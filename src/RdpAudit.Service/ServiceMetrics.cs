@@ -241,7 +241,7 @@ public sealed class ServiceMetrics
 	/// <summary>Cumulative count of successful Ring Buffer reads by the EventProcessorWorker.</summary>
 	public long RingBufferReadCount => Interlocked.Read(ref _ringBufferReadCount);
 
-	/// <summary>Cumulative count of successful Ring Buffer writes by the EventCollectorWorker.</summary>
+	/// <summary>Cumulative count of successful Ring Buffer writes by the EventCollectorHostedWorker.</summary>
 	public long RingBufferWriteCount => Interlocked.Read(ref _ringBufferWriteCount);
 
 	public void IncrementCaptured() => Interlocked.Increment(ref _captured);

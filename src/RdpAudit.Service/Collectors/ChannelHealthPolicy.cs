@@ -1,7 +1,7 @@
 // File:    src/RdpAudit.Service/Collectors/ChannelHealthPolicy.cs
 // Module:  RdpAudit.Service.Collectors
 // Purpose: Pure, thread-safe per-channel failure accounting and restart decision policy for the
-//          EventCollectorWorker. Classifies channels as Critical or Optional, debounces repeated
+//          EventCollectorHostedWorker. Classifies channels as Critical or Optional, debounces repeated
 //          invalid-handle failures, schedules a single bookmark-reset retry, and disables a
 //          channel after a saturating burst of failures so the Application log is not spammed.
 // Extends: System.Object

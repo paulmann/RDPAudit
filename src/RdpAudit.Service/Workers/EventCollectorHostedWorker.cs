@@ -8,7 +8,7 @@
 //          before arming, and a periodic bookmark-flush cadence. Everything else — real-time
 //          arming, watcher fault dispatch, cooldown restarts, bookmark aggregation, shutdown —
 //          is delegated to the injected EventCollectorHost.
-//          Coexists with the legacy EventCollectorWorker (v2.1.x) so we can flip DI without
+//          Replaces the legacy EventCollectorWorker (retired in v2.3.x); this is now the sole
 //          rewriting existing tests. Once Program.cs is switched to register this class, the
 //          legacy monolith can be retired.
 // Depends: EventCollectorHost, ChannelCapability, ChannelHealthPolicy, BookmarkStore,

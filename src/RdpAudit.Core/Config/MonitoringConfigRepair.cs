@@ -7,7 +7,7 @@
 //          leave the Security watcher disarmed and the Configurator UI shows Failed=0 even when
 //          PowerShell can see Security 4625 events.
 //          Pure, OS-agnostic, unit-testable. Applied at service startup by Program.Main before
-//          the EventCollectorWorker arms its channels, and surfaced via diagnostics so operators
+//          the EventCollectorHostedWorker arms its channels, and surfaced via diagnostics so operators
 //          can confirm the repair fired.
 // Extends: System.Object
 // Author:  Mikhail Deynekin

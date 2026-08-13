@@ -3,7 +3,7 @@
 // Version: 1.3.0 — iter16: writes now go through IEventPipe.TryWrite so the semaphore-backed
 //                 RingBufferEventPipe.WaitToReadAsync consumer is signalled on every backfill
 //                 write. Wire is unchanged: IEventPipe is a thin adapter over the same physical
-//                 ring buffer that EventChannel exposes, so no duplication and no pipeline hop.
+//                 ring buffer that IEventPipe exposes, so no duplication and no pipeline hop.
 // Purpose: Bounded, idempotent backfill for the Security authentication event set.
 //          The previous implementation issued ONE giant XPath OR-clause covering ~20 event
 //          IDs across the whole channel and a 3-minute lookback. On a host whose Security
@@ -433,7 +433,7 @@ catch (EventLogException ex)
 
 // v2.1.0 (iter16): route through IEventPipe so the semaphore-backed WaitToReadAsync consumer
 // is signalled on every backfill write. The underlying transport is the same physical ring
-// buffer that EventChannel exposes — no duplication, no dropped pipeline hop.
+// buffer that IEventPipe exposes — no duplication, no dropped pipeline hop.
 // TryWrite returns false ONLY when DropOldest overflow occurs.
 bool writtenWithoutOverflow = _pipe.TryWrite(dto);
 

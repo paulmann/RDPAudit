@@ -163,7 +163,7 @@ public sealed class TerminalServicesBackfillWorker : BackgroundService
 
 				// v2.0.0 (iter16): route through IEventPipe so the semaphore-backed WaitToReadAsync
 				// consumer is signalled on every backfill write. The underlying transport is the same
-				// physical ring buffer that EventChannel exposes.
+				// physical ring buffer that IEventPipe exposes.
 				bool writtenWithoutOverflow = _pipe.TryWrite(dto);
 				forwarded++;
 				_metrics.IncrementCaptured();
