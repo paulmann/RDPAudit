@@ -1,16 +1,17 @@
 /* Project: RDPAudit 2.0 | Author: Mikhail Deynekin | Site: Deynekin.com | Email: Mikhail@Deynekin.com */
-// Version: 2.0.0
+// Version: 2.1.0
 // File   : RingBufferEventPipe.cs
 // Project: RdpAudit.Service (RdpAudit.Service.Infrastructure)
-// Purpose: v1.0-compatible IEventPipe adapter that forwards TryWrite/TryRead into the
-//          existing zero-allocation UnmanagedSpscRingBuffer through the already-shipped
-//          EventChannel wrapper. Introducing this thin adapter lets DI wire Collectors and
-//          the Processor against IEventPipe without touching a single line of the ring-buffer
-//          hot path, and lets tests plug a lightweight in-memory pipe.
-// Depends: IEventPipe, EventChannel, RingBufferEventChannel, RawEventDto
-// Extends: When a v2 transport ships (MPMC ring, shared-memory), add a sibling implementation
-//          (e.g. MpmcRingBufferEventPipe) that satisfies IEventPipe. Do NOT extend this class
-//          — it is intentionally the smallest possible bridge to today's transport.
+// Purpose: Zero-allocation IEventPipe adapter over the existing SPSC UnmanagedSpscRingBuffer.
+//          Forwards TryWrite/TryRead into RingBufferEventChannel unchanged and replaces the
+//          previous 5ms polling loop in WaitToReadAsync with a SemaphoreSlim signal released
+//          from TryWrite. The synchronous hot paths remain allocation-free; only the async
+//          wait now piggy-backs on the semaphore, eliminating p99 latency-jitter and CPU idle
+//          burn on quiet channels.
+// Depends: IEventPipe, EventChannel, RingBufferEventChannel, RawEventDto, SemaphoreSlim
+// Extends: When a v2 transport ships (MPMC ring, shared memory), add a sibling implementation
+//          that satisfies IEventPipe. Keep the semaphore-release call co-located with the
+//          concrete TryWrite success path — never leak signal-plumbing into IEventPipe callers.
 
 using System.Runtime.CompilerServices;
 using RdpAudit.Core.Events;
@@ -22,26 +23,38 @@ namespace RdpAudit.Service.Infrastructure;
 /// <see cref="RingBufferEventChannel"/>. Forwarding is inlined so DI's virtual dispatch never
 /// shows up on the hot path.
 /// <para>
-/// <see cref="WaitToReadAsync"/> uses a bounded polling loop backed by a small prefetch slot
-/// so the underlying ring — which exposes only <c>TryRead</c> — can honour a "do we have
-/// something?" question without consuming the event. The prefetch slot is single-reader by
-/// contract (EventProcessorWorker is the only consumer), matching the ring buffer's SPSC
-/// invariant. A follow-up iteration can drop the poll once the ring exposes a semaphore.
+/// <see cref="WaitToReadAsync"/> is backed by a bounded <see cref="SemaphoreSlim"/> released on
+/// every successful <see cref="TryWrite"/>. The semaphore's <c>maxCount</c> is <c>1</c> — it
+/// behaves as a level-triggered "there is (or was) data" signal, which is exactly the
+/// <see cref="IEventPipe.WaitToReadAsync"/> contract: the returned <see langword="true"/> is a
+/// hint that a follow-up <see cref="TryRead"/> may race and lose. A prefetch slot keeps the
+/// consumer's next <see cref="TryRead"/> from double-consuming the DTO the wait already saw.
+/// </para>
+/// <para>
+/// The prefetch slot and the semaphore are both single-reader by contract (the sole consumer is
+/// <c>EventProcessorWorker</c>). Producers are multi-writer for the semaphore <see cref="SemaphoreSlim.Release"/>
+/// call — <see cref="SemaphoreFullException"/> is swallowed intentionally because the semaphore
+/// is at cap already, i.e. the consumer has been notified and just hasn't drained it yet.
 /// </para>
 /// </summary>
-public sealed class RingBufferEventPipe : IEventPipe
+public sealed class RingBufferEventPipe : IEventPipe, IDisposable
 {
 	// ── Fields & DI ──────────────────────────────────────────────────────────────
 
-	private const int PollIntervalMs = 5;
-
 	private readonly RingBufferEventChannel _ring;
 
-	// Prefetch slot: filled by WaitToReadAsync when it needs to answer "is there data?".
-	// The next TryRead returns this slot first, so the DTO is not consumed twice. Single-reader
+	// Bounded to 1: one pending "data available" edge is enough to unblock the consumer. Extra
+	// writes past a still-unread signal are collapsed via the SemaphoreFullException swallow —
+	// the signal is level-triggered by design. initialCount = 0 because a fresh pipe has no data.
+	private readonly SemaphoreSlim _signal = new(initialCount: 0, maxCount: 1);
+
+	// Prefetch slot: filled by WaitToReadAsync when it needs to answer "is there data?". The
+	// next TryRead returns this slot first, so the DTO is not consumed twice. Single-reader
 	// contract keeps this field safe without a lock: only the consumer thread ever touches it.
 	private bool _hasPrefetch;
 	private RawEventDto _prefetch;
+
+	private int _disposed;
 
 	// ── Construction ─────────────────────────────────────────────────────────────
 
@@ -71,7 +84,16 @@ public sealed class RingBufferEventPipe : IEventPipe
 
 	/// <inheritdoc />
 	[MethodImpl(MethodImplOptions.AggressiveInlining)]
-	public bool TryWrite(RawEventDto dto) => _ring.TryWrite(dto);
+	public bool TryWrite(RawEventDto dto)
+	{
+		// The concrete ring's contract: returns true on a clean write, false when a DropOldest
+		// forced eviction. Either way the DTO landed and a signal is warranted so the consumer
+		// wakes up and drains. Signal AFTER the underlying write to preserve happens-before
+		// ordering: any thread that observes the semaphore released will also observe the write.
+		bool clean = _ring.TryWrite(dto);
+		ReleaseSignalSafe();
+		return clean;
+	}
 
 	/// <inheritdoc />
 	[MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -91,50 +113,100 @@ public sealed class RingBufferEventPipe : IEventPipe
 	/// <inheritdoc />
 	public async ValueTask<bool> WaitToReadAsync(TimeSpan timeout, CancellationToken ct)
 	{
-		// Fast path: prefetch is loaded or the ring has data ready right now.
+		// Fast path: prefetch is already loaded — no wait needed.
 		if (_hasPrefetch)
 		{
 			return true;
 		}
 
+		// Fast path: the ring already has data. Load a prefetch slot so a subsequent TryRead
+		// returns immediately and the caller sees the DTO exactly once.
 		if (_ring.TryRead(out RawEventDto first))
 		{
 			_prefetch = first;
 			_hasPrefetch = true;
+
+			// Drain any stale signal so the next wait doesn't spuriously return without data.
+			// SemaphoreSlim.Wait(0) is non-blocking; ignore its return value on purpose.
+			_signal.Wait(0);
 			return true;
 		}
 
-		// A negative timespan means "wait forever" per the interface contract; we still poll
-		// so cancellation stays responsive.
-		bool infinite = timeout < TimeSpan.Zero;
-		long deadlineTicks = infinite
-			? long.MaxValue
-			: Environment.TickCount64 + (long)timeout.TotalMilliseconds;
+		// Slow path: await the semaphore. A negative timespan means "wait forever" per the
+		// IEventPipe contract; SemaphoreSlim.WaitAsync accepts Timeout.InfiniteTimeSpan for the
+		// same semantics.
+		TimeSpan waitFor = timeout < TimeSpan.Zero ? Timeout.InfiniteTimeSpan : timeout;
 
-		while (!ct.IsCancellationRequested)
+		try
 		{
-			if (_ring.TryRead(out RawEventDto dto))
-			{
-				_prefetch = dto;
-				_hasPrefetch = true;
-				return true;
-			}
-
-			if (!infinite && Environment.TickCount64 >= deadlineTicks)
-			{
-				return false;
-			}
-
-			try
-			{
-				await Task.Delay(PollIntervalMs, ct).ConfigureAwait(false);
-			}
-			catch (OperationCanceledException)
+			bool acquired = await _signal.WaitAsync(waitFor, ct).ConfigureAwait(false);
+			if (!acquired)
 			{
 				return false;
 			}
 		}
+		catch (OperationCanceledException)
+		{
+			return false;
+		}
+		catch (ObjectDisposedException)
+		{
+			// Pipe is being torn down while a wait was in flight. Report "no data" so the
+			// caller unwinds cleanly instead of surfacing a disposal exception.
+			return false;
+		}
 
+		// Re-check the ring under the signal edge — the writer that released us may have raced
+		// with a concurrent reader (there is only one legitimate consumer, but we still treat
+		// the semaphore as a hint per the interface contract). Load a prefetch slot when a DTO
+		// is actually there so TryRead consumes it once.
+		if (_ring.TryRead(out RawEventDto dto))
+		{
+			_prefetch = dto;
+			_hasPrefetch = true;
+			return true;
+		}
+
+		// The signal was released but the DTO is no longer visible (e.g. drained by a stale
+		// consumer). Report "no data" — the interface allows this false-positive by design.
 		return false;
+	}
+
+	// ── Internal Helpers ─────────────────────────────────────────────────────────
+
+	[MethodImpl(MethodImplOptions.AggressiveInlining)]
+	private void ReleaseSignalSafe()
+	{
+		// Bounded semaphore: Release throws SemaphoreFullException when the count is already at
+		// maxCount = 1. That means "the consumer already knows there is data and just hasn't
+		// drained it yet" — collapse the extra edge. Similarly, Release on a disposed semaphore
+		// throws ObjectDisposedException during shutdown — also safe to swallow.
+		try
+		{
+			_signal.Release();
+		}
+		catch (SemaphoreFullException)
+		{
+			// Level-triggered by design — extra writes past a pending edge are coalesced.
+		}
+		catch (ObjectDisposedException)
+		{
+			// Pipe was disposed after a producer had already entered TryWrite. Nothing to do.
+		}
+	}
+
+	// ── Disposal ─────────────────────────────────────────────────────────────────
+
+	/// <summary>
+	/// Disposes the internal signalling primitive. Safe to call multiple times.
+	/// The underlying <see cref="RingBufferEventChannel"/> is NOT owned by the pipe —
+	/// its lifetime is managed by the composition root (<c>EventChannel</c> singleton in DI).
+	/// </summary>
+	public void Dispose()
+	{
+		if (Interlocked.Exchange(ref _disposed, 1) == 0)
+		{
+			_signal.Dispose();
+		}
 	}
 }
