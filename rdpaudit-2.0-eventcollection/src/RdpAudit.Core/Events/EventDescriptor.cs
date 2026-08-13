@@ -5,7 +5,7 @@
 // Purpose: Static metadata about a single Windows event id we monitor. Positional signature is
 //          kept intact so every existing `new(id, channel, description, layer)` call in the
 //          codebase continues to compile; new fields are init-only properties with defaults.
-// Depends: EventPreset, EventCriticality
+// Depends: EventPreset, EventCriticality, EventLayer
 // Extends: When adding a new descriptor field, add it as an init-only property with a
 //          conservative default so unqualified `new(id, channel, desc, layer)` calls stay valid.
 
@@ -53,4 +53,10 @@ public sealed record EventDescriptor(
 	/// <summary>True when the event is included in the given preset.</summary>
 	public bool IsInPreset(EventPreset preset)
 		=> (Preset & preset) != 0;
+
+	/// <summary>Typed layer classification. Derived from the legacy string <see cref="Layer"/>
+	/// field via <see cref="EventLayers.Parse"/>; kept as a computed property (no backing field)
+	/// so <c>Layer</c> and <c>LayerKind</c> can never drift apart. Returns <see cref="EventLayer.Unknown"/>
+	/// if the string label does not match a known layer.</summary>
+	public EventLayer LayerKind => EventLayers.Parse(Layer);
 }
