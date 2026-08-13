@@ -52,7 +52,10 @@ public sealed class RingBufferEventPipe : IEventPipe, IDisposable
 	// next TryRead returns this slot first, so the DTO is not consumed twice. Single-reader
 	// contract keeps this field safe without a lock: only the consumer thread ever touches it.
 	private bool _hasPrefetch;
-	private RawEventDto _prefetch;
+	// Nullable to avoid CS8618 (no ctor initialisation); the `_hasPrefetch` guard is the
+	// invariant that keeps every read from observing a null slot. Assignment through
+	// null-forgiveness (`!`) is safe under that invariant.
+	private RawEventDto? _prefetch;
 
 	private int _disposed;
 
@@ -101,8 +104,8 @@ public sealed class RingBufferEventPipe : IEventPipe, IDisposable
 	{
 		if (_hasPrefetch)
 		{
-			dto = _prefetch;
-			_prefetch = default!;
+			dto = _prefetch!; // _hasPrefetch == true implies non-null (see field comment).
+			_prefetch = null;
 			_hasPrefetch = false;
 			return true;
 		}
@@ -127,8 +130,10 @@ public sealed class RingBufferEventPipe : IEventPipe, IDisposable
 			_hasPrefetch = true;
 
 			// Drain any stale signal so the next wait doesn't spuriously return without data.
-			// SemaphoreSlim.Wait(0) is non-blocking; ignore its return value on purpose.
-			_signal.Wait(0);
+			// SemaphoreSlim.Wait(0, ct) is non-blocking; we pass CancellationToken.None on purpose
+			// because a zero-millisecond wait completes synchronously and cannot observe cancellation,
+			// so forwarding the caller's token here would only muddy CA2016's intent (satisfied).
+			_signal.Wait(0, CancellationToken.None);
 			return true;
 		}
 

@@ -171,7 +171,7 @@ public sealed class EventCollectorHost : IAsyncDisposable
 		{
 			_logger.LogDebug("Replacing existing runtime for {Channel}", channel);
 			_channels[channel] = runtime;
-			await DisposeRuntimeSafelyAsync(existing).ConfigureAwait(false);
+			await DisposeRuntimeSafelyAsync(existing, ct).ConfigureAwait(false);
 		}
 		else
 		{
@@ -489,7 +489,7 @@ public sealed class EventCollectorHost : IAsyncDisposable
 	{
 		if (_channels.TryRemove(channel, out ChannelRuntime? runtime))
 		{
-			await DisposeRuntimeSafelyAsync(runtime).ConfigureAwait(false);
+			await DisposeRuntimeSafelyAsync(runtime, CancellationToken.None).ConfigureAwait(false);
 		}
 	}
 
