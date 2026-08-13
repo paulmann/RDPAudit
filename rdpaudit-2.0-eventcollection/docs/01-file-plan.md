@@ -7,10 +7,10 @@ Each row is **A**dd, **M**odify, or **R**efactor-in-place.
 
 | Op | Path | One-line reason |
 |----|------|----------------|
-| M  | `Events/EventDescriptor.cs` | Add `Preset`, `Criticality`, `RequiredEventIds`, `DefaultRetentionDays`, `ExpectedVolumeClass`, `AuditSubcategory` fields. |
-| M  | `Events/EventCatalog.cs` | Encode preset masks (Minimal / Essential / Full), criticality, retention defaults, required-event links. |
-| A  | `Events/EventPreset.cs` | Flags enum: `Minimal`, `Essential`, `Full`, `Custom`. |
-| A  | `Events/EventCriticality.cs` | Enum: `Informational`, `Security`, `Critical`. |
+| M  | `Events/EventDescriptor.cs` | ✅ Done (iter 2): `Preset`, `Criticality`, `RequiredEventIds`, `DefaultRetentionDays`, `Purpose` added as init-only properties with defaults; positional signature preserved. `ExpectedVolumeClass`/`AuditSubcategory` deferred — not blocking. |
+| M  | `Events/EventCatalog.cs` | ✅ Done (iter 2): every entry annotated with preset masks (Minimal ⊂ Essential ⊂ Full), criticality, retention defaults, required-event links; added events 22, 1150, 1158; added `TryGet`, `ByPreset`, `EventIdsByPreset`, `DefaultRetentionFor`, `CriticalityOf`, `RequiredClosure`, `ExpandPreset`, `ClassifyActiveSet`. |
+| A  | `Events/EventPreset.cs` | ✅ Done (iter 2): `[Flags]` enum with `None`, `Minimal`, `Essential`, `Full`, `Custom`. |
+| A  | `Events/EventCriticality.cs` | ✅ Done (iter 2): ordered enum `Informational` (0) → `Critical` (4); values numerically comparable. |
 | M  | `Events/RawEventDto.cs` | Add `ActivityId`, `LogonId`, `SessionId`, `IngestionSequence`, `EventLayer`, `SourceIpBinary` (16 bytes), `SourceIpConfidence`. |
 | A  | `Events/EventLayer.cs` | Enum: `AuthLayer`, `SessionLayer`, `ReconnectLayer`, `TransportAnomalyLayer`, `PostLogonLayer`, `AccountLayer`, `TamperingLayer`. |
 | M  | `Events/EventXmlParser.cs` | Enforce field length caps; add hardened `XmlReaderSettings` (`MaxCharactersInDocument`, `MaxCharactersInEntities`, `DtdProcessing = Prohibit`, no resolver); parsers for **22, 4778, 4779, 39, 40, 1150, 1158**. |
