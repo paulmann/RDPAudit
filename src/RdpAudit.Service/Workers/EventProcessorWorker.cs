@@ -1,5 +1,5 @@
 /* Project: RDPAudit 2.0 | Author: Mikhail Deynekin | Site: Deynekin.com | Email: Mikhail@Deynekin.com */
-// Version: 2.2.0
+// Version: 2.3.0
 // File   : EventProcessorWorker.cs
 // Project: RdpAudit.Service (RdpAudit.Service.Workers)
 // Purpose: Drains the lock-free ring buffer in batches, normalises payloads, and persists to
@@ -32,7 +32,17 @@
 //          SpinWait busy-loop, eliminating both the startup stall AND 100% CPU spin on idle
 //          hosts, while preserving the synchronous TryRead fast-path and the reflection-tested
 //          Task<List<RawEventDto>> return contract.
-// Depends: EventChannel, IDbContextFactory<AuditDbContext>, EventNormalizer,
+//          v2.3.0 (iter17): consumer now reads through the IEventPipe abstraction instead of
+//          reaching into EventChannel directly, so this worker shares the same physical ring
+//          with the iter16 producer path (SecurityBackfillWorker / EventCollectorHostedWorker
+//          via IEventPipe.TryWrite). DrainBatchAsync’s idle path replaced the shrinking-budget
+//          Channel.WaitToReadAsync call with IEventPipe.WaitToReadAsync, which is backed by the
+//          semaphore installed in RingBufferEventPipe v2.1.0 — the producer’s Release() on every
+//          TryWrite wakes an idle consumer within microseconds instead of after the timeout
+//          budget. Fast-path (IEventPipe.TryRead) still runs at the top of every iteration; the
+//          reflection-tested Task<List<RawEventDto>> return contract and EmptyBatch idle
+//          singleton are unchanged.
+// Depends: IEventPipe, IDbContextFactory<AuditDbContext>, EventNormalizer,
 //          SessionIpCorrelationUpserter, RdpConnectionFactUpserter, AuthAttemptFactUpserter,
 //          SecurityCorrelationWatchdog, ServiceMetrics, IOptionsMonitor<RdpAuditOptions>
 // Extends: Add a new fact upserter call inside PersistBatchAsync, after the existing
@@ -84,7 +94,7 @@ public sealed class EventProcessorWorker : BackgroundService
 	/// </summary>
 	private static readonly List<RawEventDto> EmptyBatch = new(capacity: 0);
 
-	private readonly EventChannel _channel;
+	private readonly IEventPipe _pipe;
 	private readonly IDbContextFactory<AuditDbContext> _factory;
 	private readonly EventNormalizer _normalizer;
 	private readonly SessionIpCorrelationUpserter _correlationUpserter;
@@ -101,14 +111,14 @@ public sealed class EventProcessorWorker : BackgroundService
 	// ── Construction ─────────────────────────────────────────────────────────────
 
 	/// <summary>
-	/// Only <paramref name="channel"/>, <paramref name="metrics"/>, <paramref name="logger"/>,
+	/// Only <paramref name="pipe"/>, <paramref name="metrics"/>, <paramref name="logger"/>,
 	/// and <paramref name="options"/> are guarded against null: these are the fields
 	/// <see cref="DrainBatchAsync"/> and the constructor itself dereference unconditionally.
 	/// The remaining dependencies are only touched inside <see cref="PersistBatchAsync"/>, which
 	/// unit tests that isolate <see cref="DrainBatchAsync"/> intentionally never invoke.
 	/// </summary>
 	public EventProcessorWorker(
-		EventChannel channel,
+		IEventPipe pipe,
 		IDbContextFactory<AuditDbContext> factory,
 		EventNormalizer normalizer,
 		SessionIpCorrelationUpserter correlationUpserter,
@@ -120,12 +130,12 @@ public sealed class EventProcessorWorker : BackgroundService
 		IOptionsMonitor<RdpAuditOptions> options,
 		IOperationLogWriter opLog)
 	{
-		ArgumentNullException.ThrowIfNull(channel);
+		ArgumentNullException.ThrowIfNull(pipe);
 		ArgumentNullException.ThrowIfNull(metrics);
 		ArgumentNullException.ThrowIfNull(logger);
 		ArgumentNullException.ThrowIfNull(options);
 
-		_channel = channel;
+		_pipe = pipe;
 		_factory = factory;
 		_normalizer = normalizer;
 		_correlationUpserter = correlationUpserter;
@@ -243,13 +253,16 @@ public sealed class EventProcessorWorker : BackgroundService
 	/// (the shared <see cref="EmptyBatch"/> instance) when nothing arrived before the timeout or
 	/// cancellation was requested.
 	/// <para>
-	/// The synchronous fast-path (<c>Channel.TryRead</c>) returns immediately via
-	/// <see cref="Task.FromResult{TResult}(TResult)"/> when items are already buffered. When the
-	/// buffer is empty, the method awaits <c>WaitToReadAsync</c> under a bounded timeout instead
-	/// of busy-spinning — this yields the thread to the host (essential during ordered startup)
-	/// and prevents 100% CPU on idle servers. Kept as <see cref="Task{TResult}"/> rather than
+	/// v2.3.0 (iter17): the idle path now awaits <see cref="IEventPipe.WaitToReadAsync"/> — a
+	/// semaphore-backed level-triggered signal — under a shrinking timeout budget instead of a
+	/// SpinWait busy-loop with cooperative yields. Producer TryWrite calls (event collector,
+	/// backfill workers) release the semaphore, so the consumer wakes within microseconds of a
+	/// new event landing. The synchronous <see cref="IEventPipe.TryRead"/> fast-path stays as the
+	/// first thing tried on every iteration — a burst that fully saturates the ring will still be
+	/// drained without ever hitting the wait. Kept as <see cref="Task{TResult}"/> rather than
 	/// <see cref="ValueTask{TResult}"/> because <c>EventProcessorWorkerRingBufferTests</c> invokes
-	/// this method via reflection and casts the result to <c>Task&lt;List&lt;RawEventDto&gt;&gt;</c>.
+	/// this method via reflection and hard-casts the result to
+	/// <c>Task&lt;List&lt;RawEventDto&gt;&gt;</c>.
 	/// </para>
 	/// </summary>
 	private async Task<List<RawEventDto>> DrainBatchAsync(CancellationToken stoppingToken)
@@ -258,19 +271,18 @@ public sealed class EventProcessorWorker : BackgroundService
 		int max = Math.Max(1, monitoring.BatchSize);
 		TimeSpan timeout = TimeSpan.FromMilliseconds(Math.Max(50, monitoring.BatchTimeoutMilliseconds));
 
-		SpinWait spinner = default;
 		long startTimestamp = Stopwatch.GetTimestamp();
 		long timeoutTicks = (long)(timeout.TotalSeconds * Stopwatch.Frequency);
-		int spinsSinceYield = 0;
 
 		while (!stoppingToken.IsCancellationRequested)
 		{
-			if (_channel.Channel.TryRead(out RawEventDto first))
+			// Fast-path: try to drain what is already sitting in the ring without any await.
+			if (_pipe.TryRead(out RawEventDto first))
 			{
 				_metrics.IncrementRingBufferRead();
 
 				List<RawEventDto> batch = new(max) { first };
-				while (batch.Count < max && _channel.Channel.TryRead(out RawEventDto next))
+				while (batch.Count < max && _pipe.TryRead(out RawEventDto next))
 				{
 					_metrics.IncrementRingBufferRead();
 					batch.Add(next);
@@ -279,21 +291,28 @@ public sealed class EventProcessorWorker : BackgroundService
 				return batch;
 			}
 
-			if (Stopwatch.GetTimestamp() - startTimestamp >= timeoutTicks)
+			// Shrinking wait-budget: how much of the batch-timeout window is left. If the caller
+			// already exhausted it, surface the empty batch immediately so the outer ExecuteAsync
+			// loop can move on to its next tick without an extra scheduler round-trip.
+			long elapsedTicks = Stopwatch.GetTimestamp() - startTimestamp;
+			if (elapsedTicks >= timeoutTicks)
 			{
 				return EmptyBatch;
 			}
 
-			// Cooperative yield every ~1000 spins: SpinWait.SpinOnce() alone can busy-spin the
-			// thread on an idle channel without ever handing control back to the scheduler. This
-			// keeps the synchronous TryRead fast-path but prevents the idle-path from starving other
-			// work on the thread pool during ordered startup.
-			spinner.SpinOnce();
-			spinsSinceYield++;
-			if (spinsSinceYield >= 1000)
+			TimeSpan remaining = TimeSpan.FromSeconds(
+				(double)(timeoutTicks - elapsedTicks) / Stopwatch.Frequency);
+
+			// Semaphore-backed wait: iter15 wired RingBufferEventPipe.TryWrite -> Release() so this
+			// wakes on the next producer write with microsecond latency, without CPU spin. A false
+			// return means the remaining timeout elapsed with an empty ring; we surface the empty
+			// batch so the outer loop can decide its next move (idle logging, options refresh, etc.).
+			// A true return is a hint — the follow-up TryRead at the top of the loop may still race
+			// and lose, which is why we do NOT assume a DTO is available afterwards.
+			bool ready = await _pipe.WaitToReadAsync(remaining, stoppingToken).ConfigureAwait(false);
+			if (!ready)
 			{
-				spinsSinceYield = 0;
-				await Task.Yield();
+				return EmptyBatch;
 			}
 		}
 
@@ -307,7 +326,7 @@ public sealed class EventProcessorWorker : BackgroundService
 	/// </summary>
 	private bool TryDrainReady(int max, out List<RawEventDto> batch)
 	{
-		if (!_channel.Channel.TryRead(out RawEventDto first))
+		if (!_pipe.TryRead(out RawEventDto first))
 		{
 			batch = EmptyBatch;
 			return false;
@@ -316,7 +335,7 @@ public sealed class EventProcessorWorker : BackgroundService
 		_metrics.IncrementRingBufferRead();
 
 		batch = new List<RawEventDto>(max) { first };
-		while (batch.Count < max && _channel.Channel.TryRead(out RawEventDto next))
+		while (batch.Count < max && _pipe.TryRead(out RawEventDto next))
 		{
 			_metrics.IncrementRingBufferRead();
 			batch.Add(next);
