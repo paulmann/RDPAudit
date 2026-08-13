@@ -36,7 +36,7 @@ public sealed class DiagnosticsSnapshotDto
 	/// <summary>Effective event IDs filter (empty means "all events from EnabledChannels").</summary>
 	public List<int> EnabledEventIds { get; set; } = new();
 
-	/// <summary>Per-channel status as last reported by the EventCollectorWorker (Armed / Disabled /
+	/// <summary>Per-channel status as last reported by the EventCollectorHostedWorker (Armed / Disabled /
 	/// RestartScheduled / SkippedUnavailable / etc).</summary>
 	public Dictionary<string, string> ChannelStatus { get; set; } = new(StringComparer.OrdinalIgnoreCase);
 

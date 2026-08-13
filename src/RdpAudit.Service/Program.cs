@@ -7,9 +7,9 @@
 //          v2.0.2: Wired the v2 event-collection composition — ChannelHealthPolicy singleton,
 //          RingBufferEventPipe over the existing EventChannel, EventLogWatcherEventSourceFactory,
 //          ServiceMetricsChannelStatusSink, and EventCollectorHost — and swapped the hosted
-//          collector from the legacy EventCollectorWorker to the thin EventCollectorHostedWorker
-//          shim. The legacy class stays compilable (its tests still bind to it) but is no longer
-//          hosted by the service.
+//          collector from the retired EventCollectorWorker (v2.1.x) to the thin EventCollectorHostedWorker
+//          shim. The legacy worker was fully retired in v2.3.x; the shim is now the only
+//          registered hosted service for event collection.
 //          v2.0.1: CrashGuard has no RecordFatal member (CS1061 on build) — reverted the host-level
 //          fatal-fault handler to Serilog.Log.Fatal, which is guaranteed available since Serilog is
 //          already the global logging pipeline configured by ConfigureSerilog below. This is a
@@ -377,8 +377,8 @@ public static class Program
 
 		// v2 collector: EventCollectorHostedWorker is a thin BackgroundService shim that composes
 		// EventCollectorHost + IEventSourceFactory + IEventPipe. The legacy monolithic
-		// EventCollectorWorker class is kept in the tree so its existing tests still bind, but it
-		// is no longer registered as a hosted service — the v2 shim owns event collection now.
+		// EventCollectorWorker class was retired in v2.3.x; this shim is the only registered
+		// hosted service for event collection.
 		// SecurityBackfillWorker still uses the factory overload (explicit ctor) so it can bind
 		// its 6 dependencies deterministically without DI activation gymnastics.
 		services.AddTimedHostedService(sp => new EventCollectorHostedWorker(

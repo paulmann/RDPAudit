@@ -33,7 +33,7 @@
 //          hosts, while preserving the synchronous TryRead fast-path and the reflection-tested
 //          Task<List<RawEventDto>> return contract.
 //          v2.3.0 (iter17): consumer now reads through the IEventPipe abstraction instead of
-//          reaching into EventChannel directly, so this worker shares the same physical ring
+//          reaching into IEventPipe directly, so this worker shares the same physical ring
 //          with the iter16 producer path (SecurityBackfillWorker / EventCollectorHostedWorker
 //          via IEventPipe.TryWrite). DrainBatchAsync’s idle path replaced the shrinking-budget
 //          Channel.WaitToReadAsync call with IEventPipe.WaitToReadAsync, which is backed by the
@@ -622,7 +622,7 @@ public sealed class EventProcessorWorker : BackgroundService
 
 	// ── SIMD & Zero-Alloc Parsers ────────────────────────────────────────────────
 	// (Not applicable: this worker is the cold-path DB persistence stage per the project's
-	// Cold/Hot Database Split directive. EventCollectorWorker's ingestion callback is the
+	// Cold/Hot Database Split directive. EventCollectorHostedWorker's ingestion callback is the
 	// zero-alloc hot path; this class is intentionally allocation-tolerant for EF/SQLite writes.)
 
 	private static bool IsSecurityChannel(string? channel)
