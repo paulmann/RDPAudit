@@ -1,5 +1,5 @@
 /* Project: RDPAudit 2.0 | Author: Mikhail Deynekin | Site: Deynekin.com | Email: Mikhail@Deynekin.com */
-// Version: 2.0.0
+// Version: 2.0.1
 // File   : EventXmlParserHardeningTests.cs
 // Project: RdpAudit.Core.Tests (RdpAudit.Core.Tests.Events)
 // Purpose: Locks the hardening and correlation-extraction surface added to EventXmlParser
@@ -42,21 +42,80 @@ public sealed class EventXmlParserHardeningTests
 	[Fact]
 	public void ParseSafe_RefusesDeeplyNestedDocument()
 	{
-		// Nest 128 levels — well beyond the 32-level cap. Real Windows payloads nest 6 max.
+		// Nest 128 levels of `<n>` elements plus a text node inside `<Event>`.
+		// Deepest node lands at depth 129 (text). Well beyond the 64-level cap.
+		// Real Windows payloads nest 6 max.
+		Assert.Null(EventXmlParser.ParseSafe(BuildNestedDocument(128)));
+	}
+
+	// ── Depth-cap boundary (MaxDepth = 64, inclusive) ──────────────────────────
+	// Contract: any node with `reader.Depth > MaxDepth` aborts the parse.
+	// `XmlReader.Depth` is 0 on the root element and increments per nested element
+	// AND per text node inside them. These two tests pin the exact boundary
+	// between accepted and refused nesting so a future off-by-one regression
+	// (widening or narrowing MaxDepth by one, or flipping `>` to `>=`) is
+	// caught immediately.
+
+	[Fact]
+	public void ParseSafe_AcceptsDocumentAtExactDepthCap()
+	{
+		// 64 wrapper elements inside `<Event>` (element-only, no text):
+		//   <Event>=0  <n>=1  <n>=2  …  <n>=64.
+		// The innermost `<n>` sits at depth 64 — exactly on the cap. No text
+		// node is added so no descendant ever reaches depth 65. Parse must succeed.
+		string xml = BuildNestedElementsOnly(elementsInsideRoot: 64);
+
+		XmlDocument? doc = EventXmlParser.ParseSafe(xml);
+
+		Assert.NotNull(doc);
+	}
+
+	[Fact]
+	public void ParseSafe_RefusesDocumentOnePastDepthCap()
+	{
+		// 65 wrapper elements inside `<Event>`: the innermost `<n>` sits at
+		// depth 65, which is `MaxDepth + 1`. Parse must abort before allocating
+		// the DOM.
+		string xml = BuildNestedElementsOnly(elementsInsideRoot: 65);
+
+		Assert.Null(EventXmlParser.ParseSafe(xml));
+	}
+
+	private static string BuildNestedDocument(int wrapperLevels)
+	{
 		StringBuilder sb = new();
 		sb.Append($"<Event xmlns='{XmlNs}'>");
-		for (int i = 0; i < 128; i++)
+		for (int i = 0; i < wrapperLevels; i++)
 		{
 			sb.Append("<n>");
 		}
 		sb.Append("payload");
-		for (int i = 0; i < 128; i++)
+		for (int i = 0; i < wrapperLevels; i++)
 		{
 			sb.Append("</n>");
 		}
 		sb.Append("</Event>");
+		return sb.ToString();
+	}
 
-		Assert.Null(EventXmlParser.ParseSafe(sb.ToString()));
+	/// <summary>Builds a document containing only elements (no text nodes) with the
+	/// specified number of nested wrapper elements inside <c>&lt;Event&gt;</c>. The
+	/// deepest element sits at <see cref="XmlReader.Depth"/> equal to
+	/// <paramref name="elementsInsideRoot"/>.</summary>
+	private static string BuildNestedElementsOnly(int elementsInsideRoot)
+	{
+		StringBuilder sb = new();
+		sb.Append($"<Event xmlns='{XmlNs}'>");
+		for (int i = 0; i < elementsInsideRoot; i++)
+		{
+			sb.Append("<n>");
+		}
+		for (int i = 0; i < elementsInsideRoot; i++)
+		{
+			sb.Append("</n>");
+		}
+		sb.Append("</Event>");
+		return sb.ToString();
 	}
 
 	[Fact]
