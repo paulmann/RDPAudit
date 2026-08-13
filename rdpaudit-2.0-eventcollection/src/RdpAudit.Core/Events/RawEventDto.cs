@@ -1,5 +1,5 @@
 /* Project: RDPAudit 2.0 | Author: Mikhail Deynekin | Site: Deynekin.com | Email: Mikhail@Deynekin.com */
-// Version: 2.0.0
+// Version: 2.0.1
 // File   : RawEventDto.cs
 // Project: RdpAudit.Core (RdpAudit.Core.Events)
 // Purpose: In-memory DTO carrying a captured EventRecord through the ingestion pipeline. Extended
@@ -87,4 +87,16 @@ public sealed class RawEventDto
 	/// authoritative event field (e.g. IpAddress on 4624). Lower values indicate heuristic
 	/// resolution (e.g. deduced from a nearby event on the same channel). Zero when unresolved.</summary>
 	public byte SourceIpConfidence { get; set; }
+
+	/// <summary>
+	/// Serialized <c>EventLogWatcher</c> bookmark XML captured for this event. Set on the
+	/// captured DTO by <c>EventCollectorWorker.TryCaptureDto</c> so the bookmark can cross the
+	/// same durability boundary as the event insert in <c>EventProcessorWorker.PersistBatchAsync</c>
+	/// (via <c>BookmarkStore.SaveBatchInSameTransactionAsync</c>). Null when bookmark serialisation
+	/// failed or when the source did not produce a bookmark (e.g. synthetic backfill DTOs). Only
+	/// the LAST bookmark per channel in a batch is written; older bookmarks in the same batch are
+	/// intentionally shadowed because Windows event bookmarks are monotonically increasing per
+	/// channel and older values would only rewind the read position.
+	/// </summary>
+	public string? BookmarkXml { get; set; }
 }
