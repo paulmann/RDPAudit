@@ -36,7 +36,7 @@ public interface IEventPipe
 
 	/// <summary>
 	/// Monotonic count of DTOs that were dropped because the pipe was full at write time.
-	/// Read with <see cref="System.Threading.Interlocked.Read(ref long)"/> semantics — the
+	/// Read with <see cref="System.Threading.Interlocked"/>.Read semantics — the
 	/// value never decreases and never wraps.
 	/// </summary>
 	long OverflowCount { get; }
