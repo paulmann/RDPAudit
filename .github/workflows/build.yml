@@ -35,8 +35,12 @@ env:
   DOTNET_NOLOGO: true
   DOTNET_CLI_TELEMETRY_OPTOUT: true
   DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
-  # Reproducible restore: force the exact SDK pinned in global.json (8.0.422).
-  DOTNET_ROLL_FORWARD: LatestFeature
+  # Reproducible restore is enforced through global.json (sdk.version 8.0.422 +
+  # rollForward: latestFeature). We intentionally do NOT set the DOTNET_ROLL_FORWARD
+  # env variable here — that variable accepts a stricter enum (Disable / LatestPatch
+  # / Minor / LatestMinor / Major / LatestMajor) and does NOT accept LatestFeature,
+  # which is a global.json-only value. Setting it broke `dotnet --info` on the runner
+  # with "Invalid value for environment variable 'DOTNET_ROLL_FORWARD'."
   # Release-quality builds. Directory.Build.props sets TreatWarningsAsErrors=true
   # so any analyzer / nullable / CS warning fails the job.
   Configuration: Release
