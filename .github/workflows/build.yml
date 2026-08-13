@@ -1,0 +1,128 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Project: RDPAudit 2.0 | Author: Mikhail Deynekin | Site: Deynekin.com
+# File   : .github/workflows/build.yml
+# Purpose: Continuous integration for RDPAudit 2.0 on windows-latest — restore,
+#          build in Release, run all xUnit test projects, and publish results
+#          plus the built binaries as workflow artifacts.
+# Runner : windows-latest (required — net8.0-windows / WinForms targets)
+# ─────────────────────────────────────────────────────────────────────────────
+
+name: build
+
+on:
+  push:
+    branches:
+      - main
+      - "feature/**"
+      - "release/**"
+      - "hotfix/**"
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  # One in-flight run per ref; new pushes cancel the previous run to save minutes.
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  checks: write        # dorny/test-reporter publishes an in-line check with results
+  pull-requests: write # dorny/test-reporter comments on the PR when relevant
+
+env:
+  DOTNET_NOLOGO: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
+  # Reproducible restore: force the exact SDK pinned in global.json (8.0.422).
+  DOTNET_ROLL_FORWARD: LatestFeature
+  # Release-quality builds. Directory.Build.props sets TreatWarningsAsErrors=true
+  # so any analyzer / nullable / CS warning fails the job.
+  Configuration: Release
+  Platform: x64
+
+jobs:
+  build-and-test:
+    name: Build & Test (windows-latest)
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # full history so InformationalVersion can embed the SHA
+
+      - name: Setup .NET SDK (from global.json)
+        uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      - name: Print .NET info
+        run: dotnet --info
+
+      - name: Cache NuGet packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: nuget-${{ runner.os }}-${{ hashFiles('**/*.csproj', '**/Directory.Build.props', '**/Directory.Packages.props', 'global.json') }}
+          restore-keys: |
+            nuget-${{ runner.os }}-
+
+      - name: Restore
+        run: dotnet restore RdpAudit.sln --locked-mode || dotnet restore RdpAudit.sln
+
+      - name: Build
+        run: >
+          dotnet build RdpAudit.sln
+          --configuration ${{ env.Configuration }}
+          --no-restore
+          -p:Platform=${{ env.Platform }}
+          -p:ContinuousIntegrationBuild=true
+          -p:SourceRevisionId=${{ github.sha }}
+          -warnaserror
+
+      - name: Test
+        # `dotnet test` on the solution runs every test project (Core, Mikrotik, Service).
+        # TRX + HTML loggers give both the in-line check and a human-readable summary.
+        run: >
+          dotnet test RdpAudit.sln
+          --configuration ${{ env.Configuration }}
+          --no-build
+          -p:Platform=${{ env.Platform }}
+          --logger "trx;LogFileName=test-results.trx"
+          --logger "html;LogFileName=test-results.html"
+          --logger "console;verbosity=normal"
+          --results-directory "${{ github.workspace }}/TestResults"
+          --collect:"XPlat Code Coverage"
+          -- RunConfiguration.CollectSourceInformation=true
+
+      - name: Publish test results (check run)
+        if: always() # publish even on test failure so the PR shows the failing test
+        uses: dorny/test-reporter@v1
+        with:
+          name: xUnit (windows-latest)
+          path: "TestResults/**/*.trx"
+          reporter: dotnet-trx
+          fail-on-error: false
+
+      - name: Upload TestResults artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-${{ github.run_number }}
+          path: TestResults/**
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Upload build binaries (Service + Configurator)
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rdpaudit-binaries-${{ github.run_number }}
+          path: |
+            src/RdpAudit.Service/bin/${{ env.Platform }}/${{ env.Configuration }}/net8.0-windows/**
+            src/RdpAudit.Configurator/bin/${{ env.Platform }}/${{ env.Configuration }}/net8.0-windows/**
+          if-no-files-found: warn
+          retention-days: 7
