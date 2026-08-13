@@ -411,7 +411,7 @@ public static class EventCatalog
 				Criticality = EventCriticality.Informational,
 				DefaultRetentionDays = 180,
 			},
-			new(4778, ChannelSecurity, "Session reconnected to Window Station", "Logoff")
+			new(4778, ChannelSecurity, "Session reconnected to Window Station", "Reconnect")
 			{
 				Preset = EssFull,
 				Criticality = EventCriticality.Medium,
@@ -419,7 +419,7 @@ public static class EventCatalog
 				RequiredEventIds = ImmutableArray.Create(4624),
 				Purpose = "Session reconnect to a Window Station. Pairs with 4779 for reconnect timeline.",
 			},
-			new(4779, ChannelSecurity, "Session disconnected from Window Station", "Logoff")
+			new(4779, ChannelSecurity, "Session disconnected from Window Station", "Reconnect")
 			{
 				Preset = EssFull,
 				Criticality = EventCriticality.Medium,
@@ -557,6 +557,16 @@ public static class EventCatalog
 	/// when the event id is unknown.</summary>
 	public static EventCriticality CriticalityOf(int eventId)
 		=> ByEventId.TryGetValue(eventId, out EventDescriptor? d) ? d.Criticality : EventCriticality.Low;
+
+	/// <summary>Returns the string layer label of the given event id, or <c>"Unknown"</c> when the
+	/// event id is not in the catalog. Kept as a stable string for the Configurator UI.</summary>
+	public static string LayerOf(int eventId)
+		=> ByEventId.TryGetValue(eventId, out EventDescriptor? d) ? d.Layer : "Unknown";
+
+	/// <summary>Returns the typed layer of the given event id, or <see cref="EventLayer.Unknown"/>
+	/// when the event id is not in the catalog. Suitable for persistence and shard records.</summary>
+	public static EventLayer LayerKindOf(int eventId)
+		=> ByEventId.TryGetValue(eventId, out EventDescriptor? d) ? d.LayerKind : EventLayer.Unknown;
 
 	/// <summary>Returns the closure of prerequisite event ids for the given seed events: every
 	/// event that must also be enabled for the seed events to be useful. Includes the seeds
