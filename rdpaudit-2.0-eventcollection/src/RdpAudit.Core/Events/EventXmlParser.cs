@@ -1,5 +1,5 @@
 /* Project: RDPAudit 2.0 | Author: Mikhail Deynekin | Site: Deynekin.com | Email: Mikhail@Deynekin.com */
-// Version: 2.0.0
+// Version: 2.0.1
 // File   : EventXmlParser.cs
 // Project: RdpAudit.Core (RdpAudit.Core.Events)
 // Purpose: Hardened, back-compatible XML parser for Windows EventRecord serialized payloads.
@@ -40,9 +40,17 @@ public static class EventXmlParser
 	/// this is defence-in-depth — a malformed DOCTYPE that slips through still cannot bloat.</summary>
 	private const long MaxCharactersInEntities = 4L * 1024;
 
-	/// <summary>Maximum nesting depth accepted before parsing aborts. Real event payloads
-	/// nest at most 6 levels (Event/EventData/Data). 32 is an ample forensic margin.</summary>
-	private const int MaxDepth = 32;
+	/// <summary>Maximum <see cref="XmlReader.Depth"/> accepted (inclusive) before parsing aborts.
+	/// Real Windows event payloads nest at most 6 levels — <c>Event/EventData/Data/text()</c> reaches
+	/// depth 3, and the deepest live payload (<c>UserData/EventXML/…</c>) reaches depth 4.
+	/// <para>
+	/// Semantics: any node observed with <c>reader.Depth &gt; MaxDepth</c> aborts the parse. Depth
+	/// is 0 for the root element and increments per nested element and per text node inside it, so a
+	/// document with <c>N</c> element levels reaches depth <c>N</c> on the innermost text. Values are
+	/// chosen so a legitimate payload never trips the cap while adversarial payloads (~thousands of
+	/// levels) are refused before any DOM allocation. 64 is an ample forensic margin.
+	/// </para></summary>
+	private const int MaxDepth = 64;
 
 	/// <summary>Text lengths above this in a single field are treated as attacker input and
 	/// truncated to null. Prevents an oversized IpAddress from poisoning the pipeline.</summary>
@@ -72,7 +80,9 @@ public static class EventXmlParser
 
 	/// <summary>Loads an EventRecord XML payload safely; returns <c>null</c> on malformed
 	/// input, oversize documents, DTD injection attempts, encoding faults, IO faults, or any
-	/// nesting depth greater than <see cref="MaxDepth"/>. Never throws.</summary>
+	/// node whose <see cref="XmlReader.Depth"/> exceeds <see cref="MaxDepth"/> (i.e. depths
+	/// <c>0..MaxDepth</c> inclusive are permitted; <c>MaxDepth + 1</c> and above are refused).
+	/// Never throws.</summary>
 	public static XmlDocument? ParseSafe(string xml)
 	{
 		if (string.IsNullOrEmpty(xml))
@@ -299,8 +309,12 @@ public static class EventXmlParser
 
 	// ── Internal helpers ─────────────────────────────────────────────────────────
 
-	/// <summary>Walks the reader once, aborting when depth exceeds <see cref="MaxDepth"/>.
-	/// Returns <c>true</c> when the whole document fits under the depth budget.</summary>
+	/// <summary>Walks the reader once, aborting when any node's depth exceeds <see cref="MaxDepth"/>.
+	/// <see cref="XmlReader.Depth"/> is 0 on the root element and increments for each nested element
+	/// and for text nodes inside them, so a document with <c>N</c> element levels reaches depth
+	/// <c>N</c> on the innermost text node. The strict-greater comparison is intentional: depths
+	/// <c>0..MaxDepth</c> pass; the first node observed at <c>MaxDepth + 1</c> aborts the parse.
+	/// Returns <c>true</c> when every node stayed at or below the budget.</summary>
 	private static bool ValidateDepth(XmlReader reader)
 	{
 		while (reader.Read())
