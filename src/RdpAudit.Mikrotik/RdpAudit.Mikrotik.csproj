@@ -25,7 +25,9 @@
 		<PackageReference Include="SSH.NET" Version="2026.0.0" />
 		<PackageReference Include="MessagePack" Version="2.5.301" />
 		<PackageReference Include="Microsoft.Extensions.Logging" Version="8.0.1" />
-		<PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="8.0.2" />
+		<!-- 8.0.3 is required by SSH.NET 2026.0.0 transitive; keeping the explicit pin so the
+		     assembly-version graph is deterministic and doesn't drift on future SSH.NET bumps. -->
+		<PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="8.0.3" />
 		<PackageReference Include="Microsoft.Extensions.Logging.Console" Version="8.0.1" />
 		<PackageReference Include="System.Security.Cryptography.ProtectedData" Version="8.0.0" />
 		<PackageReference Include="System.Management" Version="8.0.0" />
