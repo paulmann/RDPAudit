@@ -193,19 +193,19 @@ public sealed class EventCollectorHostedWorkerIntegrationTests
 
 			using CancellationTokenSource cts = new();
 			Task run = worker.StartAsync(cts.Token);
-			await run.ConfigureAwait(false);
+			await run;
 
 			// Yield to let the ExecuteAsync loop reach its Task.Delay(Infinite, token) call.
-			await Task.Delay(50).ConfigureAwait(false);
+			await Task.Delay(50);
 
-			await worker.StopAsync(CancellationToken.None).ConfigureAwait(false);
+			await worker.StopAsync(CancellationToken.None);
 
 			// If we got here without hanging or throwing, the idle branch honored cancellation.
 			Assert.True(true);
 		}
 		finally
 		{
-			await host.DisposeAsync().ConfigureAwait(false);
+			await host.DisposeAsync();
 			factory.Dispose();
 		}
 	}
@@ -222,13 +222,13 @@ public sealed class EventCollectorHostedWorkerIntegrationTests
 
 			// StopAsync without StartAsync must not touch _linkedCts (null) and must still
 			// invoke Host.FlushBookmarksAsync + Host.StopAllAsync safely.
-			await worker.StopAsync(CancellationToken.None).ConfigureAwait(false);
+			await worker.StopAsync(CancellationToken.None);
 
 			Assert.False(host.HasUnflushedBookmarks());
 		}
 		finally
 		{
-			await host.DisposeAsync().ConfigureAwait(false);
+			await host.DisposeAsync();
 			factory.Dispose();
 		}
 	}
@@ -242,18 +242,18 @@ public sealed class EventCollectorHostedWorkerIntegrationTests
 			EventCollectorHostedWorker worker = BuildWorker(host, store, policy, factory);
 
 			using CancellationTokenSource cts = new();
-			await worker.StartAsync(cts.Token).ConfigureAwait(false);
-			await Task.Delay(30).ConfigureAwait(false);
+			await worker.StartAsync(cts.Token);
+			await Task.Delay(30);
 
-			await worker.StopAsync(CancellationToken.None).ConfigureAwait(false);
+			await worker.StopAsync(CancellationToken.None);
 
 			// Second StopAsync must not throw ObjectDisposedException or NullReferenceException
 			// even though _linkedCts has already been cancelled once.
-			await worker.StopAsync(CancellationToken.None).ConfigureAwait(false);
+			await worker.StopAsync(CancellationToken.None);
 		}
 		finally
 		{
-			await host.DisposeAsync().ConfigureAwait(false);
+			await host.DisposeAsync();
 			factory.Dispose();
 		}
 	}
@@ -267,10 +267,10 @@ public sealed class EventCollectorHostedWorkerIntegrationTests
 			EventCollectorHostedWorker worker = BuildWorker(host, store, policy, factory);
 
 			using CancellationTokenSource cts = new();
-			await worker.StartAsync(cts.Token).ConfigureAwait(false);
-			await Task.Delay(30).ConfigureAwait(false);
+			await worker.StartAsync(cts.Token);
+			await Task.Delay(30);
 
-			await worker.StopAsync(CancellationToken.None).ConfigureAwait(false);
+			await worker.StopAsync(CancellationToken.None);
 
 			// StopAsync unconditionally calls Host.StopAllAsync — regardless of platform,
 			// the host must report zero live channels after shutdown.
@@ -278,7 +278,7 @@ public sealed class EventCollectorHostedWorkerIntegrationTests
 		}
 		finally
 		{
-			await host.DisposeAsync().ConfigureAwait(false);
+			await host.DisposeAsync();
 			factory.Dispose();
 		}
 	}
