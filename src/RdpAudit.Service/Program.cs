@@ -1,18 +1,27 @@
 /* Project: RDPAudit 2.0 | Author: Mikhail Deynekin | Site: Deynekin.com | Email: Mikhail@Deynekin.com */
-// Version: 2.0.1
+// Version: 2.0.2
 // File   : Program.cs
 // Project: RdpAudit.Service (RdpAudit.Service)
 // Purpose: Process entry point — configures host, DI, logging, and ordered worker registrations,
 //          and sequences startup so schema migrations complete before any DB-backed diagnostics run.
+//          v2.0.2: Wired the v2 event-collection composition — ChannelHealthPolicy singleton,
+//          RingBufferEventPipe over the existing EventChannel, EventLogWatcherEventSourceFactory,
+//          ServiceMetricsChannelStatusSink, and EventCollectorHost — and swapped the hosted
+//          collector from the legacy EventCollectorWorker to the thin EventCollectorHostedWorker
+//          shim. The legacy class stays compilable (its tests still bind to it) but is no longer
+//          hosted by the service.
 //          v2.0.1: CrashGuard has no RecordFatal member (CS1061 on build) — reverted the host-level
 //          fatal-fault handler to Serilog.Log.Fatal, which is guaranteed available since Serilog is
 //          already the global logging pipeline configured by ConfigureSerilog below. This is a
 //          host-lifecycle fault (StartAsync/WaitForShutdownAsync threw), distinct from a per-worker
 //          fault that CrashGuard's installed handlers already catch.
 // Depends: HostApplicationBuilder, AuditDbInitializer, DatabaseInitializationWorker, CrashGuard,
-//          Serilog, IOptionsMonitor<RdpAuditOptions>, TimedHostedService
+//          Serilog, IOptionsMonitor<RdpAuditOptions>, TimedHostedService, EventCollectorHost,
+//          IEventPipe (RingBufferEventPipe), IEventSourceFactory, IChannelStatusSink
 // Extends: Register a new worker via AddTimedHostedService in the ordered block inside
-//          RegisterServices; add a new DI singleton in the composition block above it.
+//          RegisterServices; add a new DI singleton in the composition block above it. To plug in
+//          a different event transport (MPMC ring, shared-memory) register another IEventPipe.
+//          To replace the ETW/EventLog collector, register a different IEventSourceFactory.
 
 using System.Diagnostics;
 using System.Net.Http;
@@ -34,7 +43,9 @@ using RdpAudit.Core.Security;
 using RdpAudit.Service.AbuseIpDb;
 using RdpAudit.Service.Alerts;
 using RdpAudit.Service.Collectors;
+using RdpAudit.Service.EventSources;
 using RdpAudit.Service.Firewall;
+using RdpAudit.Service.Infrastructure;
 using RdpAudit.Service.Ipc;
 using RdpAudit.Service.Processors;
 using RdpAudit.Service.Services;
@@ -267,6 +278,18 @@ public static class Program
 		services.AddSingleton<BookmarkStore>();
 		services.AddSingleton<EventChannel>();
 		services.AddSingleton<ServiceMetrics>();
+
+		// v2 event-collection composition. The IEventPipe adapter reuses the same underlying
+		// ring-buffer instance that lives inside EventChannel, so the legacy EventProcessorWorker
+		// (still reading through EventChannel directly) and the new EventCollectorHostedWorker
+		// (writing through IEventPipe) share a single physical transport — no duplication, no
+		// dropped pipeline hop.
+		services.AddSingleton<ChannelHealthPolicy>();
+		services.AddSingleton<IEventPipe>(sp =>
+			new RingBufferEventPipe(sp.GetRequiredService<EventChannel>()));
+		services.AddSingleton<IEventSourceFactory, EventLogWatcherEventSourceFactory>();
+		services.AddSingleton<IChannelStatusSink, ServiceMetricsChannelStatusSink>();
+		services.AddSingleton<EventCollectorHost>();
 		services.AddSingleton<SessionCorrelationCache>();
 		services.AddSingleton<RdpTransportIpCache>();
 		services.AddSingleton<SessionIpCorrelationUpserter>();
@@ -352,17 +375,21 @@ public static class Program
 		services.AddTimedHostedService<DatabaseInitializationWorker>(nameof(DatabaseInitializationWorker));
 		services.AddTimedHostedService<IpcServerWorker>(nameof(IpcServerWorker));
 
-		// EventCollectorWorker and SecurityBackfillWorker use the factory overload (explicit ctor)
-		// rather than DI activation. The factory produces the instance that TimedHostedService hosts;
-		// no other consumer resolves these types, so a distinct instance is correct and intended.
-		services.AddTimedHostedService(sp => new EventCollectorWorker(
-			sp.GetRequiredService<EventChannel>(),
+		// v2 collector: EventCollectorHostedWorker is a thin BackgroundService shim that composes
+		// EventCollectorHost + IEventSourceFactory + IEventPipe. The legacy monolithic
+		// EventCollectorWorker class is kept in the tree so its existing tests still bind, but it
+		// is no longer registered as a hosted service — the v2 shim owns event collection now.
+		// SecurityBackfillWorker still uses the factory overload (explicit ctor) so it can bind
+		// its 6 dependencies deterministically without DI activation gymnastics.
+		services.AddTimedHostedService(sp => new EventCollectorHostedWorker(
+			sp.GetRequiredService<EventCollectorHost>(),
 			sp.GetRequiredService<BookmarkStore>(),
+			sp.GetRequiredService<ChannelHealthPolicy>(),
 			sp.GetRequiredService<ServiceMetrics>(),
-			sp.GetRequiredService<ILogger<EventCollectorWorker>>(),
 			sp.GetRequiredService<IOptionsMonitor<RdpAuditOptions>>(),
+			sp.GetRequiredService<ILogger<EventCollectorHostedWorker>>(),
 			sp.GetRequiredService<IDbContextFactory<AuditDbContext>>(),
-			sp.GetRequiredService<IOperationLogWriter>()), nameof(EventCollectorWorker));
+			sp.GetRequiredService<IOperationLogWriter>()), nameof(EventCollectorHostedWorker));
 
 		services.AddTimedHostedService(sp => new SecurityBackfillWorker(
 			sp.GetRequiredService<EventChannel>(),
