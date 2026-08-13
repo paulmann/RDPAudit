@@ -391,8 +391,11 @@ public static class Program
 			sp.GetRequiredService<IDbContextFactory<AuditDbContext>>(),
 			sp.GetRequiredService<IOperationLogWriter>()), nameof(EventCollectorHostedWorker));
 
+		// iter16: SecurityBackfillWorker writes through IEventPipe so the semaphore-backed
+		// WaitToReadAsync consumer wakes on every backfill event. The pipe wraps the same
+		// physical ring buffer EventChannel exposes — no duplication, no dropped pipeline hop.
 		services.AddTimedHostedService(sp => new SecurityBackfillWorker(
-			sp.GetRequiredService<EventChannel>(),
+			sp.GetRequiredService<IEventPipe>(),
 			sp.GetRequiredService<ServiceMetrics>(),
 			sp.GetRequiredService<ILogger<SecurityBackfillWorker>>(),
 			sp.GetRequiredService<IOptionsMonitor<RdpAuditOptions>>(),

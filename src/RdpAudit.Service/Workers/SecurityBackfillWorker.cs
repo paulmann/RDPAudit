@@ -1,5 +1,9 @@
 // File:    src/RdpAudit.Service/Workers/SecurityBackfillWorker.cs
 // Module:  RdpAudit.Service.Workers
+// Version: 1.3.0 — iter16: writes now go through IEventPipe.TryWrite so the semaphore-backed
+//                 RingBufferEventPipe.WaitToReadAsync consumer is signalled on every backfill
+//                 write. Wire is unchanged: IEventPipe is a thin adapter over the same physical
+//                 ring buffer that EventChannel exposes, so no duplication and no pipeline hop.
 // Purpose: Bounded, idempotent backfill for the Security authentication event set.
 //          The previous implementation issued ONE giant XPath OR-clause covering ~20 event
 //          IDs across the whole channel and a 3-minute lookback. On a host whose Security
@@ -82,7 +86,7 @@ public sealed class SecurityBackfillWorker : BackgroundService
 	private static readonly TimeSpan LatestBackfillLookback = TimeSpan.FromHours(24);
 	private static readonly TimeSpan StartupGrace = TimeSpan.FromSeconds(15);
 
-	private readonly EventChannel _channel;
+	private readonly IEventPipe _pipe;
 	private readonly ServiceMetrics _metrics;
 	private readonly ILogger<SecurityBackfillWorker> _logger;
 	private readonly IOptionsMonitor<RdpAuditOptions> _options;
@@ -95,16 +99,16 @@ public sealed class SecurityBackfillWorker : BackgroundService
 	private bool _firstTickDone;
 
 	public SecurityBackfillWorker(
-		EventChannel channel,
+		IEventPipe pipe,
 		ServiceMetrics metrics,
 		ILogger<SecurityBackfillWorker> logger,
 		IOptionsMonitor<RdpAuditOptions> options)
-		: this(channel, metrics, logger, options, bookmarks: null, factory: null)
+		: this(pipe, metrics, logger, options, bookmarks: null, factory: null)
 	{
 	}
 
 	public SecurityBackfillWorker(
-		EventChannel channel,
+		IEventPipe pipe,
 		ServiceMetrics metrics,
 		ILogger<SecurityBackfillWorker> logger,
 		IOptionsMonitor<RdpAuditOptions> options,
@@ -112,7 +116,11 @@ public sealed class SecurityBackfillWorker : BackgroundService
 		IDbContextFactory<AuditDbContext>? factory,
 		OverviewProgressState? progress = null)
 	{
-		_channel = channel;
+		ArgumentNullException.ThrowIfNull(pipe);
+		ArgumentNullException.ThrowIfNull(metrics);
+		ArgumentNullException.ThrowIfNull(logger);
+		ArgumentNullException.ThrowIfNull(options);
+		_pipe = pipe;
 		_metrics = metrics;
 		_logger = logger;
 		_options = options;
@@ -423,9 +431,11 @@ catch (EventLogException ex)
 					XmlPayload = xml,
 				};
 
-// v2.0.0: RingBufferEventChannel API migration
+// v2.1.0 (iter16): route through IEventPipe so the semaphore-backed WaitToReadAsync consumer
+// is signalled on every backfill write. The underlying transport is the same physical ring
+// buffer that EventChannel exposes — no duplication, no dropped pipeline hop.
 // TryWrite returns false ONLY when DropOldest overflow occurs.
-bool writtenWithoutOverflow = _channel.Channel.TryWrite(dto);
+bool writtenWithoutOverflow = _pipe.TryWrite(dto);
 
 forwarded++;
 _metrics.IncrementCaptured();
