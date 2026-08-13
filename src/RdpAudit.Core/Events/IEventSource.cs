@@ -50,7 +50,7 @@ public interface IEventSource
 	IEventPipe Pipe { get; }
 
 	/// <summary>Current lifecycle state. Read is thread-safe via
-	/// <see cref="System.Threading.Volatile.Read{T}(ref T)"/> semantics.</summary>
+	/// <see cref="System.Threading.Volatile"/>.Read semantics.</summary>
 	EventSourceStatus Status { get; }
 
 	/// <summary>Raised on every state transition. Subscribers MUST NOT block — dispatch
