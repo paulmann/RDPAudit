@@ -118,10 +118,7 @@ public sealed class EventLogWatcherEventSource : IEventSource, IDisposable
 	/// <inheritdoc />
 	public Task StartAsync(CancellationToken ct)
 	{
-		if (_disposed)
-		{
-			throw new ObjectDisposedException(nameof(EventLogWatcherEventSource));
-		}
+		ObjectDisposedException.ThrowIf(_disposed, this);
 
 		ct.ThrowIfCancellationRequested();
 
@@ -146,7 +143,9 @@ public sealed class EventLogWatcherEventSource : IEventSource, IDisposable
 			{
 				TransitionTo_NoLock(EventSourceStatus.Faulted, reason: ex.Message);
 				DisposeWatcher_NoLock();
-				_onWatcherFault?.Invoke(_channel, ex, isCallback: false);
+				// Invoke's parameter list is arg1/arg2/arg3 (Action<,,>) so the fault bit
+				// travels positionally; `false` = "not raised from a callback thread".
+				_onWatcherFault?.Invoke(_channel, ex, false);
 				throw;
 			}
 		}
@@ -209,7 +208,8 @@ public sealed class EventLogWatcherEventSource : IEventSource, IDisposable
 				// the fault callback and can wipe the persisted bookmark.
 				_initialBookmarkXml = null;
 				watcher = new EventLogWatcher(query);
-				_onWatcherFault?.Invoke(_channel, ex, isCallback: false);
+				// Positional args on Action<,,>: (channel, exception, isCallback=false).
+				_onWatcherFault?.Invoke(_channel, ex, false);
 			}
 		}
 
