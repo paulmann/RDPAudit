@@ -10,6 +10,8 @@
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using RdpAudit.Core.Config;
+using RdpAudit.Core.Events;
+using RdpAudit.Service.Infrastructure;
 using RdpAudit.Service.Workers;
 using Xunit;
 
@@ -17,12 +19,15 @@ namespace RdpAudit.Service.Tests;
 
 public class SecurityBackfillWorkerTests
 {
+	// iter16: NewWorker() now wires the worker through IEventPipe (RingBufferEventPipe over an
+	// EventChannel-backed transport) so tests exercise the same write path production uses.
 	private static SecurityBackfillWorker NewWorker()
 	{
 		EventChannel channel = new(new OptionsWrapper<RdpAuditOptions>(new RdpAuditOptions()));
+		IEventPipe pipe = new RingBufferEventPipe(channel);
 		ServiceMetrics metrics = new();
 		IOptionsMonitor<RdpAuditOptions> opts = new TestOptionsMonitor<RdpAuditOptions>(new RdpAuditOptions());
-		return new SecurityBackfillWorker(channel, metrics, NullLogger<SecurityBackfillWorker>.Instance, opts);
+		return new SecurityBackfillWorker(pipe, metrics, NullLogger<SecurityBackfillWorker>.Instance, opts);
 	}
 
 	[Fact]
