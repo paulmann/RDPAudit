@@ -1458,8 +1458,50 @@ function Invoke-Main {
 	Write-Ok 'RdpAudit installation pipeline completed successfully.'
 }
 
+# Version: 1.1.0
+# Keeps the PowerShell console window open after the pipeline finishes so the
+# operator can read the installation summary (or the fatal-error stack) even
+# when the script was launched by a double-click / desktop shortcut that would
+# otherwise close the host immediately on `exit`. The pause is suppressed for
+# non-interactive callers (CI, other scripts) via the RDPAUDIT_NONINTERACTIVE
+# environment variable or when the host is not the ConsoleHost (ISE, VSCode).
+function Wait-BeforeExit {
+	param(
+		[int]$ExitCode
+	)
+
+	$nonInteractiveEnv = $env:RDPAUDIT_NONINTERACTIVE
+	if (-not [string]::IsNullOrWhiteSpace($nonInteractiveEnv) -and $nonInteractiveEnv -ne '0') {
+		return
+	}
+
+	if (-not [Environment]::UserInteractive) {
+		return
+	}
+
+	if ($Host.Name -ne 'ConsoleHost') {
+		return
+	}
+
+	Write-Host ''
+	if ($ExitCode -eq 0) {
+		Write-Host 'Installation finished. Press any key to close this window ...' -ForegroundColor Green
+	} else {
+		Write-Host "Installation FAILED with exit code $ExitCode. Press any key to close this window ..." -ForegroundColor Red
+	}
+
+	try {
+		$null = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')
+	} catch {
+		# Fallback for hosts without RawUI (should not happen in ConsoleHost) — use Read-Host so
+		# the operator still gets a chance to read the output before the window closes.
+		$null = Read-Host 'Press ENTER to close'
+	}
+}
+
 try {
 	Invoke-Main
+	Wait-BeforeExit -ExitCode 0
 	exit 0
 } catch {
 	Write-Section 'Fatal Error'
@@ -1470,5 +1512,6 @@ try {
 		Write-Host $_.ScriptStackTrace -ForegroundColor DarkRed
 	}
 
+	Wait-BeforeExit -ExitCode 1
 	exit 1
 }
