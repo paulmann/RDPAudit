@@ -323,12 +323,13 @@ public sealed class EventCollectorHostTests
 
 		src.OnWatcherFault!("Security", new System.Diagnostics.Eventing.Reader.EventLogException("stale"), true);
 
-		// Give the fire-and-forget restart task a moment to run.
-		await WaitForConditionAsync(() => sink.Statuses.Any(s => s.Status == "BookmarkReset"),
-			TimeSpan.FromSeconds(2));
+		// The status is set synchronously; ResetBookmarkStateAsync runs on a fire-and-forget task and
+		// clears the persisted bookmark shortly after. Wait for the bookmark to be gone, which is the
+		// stronger post-condition and implies the status has already been emitted.
+		await WaitForConditionAsync(() => store.GetBookmarkXml("Security") is null,
+			TimeSpan.FromSeconds(5));
 
 		Assert.Contains(sink.Statuses, s => s.Status == "BookmarkReset");
-		// After bookmark reset the persisted bookmark must be gone.
 		Assert.Null(store.GetBookmarkXml("Security"));
 	}
 
