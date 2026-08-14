@@ -52,6 +52,7 @@
 using System.Diagnostics;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -106,6 +107,12 @@ public sealed class EventProcessorWorker : BackgroundService
 	private readonly IOptionsMonitor<RdpAuditOptions> _options;
 	private readonly IOperationLogWriter _opLog;
 
+	/// <summary>Bookmark persistence. Null keeps the legacy split commit (collector owns bookmarks).</summary>
+	private readonly BookmarkStore? _bookmarks;
+
+	/// <summary>Sequence-to-bookmark ledger. Non-null exactly when <see cref="_bookmarks"/> is.</summary>
+	private readonly BookmarkCheckpointLedger? _checkpoints;
+
 	private int _consecutiveFailures;
 
 	// ── Construction ─────────────────────────────────────────────────────────────
@@ -128,7 +135,9 @@ public sealed class EventProcessorWorker : BackgroundService
 		ServiceMetrics metrics,
 		ILogger<EventProcessorWorker> logger,
 		IOptionsMonitor<RdpAuditOptions> options,
-		IOperationLogWriter opLog)
+		IOperationLogWriter opLog,
+		BookmarkStore? bookmarks = null,
+		BookmarkCheckpointLedger? checkpoints = null)
 	{
 		ArgumentNullException.ThrowIfNull(pipe);
 		ArgumentNullException.ThrowIfNull(metrics);
@@ -137,6 +146,7 @@ public sealed class EventProcessorWorker : BackgroundService
 
 		_pipe = pipe;
 		_factory = factory;
+
 		_normalizer = normalizer;
 		_correlationUpserter = correlationUpserter;
 		_connectionFactUpserter = connectionFactUpserter;
@@ -146,6 +156,85 @@ public sealed class EventProcessorWorker : BackgroundService
 		_logger = logger;
 		_options = options;
 		_opLog = opLog;
+		_bookmarks = bookmarks;
+		_checkpoints = checkpoints;
+
+		// Unified commit needs both halves. Supplying only one is a composition mistake that would
+		// silently degrade to the legacy split-commit behaviour, so surface it loudly at startup.
+		if ((bookmarks is null) != (checkpoints is null))
+		{
+			throw new ArgumentException(
+				"BookmarkStore and BookmarkCheckpointLedger must be supplied together to enable " +
+				"unified bookmark commit, or both omitted to keep the legacy split commit.",
+				nameof(bookmarks));
+		}
+	}
+
+	// ── Unified Commit ───────────────────────────────────────────────────────────
+
+	/// <summary>
+	/// Writes every bookmark made durable by the current transaction through
+	/// <paramref name="tx"/>, so the bookmark advance and the events it covers share one commit.
+	/// </summary>
+	/// <param name="db">Context whose connection and transaction are borrowed.</param>
+	/// <param name="tx">The in-flight EF transaction. Not committed or disposed here.</param>
+	/// <param name="committedThroughSequence">Highest ingestion sequence in this batch.</param>
+	/// <param name="ct">Cancellation token.</param>
+	/// <returns>Bookmarks written, so the caller can prune the ledger after a successful commit.</returns>
+	private async Task<int> WriteBookmarksInTransactionAsync(
+		AuditDbContext db,
+		IDbContextTransaction tx,
+		long committedThroughSequence,
+		CancellationToken ct)
+	{
+		if (_bookmarks is null || _checkpoints is null || committedThroughSequence <= 0)
+		{
+			return 0;
+		}
+
+		Dictionary<string, string> committable = new(StringComparer.OrdinalIgnoreCase);
+		if (_checkpoints.CollectCommittable(committedThroughSequence, committable) == 0)
+		{
+			return 0;
+		}
+
+		// Borrow EF's own connection and transaction rather than opening a second one: a separate
+		// connection would deadlock against the writer lock this transaction already holds under
+		// SQLite WAL, and would defeat the atomicity the unified commit exists to provide.
+		if (db.Database.GetDbConnection() is not SqliteConnection conn ||
+			tx.GetDbTransaction() is not SqliteTransaction sqliteTx)
+		{
+			_logger.LogWarning(
+				"Unified bookmark commit skipped: provider is not SQLite for {ChannelCount} channels",
+				committable.Count);
+			return 0;
+		}
+
+		// Update the in-memory cache BEFORE the commit and roll it back on failure, matching the
+		// ordering contract documented on BookmarkStore.SaveInSameTransactionAsync.
+		Dictionary<string, string?> previous = new(StringComparer.OrdinalIgnoreCase);
+		foreach (KeyValuePair<string, string> entry in committable)
+		{
+			previous[entry.Key] = _bookmarks.UpdateCache(entry.Key, entry.Value);
+		}
+
+		try
+		{
+			await _bookmarks
+				.SaveBatchInSameTransactionAsync(conn, sqliteTx, committable, ct)
+				.ConfigureAwait(false);
+		}
+		catch
+		{
+			foreach (KeyValuePair<string, string?> entry in previous)
+			{
+				_bookmarks.RollbackCache(entry.Key, entry.Value);
+			}
+
+			throw;
+		}
+
+		return committable.Count;
 	}
 
 	private bool DebugEnabled => _options.CurrentValue.Diagnostics.DebugMode;
@@ -432,7 +521,35 @@ public sealed class EventProcessorWorker : BackgroundService
 				.ConfigureAwait(false);
 
 			await db.SaveChangesAsync(ct).ConfigureAwait(false);
+
+			// Unified durability boundary: the bookmark advance rides the SAME commit as the events
+			// it would otherwise skip past. Written last so it covers everything above it, and
+			// before CommitAsync so a failure here rolls the whole batch back together.
+			long committedThroughSequence = 0;
+			foreach (RawEventDto dto in dtos)
+			{
+				if (dto.IngestionSequence > committedThroughSequence)
+				{
+					committedThroughSequence = dto.IngestionSequence;
+				}
+			}
+
+			int bookmarksWritten = await WriteBookmarksInTransactionAsync(
+				db, tx, committedThroughSequence, ct).ConfigureAwait(false);
+
 			await tx.CommitAsync(ct).ConfigureAwait(false);
+
+			// Only now is the position durable, so only now may the ledger forget the checkpoints
+			// and let the collector's fallback flush publish them.
+			if (bookmarksWritten > 0)
+			{
+				_checkpoints!.Prune(committedThroughSequence);
+
+				_logger.LogDebug(
+					"Unified commit advanced {BookmarkCount} bookmark(s) through sequence {Sequence}",
+					bookmarksWritten,
+					committedThroughSequence);
+			}
 
 			if (authResult.FailedCreated > 0 || authResult.SucceededCreated > 0)
 			{

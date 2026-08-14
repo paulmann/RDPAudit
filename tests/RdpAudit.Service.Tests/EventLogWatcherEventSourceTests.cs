@@ -31,7 +31,7 @@ public sealed class EventLogWatcherEventSourceTests
 
 	private static EventLogWatcherEventSource CreateSource(
 		IEventPipe? pipe = null,
-		Action<string, string>? onBookmark = null,
+		Action<string, string, long>? onBookmark = null,
 		Action<string, Exception, bool>? onWatcherFault = null,
 		string? initialBookmarkXml = null)
 	{
@@ -235,7 +235,7 @@ public sealed class EventLogWatcherEventSourceTests
 	[Fact]
 	public void Ctor_AcceptsOptionalCallbacks()
 	{
-		Action<string, string> bookmark = (_, _) => { };
+		Action<string, string, long> bookmark = (_, _, _) => { };
 		Action<string, Exception, bool> fault = (_, _, _) => { };
 
 		using EventLogWatcherEventSource source = new(

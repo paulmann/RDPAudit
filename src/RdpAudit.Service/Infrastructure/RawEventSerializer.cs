@@ -1,5 +1,5 @@
 /* Project: RDPAudit 2.0 | Author: Mikhail Deynekin | Site: Deynekin.com | Email: Mikhail@Deynekin.com */
-// Version: 2.0.2
+// Version: 2.0.3
 
 using System;
 using System.Runtime.CompilerServices;
@@ -18,7 +18,12 @@ public static class RawEventSerializer
     {
         RawEventSlot slot = default;
 
-        slot.SequenceNumber = (uint)Interlocked.Increment(ref _sequenceCounter);
+        // Stamp the monotonic ingestion sequence on both the slot and the source DTO so the
+        // caller can correlate a queued event with the bookmark/shard durability boundary even
+        // before the consumer deserializes it.
+        uint sequence = (uint)Interlocked.Increment(ref _sequenceCounter);
+        slot.SequenceNumber = sequence;
+        dto.IngestionSequence = sequence;
         
         slot.TimestampTicks = dto.TimeUtc.Ticks; 
         slot.EventId = dto.EventId;
@@ -65,7 +70,11 @@ public static class RawEventSerializer
             TimeUtc = new DateTime(slot.TimestampTicks, DateTimeKind.Utc),
             EventId = slot.EventId,
             Channel = channel,
-            XmlPayload = xmlPayload
+            XmlPayload = xmlPayload,
+
+            // Carried across the ring so the consumer can detect gaps (dropped slots) and so the
+            // unified commit in EventProcessorWorker can key the bookmark on a stable ordinal.
+            IngestionSequence = slot.SequenceNumber
         };
     }
 }

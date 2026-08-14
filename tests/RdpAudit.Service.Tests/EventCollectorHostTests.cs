@@ -40,11 +40,11 @@ public sealed class EventCollectorHostTests
 		public int DisposeCalls;
 		public Exception? StartException;
 
-		public Action<string, string>? OnBookmark { get; }
+		public Action<string, string, long>? OnBookmark { get; }
 		public Action<string, Exception, bool>? OnWatcherFault { get; }
 
 		public FakeSource(string channel,
-			Action<string, string>? onBookmark,
+			Action<string, string, long>? onBookmark,
 			Action<string, Exception, bool>? onWatcherFault)
 		{
 			Name = channel;
@@ -99,7 +99,7 @@ public sealed class EventCollectorHostTests
 		public Func<string, Exception?>? StartExceptionSelector;
 
 		public IEventSource Create(string channel, string xpathQuery, string? bookmarkXml,
-			Action<string, string> onBookmark, Action<string, Exception, bool> onWatcherFault)
+			Action<string, string, long> onBookmark, Action<string, Exception, bool> onWatcherFault)
 		{
 			FakeSource src = new(channel, onBookmark, onWatcherFault);
 			if (StartExceptionSelector is not null)
@@ -270,7 +270,7 @@ public sealed class EventCollectorHostTests
 		await host.StartChannelAsync("Security", "*", CancellationToken.None);
 
 		FakeSource src = factory.Created[0];
-		src.OnBookmark!("Security", "<bm-v1/>");
+		src.OnBookmark!("Security", "<bm-v1/>", 1);
 
 		Assert.True(host.HasUnflushedBookmarks());
 		Assert.Null(store.GetBookmarkXml("Security"));
@@ -292,14 +292,14 @@ public sealed class EventCollectorHostTests
 		await host.StartChannelAsync("Security", "*", CancellationToken.None);
 
 		FakeSource src = factory.Created[0];
-		src.OnBookmark!("Security", "<bm/>");
+		src.OnBookmark!("Security", "<bm/>", 1);
 
 		await host.FlushBookmarksAsync(CancellationToken.None);
 		Assert.Equal("<bm/>", store.GetBookmarkXml("Security"));
 
 		// Second call with an identical bookmark must NOT re-flush (contract: idempotent).
 		Assert.False(host.HasUnflushedBookmarks());
-		src.OnBookmark!("Security", "<bm/>");
+		src.OnBookmark!("Security", "<bm/>", 2);
 		Assert.False(host.HasUnflushedBookmarks());
 	}
 
@@ -317,7 +317,7 @@ public sealed class EventCollectorHostTests
 		// Seed a bookmark then fault with EventLogException — health policy demands
 		// ResetBookmarkAndRestart on the first invalid-handle-like failure.
 		FakeSource src = factory.Created[0];
-		src.OnBookmark!("Security", "<bm/>");
+		src.OnBookmark!("Security", "<bm/>", 1);
 		await host.FlushBookmarksAsync(CancellationToken.None);
 		Assert.Equal("<bm/>", store.GetBookmarkXml("Security"));
 

@@ -42,7 +42,7 @@ public sealed class EventLogWatcherEventSourceFactory : IEventSourceFactory
 		string channel,
 		string xpathQuery,
 		string? bookmarkXml,
-		Action<string, string> onBookmark,
+		Action<string, string, long> onBookmark,
 		Action<string, Exception, bool> onWatcherFault)
 	{
 		ArgumentException.ThrowIfNullOrWhiteSpace(channel);
