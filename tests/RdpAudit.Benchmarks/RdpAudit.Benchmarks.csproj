@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+	<PropertyGroup>
+		<OutputType>Exe</OutputType>
+		<TargetFramework>net8.0-windows</TargetFramework>
+		<RootNamespace>RdpAudit.Benchmarks</RootNamespace>
+		<AssemblyName>RdpAudit.Benchmarks</AssemblyName>
+		<RuntimeIdentifier>win-x64</RuntimeIdentifier>
+		<SelfContained>false</SelfContained>
+		<Nullable>enable</Nullable>
+		<AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+		<IsPackable>false</IsPackable>
+		<!-- BenchmarkDotNet requires Release; keep Debug builds cheap but functional. -->
+		<ServerGarbageCollection>true</ServerGarbageCollection>
+		<ConcurrentGarbageCollection>true</ConcurrentGarbageCollection>
+		<TieredCompilation>true</TieredCompilation>
+	</PropertyGroup>
+	<ItemGroup>
+		<PackageReference Include="BenchmarkDotNet" Version="0.14.0" />
+		<PackageReference Include="BenchmarkDotNet.Diagnostics.Windows" Version="0.14.0" />
+	</ItemGroup>
+	<ItemGroup>
+		<ProjectReference Include="..\..\src\RdpAudit.Core\RdpAudit.Core.csproj" />
+		<ProjectReference Include="..\..\src\RdpAudit.Service\RdpAudit.Service.csproj" />
+	</ItemGroup>
+</Project>
