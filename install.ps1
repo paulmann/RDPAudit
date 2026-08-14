@@ -12,7 +12,7 @@
 
 .NOTES
 	Author : Mikhail Deynekin — https://Deynekin.com — Mikhail@Deynekin.com
-	Version: 1.3.1
+	Version: 1.3.2
 
 .FEATURES
 	Detects and reports any previously installed RdpAudit version (with version number).
@@ -64,7 +64,16 @@ param(
 	# reports Failed tests plus the final summary, keeping the transcript compact. The
 	# machine-readable TRX result file is written to <LogDirectory>\test-results\ either
 	# way, so the full list of Passed tests is always available for inspection.
-	[switch]$VerboseTests
+	[switch]$VerboseTests,
+
+	# When present, the host PowerShell process itself is terminated after a successful
+	# installation (equivalent to typing 'exit' at the prompt). Useful for scripted /
+	# unattended runs launched from a task scheduler or one-shot desktop shortcut where
+	# leaving an open console window is undesirable. Without this switch the installer
+	# simply returns control to the current prompt so the operator can keep working in
+	# the same window. Failed runs are never auto-exited — the window always stays open
+	# so the fatal error and log path remain visible.
+	[switch]$ExitAfterInstall
 )
 
 Set-StrictMode -Version Latest
@@ -1610,6 +1619,16 @@ try {
 	Show-InstallationLogHint -ExitCode $exitCode
 } finally {
 	Stop-InstallationTranscript
+}
+
+# When -ExitAfterInstall is set AND the installation succeeded, terminate the host
+# PowerShell process itself so a scripted launch closes cleanly. Without the switch
+# the script simply returns to the current prompt (regardless of outcome) so the
+# operator can keep working in the same window. Failed runs never auto-close the
+# host — the window must stay open so the fatal error and log path remain visible.
+if ($ExitAfterInstall -and $exitCode -eq 0 -and $Host.Name -eq 'ConsoleHost') {
+	Write-Host 'ExitAfterInstall requested — closing PowerShell host.' -ForegroundColor DarkGray
+	[Environment]::Exit($exitCode)
 }
 
 exit $exitCode
