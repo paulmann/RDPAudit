@@ -312,25 +312,32 @@ public sealed class EventCollectorHostTests
 		RecordingSink sink = new();
 
 		EventCollectorHost host = CreateHost(factory, store, policy, sink);
-		await host.StartChannelAsync("Security", "*", CancellationToken.None);
+		try
+		{
+			await host.StartChannelAsync("Security", "*", CancellationToken.None);
 
-		// Seed a bookmark then fault with EventLogException — health policy demands
-		// ResetBookmarkAndRestart on the first invalid-handle-like failure.
-		FakeSource src = factory.Created[0];
-		src.OnBookmark!("Security", "<bm/>", 1);
-		await host.FlushBookmarksAsync(CancellationToken.None);
-		Assert.Equal("<bm/>", store.GetBookmarkXml("Security"));
+			// Seed a bookmark then fault with EventLogException — health policy demands
+			// ResetBookmarkAndRestart on the first invalid-handle-like failure.
+			FakeSource src = factory.Created[0];
+			src.OnBookmark!("Security", "<bm/>", 1);
+			await host.FlushBookmarksAsync(CancellationToken.None);
+			Assert.Equal("<bm/>", store.GetBookmarkXml("Security"));
 
-		src.OnWatcherFault!("Security", new System.Diagnostics.Eventing.Reader.EventLogException("stale"), true);
+			src.OnWatcherFault!("Security", new System.Diagnostics.Eventing.Reader.EventLogException("stale"), true);
 
-		// The status is set synchronously; ResetBookmarkStateAsync runs on a fire-and-forget task and
-		// clears the persisted bookmark shortly after. Wait for the bookmark to be gone, which is the
-		// stronger post-condition and implies the status has already been emitted.
-		await WaitForConditionAsync(() => store.GetBookmarkXml("Security") is null,
-			TimeSpan.FromSeconds(5));
+			// The status is set synchronously; ResetBookmarkStateAsync runs on a fire-and-forget task
+			// and clears the persisted bookmark shortly after. Wait for the bookmark to be gone, which
+			// is the stronger post-condition and implies the status has already been emitted.
+			await WaitForConditionAsync(() => store.GetBookmarkXml("Security") is null,
+				TimeSpan.FromSeconds(5));
 
-		Assert.Contains(sink.Statuses, s => s.Status == "BookmarkReset");
-		Assert.Null(store.GetBookmarkXml("Security"));
+			Assert.Contains(sink.Statuses, s => s.Status == "BookmarkReset");
+			Assert.Null(store.GetBookmarkXml("Security"));
+		}
+		finally
+		{
+			await host.DisposeAsync();
+		}
 	}
 
 	[Fact]
@@ -342,28 +349,37 @@ public sealed class EventCollectorHostTests
 		RecordingSink sink = new();
 
 		EventCollectorHost host = CreateHost(factory, store, policy, sink);
-		await host.StartChannelAsync("Security", "*", CancellationToken.None);
+		try
+		{
+			await host.StartChannelAsync("Security", "*", CancellationToken.None);
 
-		FakeSource src = factory.Created[0];
+			FakeSource src = factory.Created[0];
 
-		// First fault: invalid-handle-like -> BookmarkReset (policy burns the reset budget).
-		src.OnWatcherFault!("Security", new System.Diagnostics.Eventing.Reader.EventLogException("first"), false);
-		await WaitForConditionAsync(() => sink.Statuses.Any(s => s.Status == "BookmarkReset"),
-			TimeSpan.FromSeconds(2));
+			// First fault: invalid-handle-like -> BookmarkReset.
+			src.OnWatcherFault!("Security", new System.Diagnostics.Eventing.Reader.EventLogException("first"), false);
+			await WaitForConditionAsync(() => sink.Statuses.Any(s => s.Status == "BookmarkReset"),
+				TimeSpan.FromSeconds(2));
 
-		// After the first fault the host re-arms and reports success, which resets the
-		// per-channel failure counters. That is intentional prod behavior. To exercise the
-		// Cooldown / RestartScheduled path deterministically we deliver a non-invalid-handle
-		// exception on the freshly armed source: the policy short-circuits past the bookmark
-		// reset branch and returns Cooldown directly.
-		FakeSource? newSrc = factory.Created.LastOrDefault();
-		Assert.NotNull(newSrc);
-		newSrc!.OnWatcherFault!("Security", new InvalidOperationException("transient-non-handle"), true);
+			// After the first fault the host re-arms and reports success, which resets the
+			// per-channel failure counters. That is intentional prod behavior. To exercise the
+			// Cooldown / RestartScheduled path deterministically we deliver a non-invalid-handle
+			// exception on the freshly armed source: the policy short-circuits past the bookmark
+			// reset branch and returns Cooldown directly.
+			FakeSource? newSrc = factory.Created.LastOrDefault();
+			Assert.NotNull(newSrc);
+			newSrc!.OnWatcherFault!("Security", new InvalidOperationException("transient-non-handle"), true);
 
-		await WaitForConditionAsync(() => sink.Statuses.Any(s => s.Status == "RestartScheduled"),
-			TimeSpan.FromSeconds(2));
+			await WaitForConditionAsync(() => sink.Statuses.Any(s => s.Status == "RestartScheduled"),
+				TimeSpan.FromSeconds(2));
 
-		Assert.Contains(sink.Statuses, s => s.Status == "RestartScheduled");
+			Assert.Contains(sink.Statuses, s => s.Status == "RestartScheduled");
+		}
+		finally
+		{
+			// Host owns a 2-minute Cooldown Task.Delay in the fire-and-forget restart loop.
+			// DisposeAsync cancels it so dotnet test can exit promptly instead of hanging.
+			await host.DisposeAsync();
+		}
 	}
 
 	[Fact]

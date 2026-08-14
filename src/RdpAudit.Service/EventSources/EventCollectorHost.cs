@@ -1,5 +1,5 @@
 /* Project: RDPAudit 2.0 | Author: Mikhail Deynekin | Site: Deynekin.com | Email: Mikhail@Deynekin.com */
-// Version: 2.0.0
+// Version: 2.0.1
 // File   : EventCollectorHost.cs
 // Project: RdpAudit.Service (RdpAudit.Service.EventSources)
 // Purpose: Composes one IEventSource per Windows Event Log channel, drives ChannelHealthPolicy
@@ -75,6 +75,10 @@ public sealed class EventCollectorHost : IAsyncDisposable
 		new(StringComparer.OrdinalIgnoreCase);
 
 	private volatile bool _shuttingDown;
+
+	/// <summary>Cancels every fire-and-forget restart loop so DisposeAsync completes promptly
+	/// instead of blocking on a multi-minute Cooldown Task.Delay.</summary>
+	private readonly CancellationTokenSource _hostCts = new();
 
 	// ── Construction ─────────────────────────────────────────────────────────────
 
@@ -396,11 +400,11 @@ public sealed class EventCollectorHost : IAsyncDisposable
 			{
 				if (resetBookmark)
 				{
-					await ResetBookmarkStateAsync(channel, CancellationToken.None).ConfigureAwait(false);
+					await ResetBookmarkStateAsync(channel, _hostCts.Token).ConfigureAwait(false);
 				}
 				else
 				{
-					await WaitForRestartGateAsync(channel, CancellationToken.None).ConfigureAwait(false);
+					await WaitForRestartGateAsync(channel, _hostCts.Token).ConfigureAwait(false);
 				}
 
 				if (_shuttingDown || _health.IsDisabled(channel))
@@ -414,12 +418,16 @@ public sealed class EventCollectorHost : IAsyncDisposable
 				arming = true;
 				_restartInFlight.TryRemove(channel, out _);
 
-				await StartChannelAsync(channel, xpathQuery, CancellationToken.None).ConfigureAwait(false);
+				await StartChannelAsync(channel, xpathQuery, _hostCts.Token).ConfigureAwait(false);
 
 				if (!_health.IsDisabled(channel))
 				{
 					_statusSink?.SetChannelStatus(channel, "RestartSucceeded");
 				}
+			}
+			catch (OperationCanceledException) when (_hostCts.IsCancellationRequested)
+			{
+				// Host shutting down — fall through to release _restartInFlight quietly.
 			}
 			catch (Exception ex)
 			{
@@ -582,7 +590,19 @@ public sealed class EventCollectorHost : IAsyncDisposable
 	public async ValueTask DisposeAsync()
 	{
 		_shuttingDown = true;
-		await StopAllAsync(CancellationToken.None).ConfigureAwait(false);
+		try
+		{
+			_hostCts.Cancel();
+		}
+		catch (ObjectDisposedException) { /* already disposed */ }
+		try
+		{
+			await StopAllAsync(CancellationToken.None).ConfigureAwait(false);
+		}
+		finally
+		{
+			_hostCts.Dispose();
+		}
 	}
 
 	// ── Nested types ─────────────────────────────────────────────────────────────
