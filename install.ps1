@@ -12,7 +12,7 @@
 
 .NOTES
 	Author : Mikhail Deynekin — https://Deynekin.com — Mikhail@Deynekin.com
-	Version: 1.3.0
+	Version: 1.3.1
 
 .FEATURES
 	Detects and reports any previously installed RdpAudit version (with version number).
@@ -57,7 +57,14 @@ param(
 	# Directory that will receive the RDPAudit_Install_<Date_Time>.log transcript file.
 	# Defaults to '<WorkDirectory>\logs'. The directory is created on demand and is never
 	# deleted or truncated by the installer, so previous runs remain available for review.
-	[string]$LogDirectory = ''
+	[string]$LogDirectory = '',
+
+	# When present, dotnet test streams every test outcome (Passed + Failed + Skipped) to
+	# the console and transcript. Default behaviour is 'minimal' verbosity which only
+	# reports Failed tests plus the final summary, keeping the transcript compact. The
+	# machine-readable TRX result file is written to <LogDirectory>\test-results\ either
+	# way, so the full list of Passed tests is always available for inspection.
+	[switch]$VerboseTests
 )
 
 Set-StrictMode -Version Latest
@@ -1233,16 +1240,66 @@ function Invoke-RdpAuditBuildPipeline {
 	Write-Section 'dotnet test'
 	# --blame-hang-timeout <n> aborts a test that runs longer than the timeout AND prints the
 	# assembly + test name that was running when the timeout fired, so we always know which
-	# test hung the run. --logger 'console;verbosity=normal' streams each test as it completes.
+	# test hung the run.
+	#
+	# Console logger verbosity:
+	#   * default (-VerboseTests NOT set)  — 'minimal' — only Failed tests + summary are
+	#     streamed to the console/transcript. This keeps the RDPAudit_Install_*.log file
+	#     small enough to skim even when hundreds of tests pass.
+	#   * -VerboseTests                    — 'normal'  — every test outcome is streamed.
+	#
+	# The full result set (Passed / Failed / Skipped, per-test duration, stack traces) is
+	# additionally captured to a TRX file under <LogDirectory>\test-results\ regardless of
+	# verbosity, so no information is lost even in minimal mode.
+	$testResultsDirectory = Join-Path -Path $LogDirectory -ChildPath 'test-results'
+	try {
+		if (-not (Test-Path -LiteralPath $testResultsDirectory)) {
+			New-Item -ItemType Directory -Path $testResultsDirectory -Force | Out-Null
+		}
+	} catch {
+		Write-WarningMessage ("Could not create test results directory '{0}': {1}. TRX file will be written to the repository default." -f $testResultsDirectory, $_.Exception.Message)
+		$testResultsDirectory = $null
+	}
+
+	$trxFileName = "RDPAudit_Tests_{0}.trx" -f $script:InstallLogTimestamp
+	$consoleVerbosity = if ($VerboseTests) { 'normal' } else { 'minimal' }
+
+	if ($VerboseTests) {
+		Write-Info 'Full test output enabled (-VerboseTests). Every Passed/Failed test will be streamed.'
+	} else {
+		Write-Info 'Compact test output (default). Only Failed tests will be streamed; full results in the TRX file.'
+	}
+
+	$testArguments = [System.Collections.Generic.List[string]]::new()
+	$testArguments.Add('test')
+	$testArguments.Add('.\RdpAudit.sln')
+	$testArguments.Add('-c')
+	$testArguments.Add('Release')
+	$testArguments.Add('--no-build')
+	$testArguments.Add('--blame-hang')
+	$testArguments.Add('--blame-hang-timeout')
+	$testArguments.Add('90s')
+	$testArguments.Add('--logger')
+	$testArguments.Add(("console;verbosity={0}" -f $consoleVerbosity))
+	$testArguments.Add('--logger')
+	$testArguments.Add(("trx;LogFileName={0}" -f $trxFileName))
+	if ($testResultsDirectory) {
+		$testArguments.Add('--results-directory')
+		$testArguments.Add($testResultsDirectory)
+	}
+
 	Invoke-CheckedCommand `
 		-FilePath 'dotnet' `
-		-Arguments @(
-			'test', '.\RdpAudit.sln', '-c', 'Release', '--no-build',
-			'--blame-hang', '--blame-hang-timeout', '90s',
-			'--logger', 'console;verbosity=normal'
-		) `
+		-Arguments $testArguments.ToArray() `
 		-WorkingDirectory $script:RepositoryDirectory `
 		-FailureMessage 'dotnet test failed.'
+
+	if ($testResultsDirectory) {
+		$trxPath = Join-Path -Path $testResultsDirectory -ChildPath $trxFileName
+		if (Test-Path -LiteralPath $trxPath) {
+			Write-Ok ("Full test results (all outcomes) saved to: {0}" -f $trxPath)
+		}
+	}
 
 	Write-Section 'publish.ps1'
 	Invoke-CheckedCommand `
