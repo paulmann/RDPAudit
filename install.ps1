@@ -12,7 +12,7 @@
 
 .NOTES
 	Author : Mikhail Deynekin — https://Deynekin.com — Mikhail@Deynekin.com
-	Version: 1.3.2
+	Version: 1.4.0
 
 .FEATURES
 	Detects and reports any previously installed RdpAudit version (with version number).
@@ -73,7 +73,22 @@ param(
 	# simply returns control to the current prompt so the operator can keep working in
 	# the same window. Failed runs are never auto-exited — the window always stays open
 	# so the fatal error and log path remain visible.
-	[switch]$ExitAfterInstall
+	[switch]$ExitAfterInstall,
+
+	# When present, perform a destructive clean install:
+	#   1. Uninstall the RdpAudit Windows service (sc.exe delete) if it is registered.
+	#   2. Delete the entire <WorkDirectory>\Service tree, including .git, publish and
+	#      all locally built binaries. The subsequent 'git clone' will recreate it from
+	#      scratch on the requested branch.
+	#   3. Delete every RdpAudit database and migration-failure marker under
+	#      %ProgramData%\RdpAudit (rdpaudit.db, rdpaudit.db-wal, rdpaudit.db-shm, all
+	#      rdpaudit.db.*.bak backups, and migration-failure.marker.json). The
+	#      appsettings.json / operator-authored configuration is preserved.
+	# The transcript log directory (<LogDirectory>) is NEVER touched, so previous
+	# installer runs remain reviewable. Fails the installation if the operator does
+	# not confirm the destructive prompt (unless -NonInteractive is also set, in
+	# which case confirmation is implied).
+	[switch]$CleanInstall
 )
 
 Set-StrictMode -Version Latest
@@ -144,6 +159,7 @@ $script:InstallState = [pscustomobject]@{
 	InstalledPrerequisites = New-Object System.Collections.Generic.List[string]
 	Fixes = New-Object System.Collections.Generic.List[string]
 	Actions = New-Object System.Collections.Generic.List[string]
+	CleanInstallPerformed = $false
 }
 
 function Add-InstallAction {
@@ -884,6 +900,110 @@ function Install-MissingPrerequisites {
 
 # ── Repository Operations ────────────────────────────────────────────────────
 
+function Invoke-CleanInstallPurge {
+	# Version: 1.0.0
+	#
+	# Destructive pre-installation cleanup used ONLY when -CleanInstall is on the
+	# command line. Callers MUST invoke Stop-RdpAuditProcesses first so that no
+	# file handles remain on the service binaries or the SQLite database.
+	#
+	# What is removed:
+	#   1. The Windows service registration (sc.exe delete <name>) if it exists.
+	#   2. The whole <WorkDirectory>\Service tree (git checkout + publish output).
+	#   3. Every RdpAudit database file under %ProgramData%\RdpAudit:
+	#      rdpaudit.db, rdpaudit.db-wal, rdpaudit.db-shm, rdpaudit.db.*.bak.
+	#   4. The migration-failure marker (migration-failure.marker.json).
+	#
+	# What is preserved:
+	#   * <LogDirectory> — installer transcripts must survive so previous runs can
+	#     be reviewed.
+	#   * %ProgramData%\RdpAudit\appsettings.json and any other operator-authored
+	#     configuration files. Only *.db* files and the migration marker are removed.
+	Write-Section 'Clean Install — Purge Previous Installation'
+
+	$confirmed = Confirm-Action -Prompt ("CLEAN INSTALL will DELETE '{0}' and every RdpAudit database under %ProgramData%\RdpAudit. This is irreversible. Continue?" -f $script:RepositoryDirectory) -DefaultYes $false
+	if (-not $confirmed) {
+		throw 'Clean install cancelled by operator.'
+	}
+
+	# 1. Remove Windows service registration so any leftover service entry does
+	#    not point at bytes we are about to delete.
+	try {
+		$existingService = Get-Service -Name $script:WindowsServiceName -ErrorAction SilentlyContinue
+		if ($null -ne $existingService) {
+			Write-Info "Unregistering Windows service '$($script:WindowsServiceName)' ..."
+			& sc.exe delete $script:WindowsServiceName | Out-Null
+			if ($LASTEXITCODE -eq 0) {
+				Write-Ok "Service '$($script:WindowsServiceName)' unregistered."
+			} else {
+				Write-WarningMessage "sc.exe delete '$($script:WindowsServiceName)' exited with code $LASTEXITCODE. Continuing anyway."
+			}
+		} else {
+			Write-Info "Service '$($script:WindowsServiceName)' is not registered — nothing to unregister."
+		}
+	} catch {
+		Write-WarningMessage ("Failed to query/remove service '{0}': {1}. Continuing anyway." -f $script:WindowsServiceName, $_.Exception.Message)
+	}
+
+	# 2. Delete the <WorkDirectory>\Service tree in full.
+	if (Test-Path -LiteralPath $script:RepositoryDirectory) {
+		Write-Info "Removing repository/publish directory: $($script:RepositoryDirectory)"
+		try {
+			Remove-Item -LiteralPath $script:RepositoryDirectory -Recurse -Force -ErrorAction Stop
+			Write-Ok "Deleted: $($script:RepositoryDirectory)"
+		} catch {
+			throw ("Clean install could not delete '{0}': {1}. Close any Explorer / editor / terminal holding a file in that tree and re-run with -CleanInstall." -f $script:RepositoryDirectory, $_.Exception.Message)
+		}
+	} else {
+		Write-Info "Repository/publish directory does not exist — nothing to delete: $($script:RepositoryDirectory)"
+	}
+
+	# 3. + 4. Delete databases and migration marker under %ProgramData%\RdpAudit.
+	$programDataRoot = [Environment]::GetFolderPath('CommonApplicationData')
+	$rdpAuditDataDirectory = Join-Path -Path $programDataRoot -ChildPath 'RdpAudit'
+
+	if (Test-Path -LiteralPath $rdpAuditDataDirectory) {
+		Write-Info "Purging databases and migration marker under: $rdpAuditDataDirectory"
+
+		# Databases: rdpaudit.db + WAL/SHM sidecars + rdpaudit.db.*.bak rotated backups.
+		$databasePatterns = @('rdpaudit.db', 'rdpaudit.db-wal', 'rdpaudit.db-shm', 'rdpaudit.db.*.bak')
+		$removedDatabaseCount = 0
+		foreach ($pattern in $databasePatterns) {
+			$dbMatches = @(Get-ChildItem -LiteralPath $rdpAuditDataDirectory -Filter $pattern -File -ErrorAction SilentlyContinue)
+			foreach ($dbFile in $dbMatches) {
+				try {
+					Remove-Item -LiteralPath $dbFile.FullName -Force -ErrorAction Stop
+					Write-Ok ("  deleted: {0}" -f $dbFile.Name)
+					$removedDatabaseCount++
+				} catch {
+					Write-WarningMessage ("  failed to delete '{0}': {1}" -f $dbFile.FullName, $_.Exception.Message)
+				}
+			}
+		}
+		if ($removedDatabaseCount -eq 0) {
+			Write-Info '  no rdpaudit.db* files were present.'
+		}
+
+		# Migration failure marker.
+		$migrationMarker = Join-Path -Path $rdpAuditDataDirectory -ChildPath 'migration-failure.marker.json'
+		if (Test-Path -LiteralPath $migrationMarker) {
+			try {
+				Remove-Item -LiteralPath $migrationMarker -Force -ErrorAction Stop
+				Write-Ok '  deleted: migration-failure.marker.json'
+			} catch {
+				Write-WarningMessage ("  failed to delete migration marker: {0}" -f $_.Exception.Message)
+			}
+		}
+
+		Write-Ok 'Configuration files (appsettings.json etc.) preserved.'
+	} else {
+		Write-Info "No %ProgramData%\RdpAudit directory found — nothing to purge."
+	}
+
+	$script:InstallState.CleanInstallPerformed = $true
+	Write-Ok 'Clean install pre-purge finished. Proceeding with a fresh installation.'
+}
+
 function Initialize-Workspace {
 	Write-Section 'Workspace'
 
@@ -1465,6 +1585,12 @@ function Show-InstallationSummary {
 		foreach ($p in $state.ForcedProcesses) { Write-Host "   - $p force-terminated (soft timeout exceeded)" -ForegroundColor Yellow }
 	}
 
+	# Clean install disclosure — makes destructive runs stand out in the transcript.
+	if ($state.CleanInstallPerformed) {
+		Write-Host ''
+		Write-Host ' Clean install      : Previous <WorkDirectory>\Service tree and all rdpaudit.db* files were deleted before this run.' -ForegroundColor Yellow
+	}
+
 	# What was installed.
 	Write-Host ''
 	if ($state.InstalledPrerequisites.Count -gt 0) {
@@ -1547,6 +1673,10 @@ function Invoke-Main {
 	# Release any running components before touching the workspace so the publish
 	# folder can be rebuilt in place. Graceful first, forced only after the timeout.
 	Stop-RdpAuditProcesses
+
+	if ($CleanInstall) {
+		Invoke-CleanInstallPurge
+	}
 
 	Initialize-Workspace
 	Sync-Repository
