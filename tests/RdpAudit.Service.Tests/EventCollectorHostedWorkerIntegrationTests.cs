@@ -93,7 +93,7 @@ public sealed class EventCollectorHostedWorkerIntegrationTests
 			string channel,
 			string xpathQuery,
 			string? bookmarkXml,
-			Action<string, string> onBookmark,
+			Action<string, string, long> onBookmark,
 			Action<string, Exception, bool> onWatcherFault)
 		{
 			Interlocked.Increment(ref CreateCalls);

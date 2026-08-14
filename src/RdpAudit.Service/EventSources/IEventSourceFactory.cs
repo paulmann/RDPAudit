@@ -32,7 +32,9 @@ public interface IEventSourceFactory
 	/// <param name="bookmarkXml">Serialized <see cref="System.Diagnostics.Eventing.Reader.EventBookmark"/>
 	/// to resume from, or <c>null</c> to start from the current tail.</param>
 	/// <param name="onBookmark">Callback invoked with each captured event's serialized bookmark
-	/// XML (channel, bookmarkXml). The host uses this to track the newest bookmark per channel.</param>
+	/// XML and the ingestion sequence stamped on that event (channel, bookmarkXml,
+	/// ingestionSequence). The host records the pair so the bookmark is only persisted once the
+	/// covered event has been committed; see <c>BookmarkCheckpointLedger</c>.</param>
 	/// <param name="onWatcherFault">Callback invoked when the underlying transport reports a
 	/// fault (channel, exception, isCallback). <c>isCallback=true</c> means the fault surfaced
 	/// inside the transport's event delivery path; <c>false</c> means it surfaced during arm.</param>
@@ -40,6 +42,6 @@ public interface IEventSourceFactory
 		string channel,
 		string xpathQuery,
 		string? bookmarkXml,
-		Action<string, string> onBookmark,
+		Action<string, string, long> onBookmark,
 		Action<string, Exception, bool> onWatcherFault);
 }

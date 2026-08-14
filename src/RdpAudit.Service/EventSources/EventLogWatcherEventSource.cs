@@ -42,7 +42,7 @@ public sealed class EventLogWatcherEventSource : IEventSource, IDisposable
 	private readonly string _xpathQuery;
 	private readonly IEventPipe _pipe;
 	private readonly ILogger<EventLogWatcherEventSource> _logger;
-	private readonly Action<string, string>? _onBookmark;
+	private readonly Action<string, string, long>? _onBookmark;
 	private readonly Action<string, Exception, bool>? _onWatcherFault;
 	private readonly object _lifecycleGate = new();
 
@@ -75,7 +75,7 @@ public sealed class EventLogWatcherEventSource : IEventSource, IDisposable
 		IEventPipe pipe,
 		ILogger<EventLogWatcherEventSource> logger,
 		string? initialBookmarkXml = null,
-		Action<string, string>? onBookmark = null,
+		Action<string, string, long>? onBookmark = null,
 		Action<string, Exception, bool>? onWatcherFault = null)
 	{
 		ArgumentException.ThrowIfNullOrWhiteSpace(channel);
@@ -251,7 +251,11 @@ public sealed class EventLogWatcherEventSource : IEventSource, IDisposable
 		{
 			try
 			{
-				_onBookmark(_channel, bookmarkXml);
+				// RawEventSerializer stamped IngestionSequence during the write above, so the DTO
+				// now carries the ordinal that makes this bookmark durable. Reporting the two
+				// together is what lets BookmarkCheckpointLedger withhold the bookmark until the
+				// covered event is actually committed.
+				_onBookmark(_channel, bookmarkXml, dto.IngestionSequence);
 			}
 			catch (Exception ex)
 			{

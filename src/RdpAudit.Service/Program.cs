@@ -276,6 +276,13 @@ public static class Program
 		services.AddSingleton<OverviewProgressState>();
 		services.AddSingleton<CrashGuard>();
 		services.AddSingleton<BookmarkStore>();
+
+		// Unified bookmark commit (spec section D). Registering the ledger is what switches both
+		// EventCollectorHost and EventProcessorWorker out of the legacy split commit: the collector
+		// stops publishing positions ahead of persistence, and the processor writes each bookmark
+		// inside the same SQLite transaction as the events it covers. Remove this single line to
+		// fall back to the v1 behaviour.
+		services.AddSingleton<BookmarkCheckpointLedger>();
 		services.AddSingleton<EventChannel>();
 		services.AddSingleton<ServiceMetrics>();
 

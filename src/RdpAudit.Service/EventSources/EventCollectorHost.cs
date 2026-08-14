@@ -19,6 +19,7 @@ using System.Collections.Concurrent;
 using Microsoft.Extensions.Logging;
 using RdpAudit.Core.Events;
 using RdpAudit.Service.Collectors;
+using RdpAudit.Service.Infrastructure;
 
 namespace RdpAudit.Service.EventSources;
 
@@ -67,6 +68,9 @@ public sealed class EventCollectorHost : IAsyncDisposable
 		new(StringComparer.OrdinalIgnoreCase);
 	private readonly Dictionary<string, string> _flushedBookmarks =
 		new(StringComparer.OrdinalIgnoreCase);
+	/// <summary>Ledger gating bookmark durability on event durability. Null in legacy tests.</summary>
+	private readonly BookmarkCheckpointLedger? _checkpoints;
+
 	private readonly Dictionary<string, int> _pendingBookmarkEventCounts =
 		new(StringComparer.OrdinalIgnoreCase);
 
@@ -74,12 +78,18 @@ public sealed class EventCollectorHost : IAsyncDisposable
 
 	// ── Construction ─────────────────────────────────────────────────────────────
 
+	/// <param name="checkpoints">Optional ledger correlating bookmarks with the ingestion
+	/// sequence of the event they cover. When supplied, this host stops publishing bookmarks
+	/// ahead of persistence: the fallback flush only writes bookmarks the ledger reports as
+	/// durable, and <c>EventProcessorWorker</c> becomes the primary writer via its unified
+	/// commit. When <c>null</c> the legacy at-most-once-behind behaviour is preserved.</param>
 	public EventCollectorHost(
 		IEventSourceFactory sourceFactory,
 		ChannelHealthPolicy health,
 		BookmarkStore bookmarks,
 		ILogger<EventCollectorHost> logger,
-		IChannelStatusSink? statusSink = null)
+		IChannelStatusSink? statusSink = null,
+		BookmarkCheckpointLedger? checkpoints = null)
 	{
 		ArgumentNullException.ThrowIfNull(sourceFactory);
 		ArgumentNullException.ThrowIfNull(health);
@@ -91,6 +101,7 @@ public sealed class EventCollectorHost : IAsyncDisposable
 		_bookmarks = bookmarks;
 		_logger = logger;
 		_statusSink = statusSink;
+		_checkpoints = checkpoints;
 	}
 
 	// ── Public API ───────────────────────────────────────────────────────────────
@@ -267,10 +278,14 @@ public sealed class EventCollectorHost : IAsyncDisposable
 
 	// ── Core Logic ───────────────────────────────────────────────────────────────
 
-	private void TrackBookmark(string channel, string bookmarkXml)
+	private void TrackBookmark(string channel, string bookmarkXml, long ingestionSequence)
 	{
 		int eventCount;
 		bool shouldFlush;
+
+		// Record the bookmark against the sequence of the event it sits on BEFORE touching the
+		// pending map, so a concurrent flush can never observe a bookmark the ledger has not seen.
+		_checkpoints?.Record(channel, ingestionSequence, bookmarkXml);
 
 		lock (_bookmarkGate)
 		{
@@ -466,6 +481,39 @@ public sealed class EventCollectorHost : IAsyncDisposable
 
 	private Dictionary<string, string> CreateBookmarkFlushSnapshot()
 	{
+		// Unified-commit mode: the processor is the primary bookmark writer, persisting each
+		// bookmark inside the same transaction as the events it covers. This fallback path may
+		// therefore only ever publish positions the ledger has already declared durable —
+		// otherwise a crash right after this flush would resume the watcher past events that
+		// are still sitting unpersisted in the ring.
+		if (_checkpoints is not null)
+		{
+			Dictionary<string, string> durable = new(StringComparer.OrdinalIgnoreCase);
+			_checkpoints.CollectDurable(durable);
+
+			lock (_bookmarkGate)
+			{
+				// Drop anything the store already holds so a quiet channel does not rewrite the
+				// same row on every timer tick.
+				List<string> unchanged = new();
+				foreach (KeyValuePair<string, string> entry in durable)
+				{
+					if (_flushedBookmarks.TryGetValue(entry.Key, out string? previous) &&
+						string.Equals(previous, entry.Value, StringComparison.Ordinal))
+					{
+						unchanged.Add(entry.Key);
+					}
+				}
+
+				foreach (string channel in unchanged)
+				{
+					durable.Remove(channel);
+				}
+			}
+
+			return durable;
+		}
+
 		lock (_bookmarkGate)
 		{
 			Dictionary<string, string> snapshot = new(StringComparer.OrdinalIgnoreCase);
