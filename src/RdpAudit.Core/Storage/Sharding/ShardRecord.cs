@@ -1,5 +1,5 @@
 /* Project: RDPAudit 2.0 | Author: Mikhail Deynekin | Site: Deynekin.com | Email: Mikhail@Deynekin.com */
-// Version: 2.0.0
+// Version: 2.0.1
 // File   : ShardRecord.cs
 // Project: RdpAudit.Core (RdpAudit.Core.Storage.Sharding)
 // Purpose: Fixed 128-byte on-disk record layout for the per-IP shard file. Cache-line aligned,
@@ -139,6 +139,39 @@ public readonly struct ShardRecord : IEquatable<ShardRecord>
 
 	/// <summary>Offset of <see cref="Crc32C"/> from the record base, in bytes.</summary>
 	public const int Crc32COffset = 124;
+
+	/// <summary>Creates a record with the CRC32C required by the on-disk format.</summary>
+	public static ShardRecord Create(
+		long sequence,
+		long timeUtcTicks,
+		int eventId,
+		ushort channelCode,
+		byte eventLayer,
+		byte sourceIpConfidence,
+		byte logonType,
+		byte subStatusLow,
+		ushort statusHigh,
+		int sessionId,
+		long logonId,
+		int userNameHeapOffset,
+		int workstationNameHeapOffset,
+		int processNameHeapOffset,
+		int domainNameHeapOffset,
+		int activityIdHeapOffset,
+		uint flags)
+	{
+		ShardRecord draft = new(
+			sequence, timeUtcTicks, eventId, channelCode, eventLayer, sourceIpConfidence,
+			logonType, subStatusLow, statusHigh, sessionId, logonId, userNameHeapOffset,
+			workstationNameHeapOffset, processNameHeapOffset, domainNameHeapOffset,
+			activityIdHeapOffset, flags, crc32c: 0);
+		uint crc32c = global::RdpAudit.Core.Storage.Sharding.Crc32C.HashToUInt32(AsBytes(in draft).Slice(0, Crc32COffset));
+		return new ShardRecord(
+			sequence, timeUtcTicks, eventId, channelCode, eventLayer, sourceIpConfidence,
+			logonType, subStatusLow, statusHigh, sessionId, logonId, userNameHeapOffset,
+			workstationNameHeapOffset, processNameHeapOffset, domainNameHeapOffset,
+			activityIdHeapOffset, flags, crc32c);
+	}
 
 	/// <summary>Reinterprets a <see cref="ReadOnlySpan{Byte}"/> as a
 	/// <see cref="ReadOnlySpan{ShardRecord}"/> without copying. Caller guarantees the source

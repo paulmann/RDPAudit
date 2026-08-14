@@ -1,5 +1,5 @@
 /* Project: RDPAudit 2.0 | Author: Mikhail Deynekin | Site: Deynekin.com | Email: Mikhail@Deynekin.com */
-// Version: 2.0.0
+// Version: 2.0.1
 // File   : IpEventSummaryUpserterShardMetadataTests.cs
 // Project: RdpAudit.Service.Tests (RdpAudit.Service.Tests.Storage)
 // Purpose: Pins the rule that IpEventSummaryUpserter never fabricates shard metadata, and that the aggregate counters it does own stay correct.
@@ -16,10 +16,10 @@ using Xunit;
 namespace RdpAudit.Service.Tests.Storage;
 
 /// <summary>
-/// Shard columns describe a shard file on disk. ShardWriter is not connected to the ingestion
-/// path, so no shard file is ever created and every shard column must read NULL. A non-null
-/// value is a promise to an analyst that a readable shard exists; these tests make that promise
-/// impossible to break by accident.
+/// Shard columns describe a shard file on disk and are owned solely by ShardIngestionSink.
+/// This upserter never creates a shard, so every shard column it writes must remain NULL. A
+/// non-null value is a promise to an analyst that a readable shard exists; these tests make
+/// accidental fabrication by the aggregate upserter impossible.
 /// </summary>
 public sealed class IpEventSummaryUpserterShardMetadataTests : IAsyncLifetime, IDisposable
 {

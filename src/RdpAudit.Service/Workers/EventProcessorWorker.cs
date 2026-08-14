@@ -1,5 +1,5 @@
 /* Project: RDPAudit 2.0 | Author: Mikhail Deynekin | Site: Deynekin.com | Email: Mikhail@Deynekin.com */
-// Version: 2.3.0
+// Version: 2.3.2
 // File   : EventProcessorWorker.cs
 // Project: RdpAudit.Service (RdpAudit.Service.Workers)
 // Purpose: Drains the lock-free ring buffer in batches, normalises payloads, and persists to
@@ -108,6 +108,7 @@ public sealed class EventProcessorWorker : BackgroundService
 	private readonly IOptionsMonitor<RdpAuditOptions> _options;
 	private readonly IOperationLogWriter _opLog;
 	private readonly IpEventSummaryUpserter? _ipEventSummaryUpserter;
+	private readonly ShardIngestionSink? _shardSink;
 
 	/// <summary>Bookmark persistence. Null keeps the legacy split commit (collector owns bookmarks).</summary>
 	private readonly BookmarkStore? _bookmarks;
@@ -140,7 +141,8 @@ public sealed class EventProcessorWorker : BackgroundService
 		IOperationLogWriter opLog,
 		BookmarkStore? bookmarks = null,
 		BookmarkCheckpointLedger? checkpoints = null,
-		IpEventSummaryUpserter? ipEventSummaryUpserter = null)
+		IpEventSummaryUpserter? ipEventSummaryUpserter = null,
+		ShardIngestionSink? shardSink = null)
 	{
 		ArgumentNullException.ThrowIfNull(pipe);
 		ArgumentNullException.ThrowIfNull(metrics);
@@ -162,6 +164,7 @@ public sealed class EventProcessorWorker : BackgroundService
 		_bookmarks = bookmarks;
 		_checkpoints = checkpoints;
 		_ipEventSummaryUpserter = ipEventSummaryUpserter;
+		_shardSink = shardSink;
 
 		// Unified commit needs both halves. Supplying only one is a composition mistake that would
 		// silently degrade to the legacy split-commit behaviour, so surface it loudly at startup.
@@ -522,6 +525,14 @@ public sealed class EventProcessorWorker : BackgroundService
 
 			sequence.NextValue = nextSequence;
 
+			if (_shardSink is not null)
+			{
+				foreach (RawEvent entity in entities)
+				{
+					_shardSink.Append(entity);
+				}
+			}
+
 			db.RawEvents.AddRange(entities);
 
 			await ApplySessionIpCorrelationAsync(db, entities, ct).ConfigureAwait(false);
@@ -568,6 +579,16 @@ public sealed class EventProcessorWorker : BackgroundService
 
 			await tx.CommitAsync(ct).ConfigureAwait(false);
 
+			// RawEvents is the system of record; shards are derived forensic artifacts. Appending before
+			// the database commit lets the writer retain its batch state without publishing a header.
+			// A crash after SQLite commits but before this independent transaction can leave metadata
+			// stale, which is recoverable on the next touched shard from the real file header. Shard
+			// failures must never undo already committed audit evidence.
+			if (_shardSink is not null && db.Database.GetDbConnection() is SqliteConnection shardConnection)
+			{
+				await CommitShardsAfterDatabaseCommitAsync(shardConnection, ct).ConfigureAwait(false);
+			}
+
 			// Only now is the position durable, so only now may the ledger forget the checkpoints
 			// and let the collector's fallback flush publish them.
 			if (bookmarksWritten > 0)
@@ -598,6 +619,7 @@ public sealed class EventProcessorWorker : BackgroundService
 		catch (Exception ex)
 		{
 			await tx.RollbackAsync(ct).ConfigureAwait(false);
+			_shardSink?.DiscardPending();
 
 			if (debugEnabled)
 			{
@@ -611,6 +633,27 @@ public sealed class EventProcessorWorker : BackgroundService
 		// is anchored to events that actually landed in the audit DB. Updates ServiceMetrics
 		// in place — no DB writes here.
 		_securityWatchdog.Apply(entities);
+	}
+
+	private async Task CommitShardsAfterDatabaseCommitAsync(SqliteConnection connection, CancellationToken ct)
+	{
+		try
+		{
+			await using SqliteTransaction transaction =
+				(SqliteTransaction)await connection.BeginTransactionAsync(ct).ConfigureAwait(false);
+			await _shardSink!.CommitAsync(connection, transaction, ct).ConfigureAwait(false);
+			await transaction.CommitAsync(ct).ConfigureAwait(false);
+		}
+		catch (Exception ex)
+		{
+			_logger.LogWarning(ex, "Forensic shard commit failed after database commit");
+			_metrics.IncrementShardWriteFailures();
+
+			// The sink may still hold staged writers if it never reached its own commit loop.
+			// Drop them so the next batch reopens from the durable header instead of inheriting
+			// entries that can no longer be published.
+			_shardSink!.DiscardPending();
+		}
 	}
 
 	private async Task<int> UpsertAddressesAsync(

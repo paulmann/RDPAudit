@@ -22,25 +22,24 @@ The following items are not implemented and remain planned work:
   and raw EVTX parsing are not implemented.
 - SQLite writes remain serialized by SQLite's writer model. Batching and WAL
   reduce contention but do not remove it.
-- The shard format is implemented and tested in isolation, but live shard
-  writing, shard capacity policy, global shard budget, disk-free floor, handle
-  cache, and operator drill-down are not integrated into the active processor
-  path.
-- The summary upserter no longer records shard metadata at all. Every `Shard*`
-  column in `IpEventSummary` is nullable and stays `NULL` until a shard file
-  really exists, and migration `Stage11ShardMetadataNullable` clears the
-  placeholder values written by `Stage10IpShardsRetention`. A non-null
-  `ShardRelativePath` is therefore a reliable signal that a readable shard is on
-  disk. Until `ShardWriter` is wired into the ingestion path that signal never
-  fires: treat `IpEventSummary` as an aggregate store only.
+- Live shard writing is integrated but disabled by default. The current writer has
+  no string heap, so shard records retain only fixed-width event metadata and not
+  usernames, workstation names, process names, domains, or activity IDs.
+- There is no cardinality guard. `MaxShardFiles` is only a coarse creation budget:
+  it stops new per-IP files after the limit and leaves existing writers active.
+  There is also no disk-free floor, reader cache, or operator timeline drill-down.
+- Shard headers and `Shard*` metadata are committed only after the source SQLite
+  transaction succeeds. A crash in that interval can lose a derived shard record
+  or leave metadata stale, but cannot make a shard record authoritative over a
+  missing `RawEvents` row. Metadata is refreshed from real headers and file size
+  on the next successful batch; unknown values remain `NULL`.
 - No complete MPMC ring, ETW provider consumer, or per-event lost-event
   classification is present. High-rate behavior must be measured on the target
   Windows host before relying on it for an incident response SLA.
 
 ## Planned direction
 
-Future work should first connect the shard writer and cardinality guard to the
-same transaction-oriented ingestion design, then add a bounded reader cache and
-an IPC timeline surface. ETW-first capture and an MPMC transport should follow
+Future work should add a cardinality guard, disk-free floor, bounded reader cache,
+and an IPC timeline surface to the active shard path. ETW-first capture and an MPMC transport should follow
 only with benchmark and failure-injection coverage that preserves current
 bookmark durability guarantees.

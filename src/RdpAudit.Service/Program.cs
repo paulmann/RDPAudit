@@ -319,6 +319,7 @@ public static class Program
 		services.AddSingleton<RdpConnectionFactUpserter>();
 		services.AddSingleton<AuthAttemptFactUpserter>();
 		services.AddSingleton<IpEventSummaryUpserter>();
+		services.AddSingleton<ShardIngestionSink>();
 		services.AddSingleton<SecurityCorrelationWatchdog>();
 		services.AddSingleton<EventNormalizer>();
 		services.AddSingleton<DbAlertContext>();

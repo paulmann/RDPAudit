@@ -1,5 +1,5 @@
 /* Project: RDPAudit 2.0 | Author: Mikhail Deynekin | Site: Deynekin.com | Email: Mikhail@Deynekin.com */
-// Version: 2.0.3
+// Version: 2.0.4
 // File   : ShardWriterTests.cs
 // Project: RdpAudit.Core.Tests (RdpAudit.Core.Tests.Sharding)
 // Purpose: Verifies shard persistence, eviction, torn-header recovery, and append allocation behavior.
@@ -155,48 +155,25 @@ public sealed class ShardWriterTests : IDisposable
 
 	private string CreatePath(string name) => Path.Combine(_directory, name + ".rds");
 
-	private static ShardRecord CreateRecord(long sequence)
-	{
-		ShardRecord incomplete = new(
-			sequence,
-			new DateTime(2026, 8, 14, 0, 0, 0, DateTimeKind.Utc).AddSeconds(sequence).Ticks,
-			4625,
-			(ushort)ChannelCode.Security,
-			(byte)EventLayer.Authentication,
-			100,
-			10,
-			0x25,
-			0xc000,
-			7,
-			0x1234_0000 + sequence,
-			-1,
-			-1,
-			-1,
-			-1,
-			-1,
-			1,
-			0);
-		uint crc = Crc32C.HashToUInt32(ShardRecord.AsBytes(in incomplete).Slice(0, ShardRecord.Crc32COffset));
-		return new ShardRecord(
-			sequence,
-			incomplete.TimeUtcTicks,
-			incomplete.EventId,
-			incomplete.ChannelCode,
-			incomplete.EventLayer,
-			incomplete.SourceIpConfidence,
-			incomplete.LogonType,
-			incomplete.SubStatusLow,
-			incomplete.StatusHigh,
-			incomplete.SessionId,
-			incomplete.LogonId,
-			incomplete.UserNameHeapOffset,
-			incomplete.WorkstationNameHeapOffset,
-			incomplete.ProcessNameHeapOffset,
-			incomplete.DomainNameHeapOffset,
-			incomplete.ActivityIdHeapOffset,
-			incomplete.Flags,
-			crc);
-	}
+	private static ShardRecord CreateRecord(long sequence) => ShardRecord.Create(
+		sequence,
+		new DateTime(2026, 8, 14, 0, 0, 0, DateTimeKind.Utc).AddSeconds(sequence).Ticks,
+		4625,
+		(ushort)ChannelCode.Security,
+		(byte)EventLayer.Authentication,
+		100,
+		10,
+		0x25,
+		0xc000,
+		7,
+		0x1234_0000 + sequence,
+		-1,
+		-1,
+		-1,
+		-1,
+		-1,
+		1);
+
 
 	private static void CorruptHeaderCopy(string path, long copyOffset)
 	{

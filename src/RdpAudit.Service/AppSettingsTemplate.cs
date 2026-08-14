@@ -1,5 +1,5 @@
 /* Project: RDPAudit 2.0 | Author: Mikhail Deynekin | Site: Deynekin.com | Email: Mikhail@Deynekin.com */
-// Version: 2.0.0
+// Version: 2.0.1
 // File   : AppSettingsTemplate.cs
 // Project: RdpAudit.Service (RdpAudit.Service)
 // Purpose: Provides the default persisted appsettings.json content written on first service startup.
@@ -79,6 +79,13 @@ public static class AppSettingsTemplate
 			"ActiveBlockRetentionDays": 90,
 			"AttackStatRetentionDays": 180,
 			"MaintenanceBatchSize": 50000
+		},
+		"Sharding": {
+			"Enabled": false,
+			"ActionsRoot": "",
+			"ShardCapacityRecords": 1024,
+			"MaxOpenWriters": 128,
+			"MaxShardFiles": 4096
 		},
 		"Diagnostics": {
 			"DebugMode": false,
