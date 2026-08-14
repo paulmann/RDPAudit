@@ -1,9 +1,9 @@
 /* Project: RDPAudit 2.0 | Author: Mikhail Deynekin | Site: Deynekin.com | Email: Mikhail@Deynekin.com */
-// Version: 2.0.1
+// Version: 2.1.0
 // File   : MonitoringOptions.cs
 // Project: RdpAudit.Core (RdpAudit.Core.Config)
 // Purpose: Configures monitored event sources and bounded pre-pipeline flood protection.
-// Depends: System.Collections.Generic
+// Depends: System.Collections.Generic, IngestionMode
 // Extends: Add new capture controls here when an event source needs a persisted operational threshold.
 
 namespace RdpAudit.Core.Config;
@@ -11,6 +11,14 @@ namespace RdpAudit.Core.Config;
 /// <summary>Configures which event channels and event IDs are monitored.</summary>
 public sealed class MonitoringOptions
 {
+	/// <summary>
+	/// Selects the event-ingestion transport. Default is <see cref="IngestionMode.EventLog"/>
+	/// for compatibility with existing installations; set to <see cref="IngestionMode.Auto"/>
+	/// to opt-in to ETW with graceful fallback, or <see cref="IngestionMode.Etw"/> to require
+	/// ETW and fail-fast when it is unavailable.
+	/// </summary>
+	public IngestionMode IngestionMode { get; set; } = IngestionMode.EventLog;
+
 	public List<string> EnabledChannels { get; set; } = new()
 	{
 		"Security",

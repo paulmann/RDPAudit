@@ -6,6 +6,8 @@
 //          build that pruned EnabledChannels / EnabledEventIds in operator-edited appsettings.json
 //          leave the Security watcher disarmed and the Configurator UI shows Failed=0 even when
 //          PowerShell can see Security 4625 events.
+//          Also clamps an out-of-range IngestionMode enum value to the safe EventLog default so a
+//          hand-edited numeric override cannot poison the ingestion-transport DI selection.
 //          Pure, OS-agnostic, unit-testable. Applied at service startup by Program.Main before
 //          the EventCollectorHostedWorker arms its channels, and surfaced via diagnostics so operators
 //          can confirm the repair fired.
@@ -24,7 +26,8 @@ public sealed record MonitoringConfigRepairReport(
 	bool Changed,
 	IReadOnlyList<string> AddedChannels,
 	IReadOnlyList<int> AddedEventIds,
-	string? Reason);
+	string? Reason,
+	bool IngestionModeClampedToDefault = false);
 
 /// <summary>Pure repair helper that injects the Security channel and required authentication
 /// event IDs into a <see cref="MonitoringOptions"/> instance when an older appsettings.json
@@ -85,7 +88,18 @@ public static class MonitoringConfigRepair
 			}
 		}
 
-		bool changed = addedChannels.Count > 0 || addedEventIds.Count > 0;
-		return new MonitoringConfigRepairReport(changed, addedChannels, addedEventIds, reason);
+		// Guard against a hand-edited appsettings.json that persisted an out-of-range numeric
+		// IngestionMode. IConfiguration accepts named enum values, but a raw integer outside
+		// the declared ordinals binds silently and would poison DI selection at startup.
+		bool ingestionClamped = false;
+		if (!Enum.IsDefined(typeof(IngestionMode), options.IngestionMode))
+		{
+			options.IngestionMode = IngestionMode.EventLog;
+			ingestionClamped = true;
+			reason ??= "IngestionMode held an unknown value — clamped to EventLog (safe default).";
+		}
+
+		bool changed = addedChannels.Count > 0 || addedEventIds.Count > 0 || ingestionClamped;
+		return new MonitoringConfigRepairReport(changed, addedChannels, addedEventIds, reason, ingestionClamped);
 	}
 }

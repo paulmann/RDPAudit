@@ -124,4 +124,52 @@ public class MonitoringConfigRepairTests
 		Assert.True(report.Changed);
 		Assert.Contains("Security", opts.EnabledChannels);
 	}
+
+	[Theory]
+	[InlineData(IngestionMode.EventLog)]
+	[InlineData(IngestionMode.Etw)]
+	[InlineData(IngestionMode.Auto)]
+	public void Repair_LeavesIngestionModeIntact_WhenValueIsWithinEnum(IngestionMode mode)
+	{
+		MonitoringOptions opts = new() { IngestionMode = mode };
+
+		MonitoringConfigRepairReport report = MonitoringConfigRepair.Repair(opts);
+
+		Assert.Equal(mode, opts.IngestionMode);
+		Assert.False(report.IngestionModeClampedToDefault);
+	}
+
+	[Fact]
+	public void Repair_ClampsIngestionMode_WhenNumericOverrideIsOutOfRange()
+	{
+		MonitoringOptions opts = new()
+		{
+			IngestionMode = (IngestionMode)999,
+		};
+
+		MonitoringConfigRepairReport report = MonitoringConfigRepair.Repair(opts);
+
+		Assert.Equal(IngestionMode.EventLog, opts.IngestionMode);
+		Assert.True(report.Changed);
+		Assert.True(report.IngestionModeClampedToDefault);
+		Assert.Contains("IngestionMode", report.Reason);
+	}
+
+	[Fact]
+	public void Repair_ReportsUnchanged_WhenOptionsAreAlreadyValid()
+	{
+		MonitoringOptions opts = new()
+		{
+			EnabledChannels = new List<string> { "Security" },
+			EnabledEventIds = new List<int>(),
+			IngestionMode = IngestionMode.EventLog,
+		};
+
+		MonitoringConfigRepairReport report = MonitoringConfigRepair.Repair(opts);
+
+		Assert.False(report.Changed);
+		Assert.False(report.IngestionModeClampedToDefault);
+		Assert.Empty(report.AddedChannels);
+		Assert.Empty(report.AddedEventIds);
+	}
 }
