@@ -11,8 +11,8 @@
 	Configurator executable.
 
 .NOTES
-	Author : Mikhail Deynekin — https://Deynekin.com — Mikhail@Deynekin.com
-	Version: 1.4.1
+	Author : Mikhail Deynekin - https://Deynekin.com - Mikhail@Deynekin.com
+	Version: 1.5.0
 
 .FEATURES
 	Detects and reports any previously installed RdpAudit version (with version number).
@@ -26,6 +26,12 @@
 	Sync-Repository (v1.2.5) now verifies/repairs the remote origin URL, performs a
 	full-refspec fetch to break --single-branch limitations, and uses a safe
 	'checkout -B' so a missing local branch no longer aborts the installer.
+	v1.5.0 adds RDPAudit 2.0 prerequisite awareness: ETW event channel probe for
+	the five TerminalServices/RdpCoreTS providers, audit-policy probe (Logon /
+	Special Logon / Object Access), Performance Log Users group membership probe,
+	TraceEvent 3.2.5 NuGet cache verification and a new -IngestionMode parameter
+	that writes the operator's transport choice (EventLog / Etw / Auto) into
+	%ProgramData%\RdpAudit\appsettings.json without disturbing operator overrides.
 
 .REQUIREMENTS
 	PowerShell 7+
@@ -93,7 +99,19 @@ param(
 	# installer runs remain reviewable. Fails the installation if the operator does
 	# not confirm the destructive prompt (unless -NonInteractive is also set, in
 	# which case confirmation is implied).
-	[switch]$CleanInstall
+	[switch]$CleanInstall,
+
+	# RDPAudit 2.0 event transport selector, written to
+	# %ProgramData%\RdpAudit\appsettings.json (RdpAudit:IngestionMode) after a
+	# successful publish. 'Auto' keeps the service self-selecting (ETW when the
+	# process is elevated with ETW privileges, EventLogWatcher otherwise), 'Etw'
+	# forces the hybrid ETW/EventLog routing implemented on
+	# feature/rdpaudit-2.0-event-collection (commit 3c), 'EventLog' pins the
+	# legacy v1.0 EventLogWatcher transport for regression testing. The value is
+	# merged into an existing appsettings.json without disturbing operator
+	# overrides.
+	[ValidateSet('EventLog', 'Etw', 'Auto')]
+	[string]$IngestionMode = 'Auto'
 )
 
 Set-StrictMode -Version Latest
@@ -148,6 +166,33 @@ $script:PublishRoot = Join-Path -Path $script:RepositoryDirectory -ChildPath 'pu
 $script:MinimumDotNetSdkVersion = [Version]'8.0'
 $script:WindowsServiceName = 'RdpAuditService'
 $script:RequiredComponents = @('PowerShell 7+', 'Windows', 'Administrator', 'Git', '.NET SDK 8+')
+
+# RDPAudit 2.0 event-transport prerequisites. Kept as script-scope constants so a
+# single edit here propagates to the probe, the auto-repair routine and the
+# Configurator wiki without introducing string drift.
+$script:EtwRequiredEventChannels = @(
+	'Microsoft-Windows-TerminalServices-LocalSessionManager/Operational',
+	'Microsoft-Windows-TerminalServices-RemoteConnectionManager/Operational',
+	'Microsoft-Windows-RemoteDesktopServices-RdpCoreTS/Operational',
+	'Microsoft-Windows-TerminalServices-Gateway/Operational',
+	'Microsoft-Windows-TerminalServices-RDPClient/Operational'
+)
+
+# Auditpol subcategory GUIDs. Names are locale-dependent (Russian Windows returns
+# 'Вход в систему' instead of 'Logon'); GUIDs are stable across every locale and
+# every Windows build from 2008 R2 onwards, so we probe and repair by GUID and
+# only translate for the operator-facing log line.
+$script:AuditpolRequiredSubcategories = @(
+	[pscustomobject]@{ Name = 'Logon';           Guid = '{0CCE9215-69AE-11D9-BED3-505054503030}' },
+	[pscustomobject]@{ Name = 'Special Logon';   Guid = '{0CCE921B-69AE-11D9-BED3-505054503030}' },
+	[pscustomobject]@{ Name = 'Logoff';          Guid = '{0CCE9216-69AE-11D9-BED3-505054503030}' },
+	[pscustomobject]@{ Name = 'File System';     Guid = '{0CCE921D-69AE-11D9-BED3-505054503030}' },
+	[pscustomobject]@{ Name = 'Registry';        Guid = '{0CCE921E-69AE-11D9-BED3-505054503030}' }
+)
+
+$script:TraceEventPackageId = 'Microsoft.Diagnostics.Tracing.TraceEvent'
+$script:TraceEventPackageVersion = '3.2.5'
+$script:PerformanceLogUsersSid = 'S-1-5-32-559'
 
 # Process image names (without extension) of every RdpAudit component that may be
 # running and must be released before the publish folder can be rebuilt in place.
@@ -403,6 +448,148 @@ function New-PrerequisiteRecord {
 	}
 }
 
+# ── RDPAudit 2.0 ETW & Audit Prerequisites ───────────────────────────────────────
+
+# Version: 1.0.0
+# Returns a probe result for one Windows event log channel. Uses wevtutil.exe
+# 'gl' (get-log) rather than Get-WinEvent so we succeed even on locked-down
+# Server Core installations where the WinRM/WMI provider is disabled but the
+# EventLog service itself is up. Values other than 'true' (including a missing
+# channel, which prints an error on stderr and exits non-zero) are reported as
+# disabled so the operator sees a clear MISSING row.
+function Test-EtwChannelEnabled {
+	param(
+		[Parameter(Mandatory)]
+		[string]$Channel
+	)
+
+	if (-not $IsWindows) {
+		return [pscustomobject]@{ Channel = $Channel; IsEnabled = $false; Detail = 'NOT WINDOWS' }
+	}
+
+	$wevtutil = Get-Command -Name 'wevtutil.exe' -ErrorAction SilentlyContinue
+	if ($null -eq $wevtutil) {
+		return [pscustomobject]@{ Channel = $Channel; IsEnabled = $false; Detail = 'wevtutil.exe not found' }
+	}
+
+	try {
+		$output = & wevtutil.exe gl $Channel 2>$null
+		if ($LASTEXITCODE -ne 0 -or $null -eq $output) {
+			return [pscustomobject]@{ Channel = $Channel; IsEnabled = $false; Detail = 'channel not found' }
+		}
+		$enabledLine = $output | Where-Object { $_ -match '^\s*enabled:\s*' } | Select-Object -First 1
+		if ($null -eq $enabledLine) {
+			return [pscustomobject]@{ Channel = $Channel; IsEnabled = $false; Detail = 'no enabled: line' }
+		}
+		$isEnabled = ($enabledLine -match '^\s*enabled:\s*true\s*$')
+		return [pscustomobject]@{ Channel = $Channel; IsEnabled = $isEnabled; Detail = $enabledLine.Trim() }
+	} catch {
+		return [pscustomobject]@{ Channel = $Channel; IsEnabled = $false; Detail = $_.Exception.Message }
+	}
+}
+
+# Version: 1.0.0
+# Returns per-subcategory audit-policy state by GUID. auditpol.exe supports
+# /r /csv for a stable machine-readable output that does not shift between
+# Windows locales - column 5 ('Setting Value') is what we compare against
+# 'Success and Failure', which is auditpol's canonical value for a fully
+# enabled subcategory. We cannot rely on the locale-dependent display name of
+# the subcategory itself, so we invoke auditpol once per required GUID.
+function Get-AuditpolSubcategoryStatus {
+	param(
+		[Parameter(Mandatory)]
+		[string]$SubcategoryGuid,
+
+		[Parameter(Mandatory)]
+		[string]$DisplayName
+	)
+
+	if (-not $IsWindows) {
+		return [pscustomobject]@{ Name = $DisplayName; Guid = $SubcategoryGuid; IsEnabled = $false; Detail = 'NOT WINDOWS' }
+	}
+
+	$auditpol = Get-Command -Name 'auditpol.exe' -ErrorAction SilentlyContinue
+	if ($null -eq $auditpol) {
+		return [pscustomobject]@{ Name = $DisplayName; Guid = $SubcategoryGuid; IsEnabled = $false; Detail = 'auditpol.exe not found' }
+	}
+
+	try {
+		$csv = & auditpol.exe /get /subcategory:$SubcategoryGuid /r 2>$null
+		if ($LASTEXITCODE -ne 0 -or $null -eq $csv) {
+			return [pscustomobject]@{ Name = $DisplayName; Guid = $SubcategoryGuid; IsEnabled = $false; Detail = 'auditpol query failed' }
+		}
+		$dataLine = $csv | Where-Object { $_ -match ',' -and $_ -notmatch '^Machine Name' } | Select-Object -First 1
+		if ($null -eq $dataLine) {
+			return [pscustomobject]@{ Name = $DisplayName; Guid = $SubcategoryGuid; IsEnabled = $false; Detail = 'empty auditpol row' }
+		}
+		$fields = $dataLine -split ','
+		$setting = if ($fields.Length -ge 5) { $fields[4].Trim().Trim('"') } else { '' }
+		$isEnabled = ($setting -match '^(Success and Failure|Success and failure)$')
+		return [pscustomobject]@{ Name = $DisplayName; Guid = $SubcategoryGuid; IsEnabled = $isEnabled; Detail = $setting }
+	} catch {
+		return [pscustomobject]@{ Name = $DisplayName; Guid = $SubcategoryGuid; IsEnabled = $false; Detail = $_.Exception.Message }
+	}
+}
+
+# Version: 1.0.0
+# Returns $true when the current process token is a member of the built-in
+# Performance Log Users group (SID S-1-5-32-559) OR is elevated as a member of
+# Administrators. Either grants the SeSystemProfilePrivilege that TraceEvent's
+# real-time session requires. We match by SID rather than translated name so
+# the probe works on a Russian-language Windows install where the group is
+# rendered as 'Пользователи журналов производительности'.
+function Test-EtwPrivilegePresent {
+	if (-not $IsWindows) {
+		return $false
+	}
+
+	try {
+		$identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
+		$principal = New-Object System.Security.Principal.WindowsPrincipal($identity)
+		if ($principal.IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator)) {
+			return $true
+		}
+		$perfSid = New-Object System.Security.Principal.SecurityIdentifier($script:PerformanceLogUsersSid)
+		return $principal.IsInRole($perfSid)
+	} catch {
+		return $false
+	}
+}
+
+# Version: 1.0.0
+# Probes the NuGet global-packages cache for the exact TraceEvent version the
+# 2.0 event-collection layer restores. dotnet restore will download it on the
+# next build regardless, but reporting the cache state up-front tells the
+# operator whether the first build will need network access. Same pattern as
+# Get-MoqInstalledVersion.
+function Get-TraceEventInstalledVersion {
+	$dotnet = Get-Command -Name 'dotnet' -ErrorAction SilentlyContinue
+	if ($null -eq $dotnet) {
+		return $null
+	}
+	try {
+		$nugetRoot = & dotnet nuget locals global-packages -l 2>$null
+		if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($nugetRoot)) {
+			return $null
+		}
+		$path = ($nugetRoot -replace '^\s*global-packages:\s*', '').Trim()
+		if (-not (Test-Path -Path $path -PathType Container)) {
+			return $null
+		}
+		$packageRoot = Join-Path -Path $path -ChildPath ($script:TraceEventPackageId.ToLowerInvariant())
+		if (-not (Test-Path -Path $packageRoot -PathType Container)) {
+			return $null
+		}
+		$versionDir = Join-Path -Path $packageRoot -ChildPath $script:TraceEventPackageVersion
+		if (Test-Path -Path $versionDir -PathType Container) {
+			return $script:TraceEventPackageVersion
+		}
+		return $null
+	} catch {
+		return $null
+	}
+}
+
 # ── Prerequisite Checks ──────────────────────────────────────────────────────
 
 function Get-PrerequisiteStatus {
@@ -485,6 +672,58 @@ function Get-PrerequisiteStatus {
 		-IsSatisfied (-not [string]::IsNullOrWhiteSpace($wingetVersionText)) `
 		-IsMandatory $false `
 		-WingetId $null
+
+	# RDPAudit 2.0 ETW-transport prerequisites. All are IsMandatory=$false so a
+	# missing channel or audit policy does not block the build: the service
+	# still runs in EventLogWatcher mode, and Repair-Rdp2xPrerequisites offers
+	# the operator an interactive fix immediately after the check.
+	$channelStates = @(foreach ($channel in $script:EtwRequiredEventChannels) { Test-EtwChannelEnabled -Channel $channel })
+	$channelsEnabled = @($channelStates | Where-Object { $_.IsEnabled }).Count
+	$channelsTotal = $channelStates.Count
+	$items += New-PrerequisiteRecord `
+		-Name 'ETW event channels' `
+		-Required 'TerminalServices+RdpCoreTS enabled' `
+		-Installed ("{0}/{1} enabled" -f $channelsEnabled, $channelsTotal) `
+		-IsSatisfied ($channelsEnabled -eq $channelsTotal) `
+		-IsMandatory $false `
+		-WingetId $null
+
+	$auditStates = @(foreach ($sub in $script:AuditpolRequiredSubcategories) { Get-AuditpolSubcategoryStatus -SubcategoryGuid $sub.Guid -DisplayName $sub.Name })
+	$auditEnabled = @($auditStates | Where-Object { $_.IsEnabled }).Count
+	$auditTotal = $auditStates.Count
+	$items += New-PrerequisiteRecord `
+		-Name 'Audit policy' `
+		-Required 'Logon/Logoff/File System' `
+		-Installed ("{0}/{1} Success+Failure" -f $auditEnabled, $auditTotal) `
+		-IsSatisfied ($auditEnabled -eq $auditTotal) `
+		-IsMandatory $false `
+		-WingetId $null
+
+	$etwPrivilege = Test-EtwPrivilegePresent
+	$etwPrivilegeText = if ($etwPrivilege) { 'Elevated' } else { 'NOT PRESENT' }
+	$items += New-PrerequisiteRecord `
+		-Name 'ETW privilege' `
+		-Required 'Admin or Perf Log Users' `
+		-Installed $etwPrivilegeText `
+		-IsSatisfied $etwPrivilege `
+		-IsMandatory $false `
+		-WingetId $null
+
+	$traceEventVersion = Get-TraceEventInstalledVersion
+	$traceEventInstalledText = if ($null -ne $traceEventVersion) { $traceEventVersion } else { 'NOT FOUND (auto-added)' }
+	$items += New-PrerequisiteRecord `
+		-Name 'TraceEvent (NuGet)' `
+		-Required ("{0} in cache" -f $script:TraceEventPackageVersion) `
+		-Installed $traceEventInstalledText `
+		-IsSatisfied ($null -ne $traceEventVersion) `
+		-IsMandatory $false `
+		-WingetId $null
+
+	# Expose the underlying probe rows so Repair-Rdp2xPrerequisites can consume
+	# them without repeating the wevtutil / auditpol invocations.
+	$script:LastEtwChannelStates = $channelStates
+	$script:LastAuditSubcategoryStates = $auditStates
+	$script:LastEtwPrivilegePresent = $etwPrivilege
 
 	return $items
 }
@@ -1344,6 +1583,171 @@ function Update-Ca1859SourceWarnings {
 	Test-Ca1859PatchVerification
 }
 
+# ── RDPAudit 2.0 Repair & Configuration ──────────────────────────────────────
+
+# Version: 1.0.0
+# Interactively repairs the non-mandatory RDPAudit 2.0 prerequisites: enables
+# any disabled ETW event channels via wevtutil and turns on the required
+# auditpol subcategories via GUID. Skipped in NonInteractive mode unless every
+# prerequisite is already satisfied. The routine never fails the installer -
+# it only records a warning and lets the operator run the fix by hand later.
+function Repair-Rdp2xPrerequisites {
+	if (-not $IsWindows) {
+		Write-Info 'RDPAudit 2.0 repair skipped (not Windows).'
+		return
+	}
+
+	$missingChannels = @($script:LastEtwChannelStates | Where-Object { -not $_.IsEnabled })
+	$missingAudit = @($script:LastAuditSubcategoryStates | Where-Object { -not $_.IsEnabled })
+
+	if ($missingChannels.Count -eq 0 -and $missingAudit.Count -eq 0) {
+		Write-Ok 'RDPAudit 2.0 ETW channels and audit policy are already fully enabled.'
+		return
+	}
+
+	Write-Section 'RDPAudit 2.0 Repair'
+
+	if ($missingChannels.Count -gt 0) {
+		Write-WarningMessage ("{0} ETW event channel(s) are disabled:" -f $missingChannels.Count)
+		foreach ($ch in $missingChannels) {
+			Write-Host ("    - {0}" -f $ch.Channel) -ForegroundColor Yellow
+		}
+	}
+
+	if ($missingAudit.Count -gt 0) {
+		Write-WarningMessage ("{0} audit subcategory/ies are not Success+Failure:" -f $missingAudit.Count)
+		foreach ($sub in $missingAudit) {
+			Write-Host ("    - {0} (current: {1})" -f $sub.Name, $sub.Detail) -ForegroundColor Yellow
+		}
+	}
+
+	$doRepair = Confirm-Action -Prompt 'Enable the missing ETW channels and audit subcategories now?' -DefaultYes $true
+	if (-not $doRepair) {
+		Write-Info 'RDPAudit 2.0 repair skipped by operator. Configurator will still run in EventLogWatcher mode.'
+		return
+	}
+
+	foreach ($ch in $missingChannels) {
+		Write-Info ("Enabling channel: {0}" -f $ch.Channel)
+		try {
+			& wevtutil.exe sl $ch.Channel /e:true | Out-Null
+			if ($LASTEXITCODE -eq 0) {
+				Write-Ok ("Channel enabled: {0}" -f $ch.Channel)
+				$script:InstallState.Fixes.Add(("Enabled ETW channel: {0}" -f $ch.Channel))
+			} else {
+				Write-WarningMessage ("wevtutil sl exited with code {0} for channel {1}." -f $LASTEXITCODE, $ch.Channel)
+			}
+		} catch {
+			Write-WarningMessage ("Failed to enable {0}: {1}" -f $ch.Channel, $_.Exception.Message)
+		}
+	}
+
+	foreach ($sub in $missingAudit) {
+		Write-Info ("Enabling audit subcategory: {0} ({1})" -f $sub.Name, $sub.Guid)
+		try {
+			& auditpol.exe /set /subcategory:$($sub.Guid) /success:enable /failure:enable | Out-Null
+			if ($LASTEXITCODE -eq 0) {
+				Write-Ok ("Audit subcategory enabled: {0}" -f $sub.Name)
+				$script:InstallState.Fixes.Add(("Enabled audit subcategory: {0}" -f $sub.Name))
+			} else {
+				Write-WarningMessage ("auditpol exited with code {0} for {1}." -f $LASTEXITCODE, $sub.Name)
+			}
+		} catch {
+			Write-WarningMessage ("Failed to enable audit subcategory {0}: {1}" -f $sub.Name, $_.Exception.Message)
+		}
+	}
+}
+
+# Version: 1.0.0
+# Merges the operator's -IngestionMode choice into the deployed appsettings.json
+# WITHOUT disturbing operator overrides. The file lives under
+# %ProgramData%\RdpAudit\appsettings.json and is created by publish.ps1 on the
+# very first install; on subsequent installs it already contains custom values
+# so we must (1) load the existing JSON, (2) upsert RdpAudit.IngestionMode,
+# (3) save with the same encoding (UTF-8 without BOM, LF newlines, tab indent).
+function Set-IngestionModeInAppSettings {
+	if (-not $IsWindows) {
+		Write-Info 'IngestionMode configuration skipped (not Windows).'
+		return
+	}
+
+	$programData = [System.Environment]::GetFolderPath('CommonApplicationData')
+	$configRoot = Join-Path -Path $programData -ChildPath 'RdpAudit'
+	$configFile = Join-Path -Path $configRoot -ChildPath 'appsettings.json'
+
+	try {
+		if (-not (Test-Path -LiteralPath $configRoot)) {
+			New-Item -ItemType Directory -Path $configRoot -Force | Out-Null
+		}
+
+		$existing = $null
+		if (Test-Path -LiteralPath $configFile) {
+			try {
+				$raw = Get-Content -LiteralPath $configFile -Raw -ErrorAction Stop
+				if (-not [string]::IsNullOrWhiteSpace($raw)) {
+					$existing = $raw | ConvertFrom-Json -ErrorAction Stop
+				}
+			} catch {
+				Write-WarningMessage ("Existing appsettings.json is not valid JSON ({0}). Rewriting with defaults." -f $_.Exception.Message)
+				$existing = $null
+			}
+		}
+
+		if ($null -eq $existing) {
+			$existing = [pscustomobject]@{}
+		}
+
+		# Upsert RdpAudit section without dropping any operator-added keys.
+		if ($existing.PSObject.Properties.Name -notcontains 'RdpAudit') {
+			$existing | Add-Member -MemberType NoteProperty -Name 'RdpAudit' -Value ([pscustomobject]@{})
+		}
+
+		if ($existing.RdpAudit.PSObject.Properties.Name -contains 'IngestionMode') {
+			$existing.RdpAudit.IngestionMode = $IngestionMode
+		} else {
+			$existing.RdpAudit | Add-Member -MemberType NoteProperty -Name 'IngestionMode' -Value $IngestionMode
+		}
+
+		$json = $existing | ConvertTo-Json -Depth 32
+		# ConvertTo-Json emits 2-space indent. Convert those to tabs so the file
+		# stays consistent with the rest of the codebase, then normalise line
+		# endings. We rewrite line-by-line to avoid PowerShell's ScriptBlock
+		# replacement quirk where `$_` inside the replacement refers to the Match
+		# object, not to the ForEach-Object iterator variable.
+		$normalizedLines = foreach ($line in ($json -split "`r?`n")) {
+			$leadingSpaces = 0
+			while ($leadingSpaces -lt $line.Length -and $line[$leadingSpaces] -eq ' ') {
+				$leadingSpaces++
+			}
+			$tabCount = [Math]::Floor($leadingSpaces / 2)
+			("`t" * $tabCount) + $line.Substring($leadingSpaces)
+		}
+		$json = $normalizedLines -join "`n"
+		[System.IO.File]::WriteAllText($configFile, $json + "`n", (New-Object System.Text.UTF8Encoding($false)))
+
+		Write-Ok ("IngestionMode = '{0}' written to {1}" -f $IngestionMode, $configFile)
+		$script:InstallState.Actions.Add(("Wrote IngestionMode = {0} to {1}" -f $IngestionMode, $configFile))
+	} catch {
+		Write-WarningMessage ("Failed to write IngestionMode to {0}: {1}" -f $configFile, $_.Exception.Message)
+	}
+}
+
+# Version: 1.0.0
+# Sanity-checks that the exact TraceEvent version required by the RDPAudit 2.0
+# event-collection layer is present in the NuGet global cache AFTER dotnet
+# restore has completed. If not, dotnet restore silently used a satellite feed
+# or a proxy corp mirror that resolved to a different version - report loudly
+# but do not fail the pipeline (the assembly reference will fail dotnet build
+# a few seconds later with a much clearer diagnostic).
+function Test-TraceEventCacheAfterRestore {
+	$version = Get-TraceEventInstalledVersion
+	if ($null -eq $version) {
+		Write-WarningMessage ("TraceEvent {0} is not in the NuGet global cache after restore. The 2.0 ETW transport will fail to load." -f $script:TraceEventPackageVersion)
+		return
+	}
+	Write-Ok ("TraceEvent {0} present in NuGet cache." -f $version)
+}
+
 # ── Build Pipeline ───────────────────────────────────────────────────────────
 
 function Invoke-RdpAuditBuildPipeline {
@@ -1363,6 +1767,11 @@ function Invoke-RdpAuditBuildPipeline {
 		-Arguments @('restore', '.\RdpAudit.sln') `
 		-WorkingDirectory $script:RepositoryDirectory `
 		-FailureMessage 'dotnet restore failed.'
+
+	# Verify the RDPAudit 2.0 ETW transport dependency landed in the NuGet cache
+	# before dotnet build reads it. Non-fatal: dotnet build will surface a much
+	# clearer diagnostic if the package really is missing.
+	Test-TraceEventCacheAfterRestore
 
 	Write-Section 'dotnet build'
 	Invoke-CheckedCommand `
@@ -1645,6 +2054,7 @@ function Invoke-Main {
 	Write-Info "Branch             : $RepositoryBranch"
 	Write-Info "MessagePack target : $SafeMessagePackVersion"
 	Write-Info "Graceful timeout   : $GracefulShutdownTimeoutSeconds second(s)"
+	Write-Info "Ingestion mode     : $IngestionMode"
 
 	# Report any previously installed build (with its version) before changing anything.
 	Show-ExistingInstallation
@@ -1690,7 +2100,9 @@ function Invoke-Main {
 	Update-Ca1859SourceWarnings
 	Confirm-MikrotikBuildPrerequisites
 	Install-MoqPackage -RepositoryRoot $script:RepositoryDirectory
+	Repair-Rdp2xPrerequisites
 	Invoke-RdpAuditBuildPipeline
+	Set-IngestionModeInAppSettings
 	Resolve-InstalledTargetVersion
 	Start-Configurator
 
