@@ -1,5 +1,5 @@
 /* Project: RDPAudit 2.0 | Author: Mikhail Deynekin | Site: Deynekin.com | Email: Mikhail@Deynekin.com */
-// Version: 2.0.2
+// Version: 2.0.3
 // File   : MpmcEventChannel.cs
 // Project: RdpAudit.Service (RdpAudit.Service.Infrastructure)
 // Purpose: DropOldest-aware event pipe backed by the Vyukov MPMC ring buffer. Sibling
@@ -62,9 +62,8 @@ public sealed class MpmcEventChannel : IRawEventBackend
 	/// Enqueue a DTO. Returns <see langword="true"/> on a clean write, <see langword="false"/>
 	/// when the write forced a DropOldest eviction (the DTO still landed or the caller must
 	/// treat the row as dropped, which is accounted for in <see cref="OverflowCount"/>).
-	/// Never blocks and never allocates on the managed heap. This method is O(1) amortised
-	/// and does NOT loop indefinitely; the retry budget is bounded to a small constant so
-	/// producers never stall behind a slow consumer under sustained contention.
+	/// Never blocks and never allocates on the managed heap. Producer never spins outside
+	/// the fixed inner budget of the underlying ring: at most one evict + one retry-write.
 	/// </summary>
 	[MethodImpl(MethodImplOptions.AggressiveInlining)]
 	public bool TryWrite(RawEventDto dto)
@@ -80,38 +79,30 @@ public sealed class MpmcEventChannel : IRawEventBackend
 			return true;
 		}
 
-		// Full-ring fallback: evict oldest and retry. We only make a small, fixed number
-		// of outer attempts. Each iteration is (evict, retry-write). The ring's own
-		// TryWrite/TryEvictOldest each spin internally with a capacity-proportional
-		// budget so a single outer attempt already tolerates significant transient
-		// contention. Looping thousands of times here would just stall the producer
-		// behind slow consumers under a full ring and violate the "never blocks"
-		// contract of this pipe.
-		const int outerRetryBudget = 8;
-		for (int i = 0; i < outerRetryBudget; i++)
+		// Full-ring fallback: try a single evict + retry. The underlying ring's own
+		// TryWrite/TryEvictOldest already spin internally with a capacity-proportional
+		// budget, so one outer attempt already tolerates ordinary transient contention.
+		// Looping here would break the non-blocking contract and, under a saturated
+		// consumer, would stall every producer thread waiting for slots only the
+		// consumer can free.
+		if (_ringBuffer.TryEvictOldest())
 		{
-			if (_ringBuffer.TryEvictOldest())
-			{
-				// A slot was freed; try to place our payload into it. Whether we win
-				// the follow-up TryWrite CAS or not, the DropOldest accounting was
-				// already done inside TryEvictOldest, so we always return false to
-				// signal "an eviction happened".
-				_ = _ringBuffer.TryWrite(payload);
-				return false;
-			}
-			// TryEvictOldest returned false: the ring looked empty at that instant
-			// (usually because a consumer just drained it). Retry TryWrite before
-			// declaring a hard drop; this is the fast path when a producer bursts
-			// into a ring that consumers are keeping up with.
-			if (_ringBuffer.TryWrite(payload))
-			{
-				return true;
-			}
+			// Eviction reclaimed exactly one slot: try to place our payload. Whether the
+			// follow-up write wins the CAS or not, the honest DropOldest counter was
+			// already incremented inside TryEvictOldest, so we always report false.
+			_ = _ringBuffer.TryWrite(payload);
+			return false;
 		}
 
-		// Genuine hard drop: neither eviction nor write succeeded in the bounded budget.
-		// Account for the lost row so the unified OverflowCount stays truthful without
-		// putting the producer into an unbounded spin.
+		// TryEvictOldest returned false: a consumer already drained ahead of us. Take
+		// one last chance at TryWrite: a slot may have just become available.
+		if (_ringBuffer.TryWrite(payload))
+		{
+			return true;
+		}
+
+		// Genuine hard drop: neither eviction nor write succeeded. Account for the lost
+		// row so the unified OverflowCount stays truthful; the producer never blocks.
 		Interlocked.Increment(ref _hardDropCount);
 		return false;
 	}
@@ -142,6 +133,13 @@ public sealed class MpmcEventChannel : IRawEventBackend
 
 	/// <summary>Approximate live count for observability. Do not use for control flow.</summary>
 	public long ApproxCount => _ringBuffer.ApproxCount;
+
+	/// <summary>Diagnostics-only breakdown of dropped rows. Splits the unified
+	/// OverflowCount into honest evictions (a slot was reclaimed for a newer row via
+	/// TryEvictOldest) and hard drops (retry exhausted, payload never landed). Tests
+	/// and telemetry can attribute losses; NOT intended for control flow.</summary>
+	public (long HonestEvictions, long HardDrops) OverflowBreakdown() =>
+		(_ringBuffer.OverflowCount, Interlocked.Read(ref _hardDropCount));
 
 	// ── Disposal ─────────────────────────────────────────────────────────────────
 
