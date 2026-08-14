@@ -1,5 +1,5 @@
 /* Project: RDPAudit 2.0 | Author: Mikhail Deynekin | Site: Deynekin.com | Email: Mikhail@Deynekin.com */
-// Version: 2.0.0
+// Version: 2.0.1
 // File   : RawEventConfiguration.cs
 // Project: RdpAudit.Core (RdpAudit.Core.Data.Configurations)
 // Purpose: Maps normalized raw events and their ingestion metadata to the SQLite schema.
@@ -43,7 +43,9 @@ public sealed class RawEventConfiguration : IEntityTypeConfiguration<RawEvent>
 		b.HasIndex(e => new { e.SessionId, e.TimeUtc });
 		b.HasIndex(e => new { e.Processed, e.TimeUtc });
 		b.HasIndex(e => new { e.ObjectName, e.EventId });
-		b.HasIndex(e => e.IngestionSequence).IsUnique();
+		// Uniqueness applies only to sequences the ingestion worker actually assigned (> 0).
+		// The default 0 marks legacy or synthetic rows and is intentionally excluded from the constraint.
+		b.HasIndex(e => e.IngestionSequence).IsUnique().HasFilter("\"IngestionSequence\" > 0");
 		b.HasIndex(e => new { e.SourceIpBinary, e.TimeUtc });
 
 		b.HasOne(e => e.Address)
