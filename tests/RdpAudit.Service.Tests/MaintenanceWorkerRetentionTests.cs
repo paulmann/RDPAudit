@@ -1,11 +1,11 @@
-// File:    tests/RdpAudit.Service.Tests/MaintenanceWorkerRetentionTests.cs
-// Module:  RdpAudit.Service.Tests
-// Purpose: Stage 10 retention pruning tests for MaintenanceWorker — verifies that RawEvents,
-//          Alerts, AbuseReports, inactive ActiveBlocks and stale AttackStats are pruned past
-//          their respective retention cutoffs while live rows are preserved.
-// Extends: System.Object
-// Author:  Mikhail Deynekin
-// Site:    https://Deynekin.com
+/* Project: RDPAudit 2.0 | Author: Mikhail Deynekin | Site: Deynekin.com | Email: Mikhail@Deynekin.com */
+// Version: 2.0.1
+// File   : MaintenanceWorkerRetentionTests.cs
+// Project: RdpAudit.Service.Tests (RdpAudit.Service.Tests)
+// Purpose: Retention pruning tests — RetentionWorker owns RawEvents; MaintenanceWorker handles
+//          Alerts, AbuseReports, ActiveBlocks and AttackStats past their retention cutoffs.
+// Depends: RetentionWorker, MaintenanceWorker, AuditDbContext
+// Extends: Add scenarios per new retention table alongside the corresponding worker call.
 
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
@@ -180,7 +180,11 @@ public class MaintenanceWorkerRetentionTests
 
 			MaintenanceWorker worker = new(factory, new StaticOptionsMonitor<RdpAuditOptions>(opts),
 				NullLogger<MaintenanceWorker>.Instance);
+			RetentionWorker retention = new(factory, new StaticOptionsMonitor<RdpAuditOptions>(opts),
+				NullLogger<RetentionWorker>.Instance);
 
+			// Stage 10 split: RetentionWorker owns RawEvents pruning; MaintenanceWorker handles the rest.
+			await retention.RunOnceAsync(CancellationToken.None);
 			await worker.RunOnceAsync(CancellationToken.None);
 
 			await using AuditDbContext db = factory.CreateDbContext();
@@ -230,10 +234,11 @@ public class MaintenanceWorkerRetentionTests
 			opts.Storage.EventRetentionDays = 365;
 			opts.Storage.MaintenanceBatchSize = 1000; // batched path takes the >=1000 floor
 
-			MaintenanceWorker worker = new(factory, new StaticOptionsMonitor<RdpAuditOptions>(opts),
-				NullLogger<MaintenanceWorker>.Instance);
+			RetentionWorker retention = new(factory, new StaticOptionsMonitor<RdpAuditOptions>(opts),
+				NullLogger<RetentionWorker>.Instance);
 
-			await worker.RunOnceAsync(CancellationToken.None);
+			// Stage 10 split: RawEvents retention is owned by RetentionWorker.
+			await retention.RunOnceAsync(CancellationToken.None);
 
 			await using AuditDbContext db = factory.CreateDbContext();
 			Assert.Equal(0, await db.RawEvents.CountAsync());
