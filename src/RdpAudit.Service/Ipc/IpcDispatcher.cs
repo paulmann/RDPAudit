@@ -1,12 +1,10 @@
-// File:    src/RdpAudit.Service/Ipc/IpcDispatcher.cs
-// Module:  RdpAudit.Service.Ipc
-// Purpose: Dispatches IpcRequests to handlers and produces an IpcResponse.
-//          Server-side errors are logged with full exception details; the client receives a
-//          sanitised, generic error string only — never raw exception messages or stack traces.
-// Extends: System.Object
-// Author:  Mikhail Deynekin
-// Site:    https://Deynekin.com
-// Version: 1.4.1
+/* Project: RDPAudit 2.0 | Author: Mikhail Deynekin | Site: Deynekin.com | Email: Mikhail@Deynekin.com */
+// Version: 2.0.0
+// File   : IpcDispatcher.cs
+// Project: RdpAudit.Service (RdpAudit.Service.Ipc)
+// Purpose: Dispatches IPC commands to service operations while returning curated client-safe responses.
+// Depends: AuditDbContext, IpcRequest, IpcResponse, EventCatalog, IOperationLogWriter
+// Extends: Add a handler and append-only IPC command when exposing a new service operation.
 
 using System.Diagnostics;
 using System.Globalization;
@@ -20,6 +18,7 @@ using Microsoft.Extensions.Options;
 using RdpAudit.Core.AbuseIpDb;
 using RdpAudit.Core.Config;
 using RdpAudit.Core.Data;
+using RdpAudit.Core.Events;
 using RdpAudit.Core.Firewall;
 using RdpAudit.Core.Ipc;
 using RdpAudit.Core.Ipc.Contracts;
@@ -310,6 +309,10 @@ public sealed class IpcDispatcher
 				// --- v1.4.1: Auth Success per-login summary (RDP Activity export) ---
 				IpcCommand.GetAuthSuccessSummaryForIp => await GetAuthSuccessSummaryForIpAsync(request.Payload, ct).ConfigureAwait(false),
 
+				// --- Stage 9: Event Collection ---
+				IpcCommand.GetEventCollectionSettings => await GetEventCollectionSettingsAsync(ct).ConfigureAwait(false),
+				IpcCommand.SaveEventCollectionSettings => await SaveEventCollectionSettingsAsync(request.Payload, ct).ConfigureAwait(false),
+
 				_ => throw new IpcException(string.Format(CultureInfo.InvariantCulture, "Unknown command: {0}", request.Command)),
 			};
 
@@ -431,6 +434,197 @@ public sealed class IpcDispatcher
 	/// Delegates to <see cref="RuntimeVersionResolver"/>, which is single-file-publish-safe and
 	/// never calls System.Reflection.Assembly.Location (avoids IL3000).</summary>
 	private static string ResolveRuntimeVersion() => RuntimeVersionResolver.Resolve();
+
+	private async Task<object?> GetEventCollectionSettingsAsync(CancellationToken ct)
+	{
+		await using AuditDbContext db = await _factory.CreateDbContextAsync(ct).ConfigureAwait(false);
+		Dictionary<int, bool> enablements = await db.EventEnablements.AsNoTracking()
+			.ToDictionaryAsync(row => row.EventId, row => row.IsEnabled, ct)
+			.ConfigureAwait(false);
+		Dictionary<int, int> retentions = await db.EventRetentions.AsNoTracking()
+			.ToDictionaryAsync(row => row.EventId, row => row.RetentionDays, ct)
+			.ConfigureAwait(false);
+
+		List<EventCollectionSettingsDto> settings = new(EventCatalog.All.Count);
+		foreach (EventDescriptor descriptor in EventCatalog.All)
+		{
+			bool isEnabled = enablements.TryGetValue(descriptor.EventId, out bool overrideEnabled)
+				? overrideEnabled
+				: descriptor.IsInPreset(EventPreset.Essential);
+			int retentionDays = retentions.TryGetValue(descriptor.EventId, out int overrideRetention)
+				? overrideRetention
+				: descriptor.DefaultRetentionDays;
+
+			settings.Add(new EventCollectionSettingsDto
+			{
+				EventId = descriptor.EventId,
+				Channel = descriptor.Channel,
+				DisplayName = descriptor.Description,
+				Description = descriptor.EffectivePurpose,
+				Criticality = descriptor.Criticality,
+				Layer = descriptor.Layer,
+				IsEnabled = isEnabled,
+				RetentionDays = retentionDays,
+			});
+		}
+
+		return settings;
+	}
+
+	private async Task<object?> SaveEventCollectionSettingsAsync(string? payload, CancellationToken ct)
+	{
+		EventCollectionMutationRequest request = ParseEventCollectionMutationRequest(payload);
+		List<EventCollectionSettingsDto> settings = ResolveEventCollectionSettings(request);
+		ValidateEventCollectionSettings(settings);
+		bool isPresetOperation = request.Preset is EventPreset.Minimal or EventPreset.Essential or EventPreset.Full;
+
+		await using AuditDbContext db = await _factory.CreateDbContextAsync(ct).ConfigureAwait(false);
+		await using var transaction = await db.Database.BeginTransactionAsync(ct).ConfigureAwait(false);
+		DateTime nowUtc = DateTime.UtcNow;
+		long nowTicks = nowUtc.Ticks;
+		int changedRows = 0;
+
+		foreach (EventCollectionSettingsDto setting in settings)
+		{
+			EventEnablement? enablement = await db.EventEnablements.FindAsync([setting.EventId], ct).ConfigureAwait(false);
+			if (enablement is null)
+			{
+				db.EventEnablements.Add(new EventEnablement
+				{
+					EventId = setting.EventId,
+					IsEnabled = setting.IsEnabled,
+					UpdatedUtc = nowTicks,
+				});
+				changedRows++;
+			}
+			else if (enablement.IsEnabled != setting.IsEnabled)
+			{
+				enablement.IsEnabled = setting.IsEnabled;
+				enablement.UpdatedUtc = nowTicks;
+				changedRows++;
+			}
+
+			if (!isPresetOperation)
+			{
+				EventRetention? retention = await db.EventRetentions.FindAsync([setting.EventId], ct).ConfigureAwait(false);
+				if (retention is null)
+				{
+					db.EventRetentions.Add(new EventRetention
+					{
+						EventId = setting.EventId,
+						RetentionDays = setting.RetentionDays,
+						UpdatedUtc = nowTicks,
+					});
+					changedRows++;
+				}
+				else if (retention.RetentionDays != setting.RetentionDays)
+				{
+					retention.RetentionDays = setting.RetentionDays;
+					retention.UpdatedUtc = nowTicks;
+					changedRows++;
+				}
+			}
+		}
+
+		if (changedRows > 0)
+		{
+			await db.SaveChangesAsync(ct).ConfigureAwait(false);
+		}
+
+		await transaction.CommitAsync(ct).ConfigureAwait(false);
+
+		string operation = isPresetOperation
+			? "EventCollection.ApplyPreset"
+			: "EventCollection.SaveSettings";
+		LogOperation(
+			OperationLogSeverity.Information,
+			operation,
+			string.Format(
+				CultureInfo.InvariantCulture,
+				"{0} completed for {1} event settings; {2} persisted values changed at {3:o}.",
+				operation,
+				settings.Count,
+				changedRows,
+				nowUtc));
+
+		return await GetEventCollectionSettingsAsync(ct).ConfigureAwait(false);
+	}
+
+	private static EventCollectionMutationRequest ParseEventCollectionMutationRequest(string? payload)
+	{
+		if (string.IsNullOrWhiteSpace(payload))
+		{
+			throw new IpcException("Event Collection settings are required.");
+		}
+
+		try
+		{
+			return JsonSerializer.Deserialize<EventCollectionMutationRequest>(payload, JsonOptions.Default)
+				?? throw new IpcException("Event Collection settings are required.");
+		}
+		catch (JsonException ex)
+		{
+			throw new IpcException("Event Collection settings are invalid.", ex);
+		}
+	}
+
+	private static List<EventCollectionSettingsDto> ResolveEventCollectionSettings(EventCollectionMutationRequest request)
+	{
+		if (request.Preset is EventPreset.Minimal or EventPreset.Essential or EventPreset.Full)
+		{
+			HashSet<int> enabledEventIds = new(EventCatalog.ExpandPreset(request.Preset));
+			List<EventCollectionSettingsDto> presetSettings = new(EventCatalog.All.Count);
+			foreach (EventDescriptor descriptor in EventCatalog.All)
+			{
+				presetSettings.Add(new EventCollectionSettingsDto
+				{
+					EventId = descriptor.EventId,
+					IsEnabled = enabledEventIds.Contains(descriptor.EventId),
+					RetentionDays = descriptor.DefaultRetentionDays,
+				});
+			}
+
+			return presetSettings;
+		}
+
+		return request.Settings;
+	}
+
+	private static void ValidateEventCollectionSettings(List<EventCollectionSettingsDto> settings)
+	{
+		if (settings.Count == 0)
+		{
+			throw new IpcException("At least one Event Collection setting is required.");
+		}
+
+		HashSet<int> eventIds = new(settings.Count);
+		foreach (EventCollectionSettingsDto setting in settings)
+		{
+			if (!EventCatalog.TryGet(setting.EventId, out _))
+			{
+				throw new IpcException(string.Format(
+					CultureInfo.InvariantCulture,
+					"Event ID {0} is not present in the Event Collection catalog.",
+					setting.EventId));
+			}
+
+			if (!eventIds.Add(setting.EventId))
+			{
+				throw new IpcException(string.Format(
+					CultureInfo.InvariantCulture,
+					"Event ID {0} was supplied more than once.",
+					setting.EventId));
+			}
+
+			if (setting.RetentionDays < 0)
+			{
+				throw new IpcException(string.Format(
+					CultureInfo.InvariantCulture,
+					"Retention for Event ID {0} cannot be negative.",
+					setting.EventId));
+			}
+		}
+	}
 
 	private async Task<object?> GetRecentEventsAsync(CancellationToken ct)
 	{
