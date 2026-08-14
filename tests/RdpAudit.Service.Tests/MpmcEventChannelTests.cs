@@ -96,7 +96,13 @@ public sealed class MpmcEventChannelTests
 			int producerId = p;
 			producerTasks[p] = Task.Run(() =>
 			{
-				SpinWait spinner = new();
+				// NO SpinWait between TryWrite calls: TryWrite completes in microseconds
+				// and never blocks (DropOldest fallback). A shared SpinWait counter would
+				// escalate to Thread.Sleep(1) after ~20 iterations and impose ~15 ms per
+				// call on Windows, giving 'producer never blocked' AND 'producer finished
+				// only ~2000 rows before cts timeout' - the exact pattern that used to
+				// look like ring-buffer corruption. A real writer never pauses between
+				// events either, so this reflects the production hot path.
 				int clean = 0;
 				int dropped = 0;
 				int attempts = 0;
@@ -112,13 +118,12 @@ public sealed class MpmcEventChannelTests
 					{
 						dropped++;
 					}
-					spinner.SpinOnce();
 					if (cts.IsCancellationRequested) break;
 				}
 				producerAttempts[producerId] = attempts;
 				producerCleanWrites[producerId] = clean;
 				producerDroppedWrites[producerId] = dropped;
-			}, cts.Token);
+			});
 		}
 
 		int[] consumerReads = new int[consumers];
@@ -128,7 +133,10 @@ public sealed class MpmcEventChannelTests
 			int consumerId = c;
 			consumerTasks[c] = Task.Run(() =>
 			{
-				SpinWait spinner = new();
+				// Consumer: on a read miss, yield the thread instead of using SpinWait so we
+				// do not accumulate SpinWait iterations that eventually turn into 15 ms
+				// Thread.Sleep(1) calls on Windows. Yielding on miss keeps the CPU free for
+				// producers without starving them.
 				int localReads = 0;
 				while (Volatile.Read(ref totalConsumed) < totalToProduce)
 				{
@@ -139,16 +147,15 @@ public sealed class MpmcEventChannelTests
 							$"Duplicate consume of sentinel {dto.EventId}");
 						localReads++;
 						Interlocked.Increment(ref totalConsumed);
-						spinner.Reset();
 					}
 					else
 					{
-						spinner.SpinOnce();
+						Thread.Yield();
 						if (cts.IsCancellationRequested) break;
 					}
 				}
 				consumerReads[consumerId] = localReads;
-			}, cts.Token);
+			});
 		}
 
 		await Task.WhenAll(producerTasks);
