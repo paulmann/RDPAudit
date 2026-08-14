@@ -15,4 +15,10 @@
 		<ProjectReference Include="..\..\src\RdpAudit.Core\RdpAudit.Core.csproj" />
 		<ProjectReference Include="..\..\src\RdpAudit.Service\RdpAudit.Service.csproj" />
 	</ItemGroup>
+	<!-- Copy xunit.runner.json next to the test dll so the runner picks up diagnostic settings. -->
+	<ItemGroup>
+		<None Update="xunit.runner.json">
+			<CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+		</None>
+	</ItemGroup>
 </Project>

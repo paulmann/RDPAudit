@@ -1190,9 +1190,16 @@ function Invoke-RdpAuditBuildPipeline {
 		-FailureMessage 'dotnet build failed.'
 
 	Write-Section 'dotnet test'
+	# --blame-hang-timeout <n> aborts a test that runs longer than the timeout AND prints the
+	# assembly + test name that was running when the timeout fired, so we always know which
+	# test hung the run. --logger 'console;verbosity=normal' streams each test as it completes.
 	Invoke-CheckedCommand `
 		-FilePath 'dotnet' `
-		-Arguments @('test', '.\RdpAudit.sln', '-c', 'Release', '--no-build') `
+		-Arguments @(
+			'test', '.\RdpAudit.sln', '-c', 'Release', '--no-build',
+			'--blame-hang', '--blame-hang-timeout', '90s',
+			'--logger', 'console;verbosity=normal'
+		) `
 		-WorkingDirectory $script:RepositoryDirectory `
 		-FailureMessage 'dotnet test failed.'
 
