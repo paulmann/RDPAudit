@@ -12,7 +12,7 @@
 
 .NOTES
 	Author : Mikhail Deynekin — https://Deynekin.com — Mikhail@Deynekin.com
-	Version: 1.4.0
+	Version: 1.4.1
 
 .FEATURES
 	Detects and reports any previously installed RdpAudit version (with version number).
@@ -42,7 +42,12 @@ param(
 
 	[string]$RepositoryUrl = 'https://github.com/paulmann/RDPAudit.git',
 
-	[string]$RepositoryBranch = 'main',
+	# The RDPAudit 2.0 work lives on the feature/rdpaudit-2.0-event-collection branch
+	# (SSH.NET 2026.0.0, current migration set, current test suite). 'main' is a legacy
+	# 1.x tag that still pins the vulnerable SSH.NET 2024.1.0 (GHSA-q939-rpr3-3284) and
+	# would fail 'dotnet restore' due to NU1903 (WarningsAsErrors). Override this
+	# parameter explicitly if you need to build a different branch.
+	[string]$RepositoryBranch = 'feature/rdpaudit-2.0-event-collection',
 
 	[string]$SafeMessagePackVersion = '2.5.301',
 
