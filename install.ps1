@@ -12,7 +12,7 @@
 
 .NOTES
 	Author : Mikhail Deynekin — https://Deynekin.com — Mikhail@Deynekin.com
-	Version: 1.2.5
+	Version: 1.3.0
 
 .FEATURES
 	Detects and reports any previously installed RdpAudit version (with version number).
@@ -52,12 +52,53 @@ param(
 
 	[switch]$NonInteractive,
 
-	[switch]$SkipLaunch
+	[switch]$SkipLaunch,
+
+	# Directory that will receive the RDPAudit_Install_<Date_Time>.log transcript file.
+	# Defaults to '<WorkDirectory>\logs'. The directory is created on demand and is never
+	# deleted or truncated by the installer, so previous runs remain available for review.
+	[string]$LogDirectory = ''
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
+
+# ── Installation Transcript Log ──────────────────────────────────────────────
+
+# Every run captures a full transcript to a timestamped file so the operator can
+# review the entire installation output after the fact without having to keep the
+# window open or copy from the console (which is fragile: selecting text pauses
+# the console and any keypress can dismiss modal prompts). The file lives under
+# <WorkDirectory>\logs by default and is created regardless of exit outcome.
+
+if ([string]::IsNullOrWhiteSpace($LogDirectory)) {
+	$LogDirectory = Join-Path -Path $WorkDirectory -ChildPath 'logs'
+}
+
+try {
+	if (-not (Test-Path -LiteralPath $LogDirectory)) {
+		New-Item -ItemType Directory -Path $LogDirectory -Force | Out-Null
+	}
+} catch {
+	Write-Warning ("Could not create log directory '{0}': {1}. Falling back to TEMP." -f $LogDirectory, $_.Exception.Message)
+	$LogDirectory = $env:TEMP
+}
+
+$script:InstallLogTimestamp = (Get-Date).ToString('yyyy-MM-dd_HH-mm-ss')
+$script:InstallLogFile = Join-Path -Path $LogDirectory -ChildPath ("RDPAudit_Install_{0}.log" -f $script:InstallLogTimestamp)
+$script:TranscriptStarted = $false
+
+try {
+	Start-Transcript -Path $script:InstallLogFile -Force -IncludeInvocationHeader | Out-Null
+	$script:TranscriptStarted = $true
+} catch {
+	Write-Warning ("Could not start transcript at '{0}': {1}. Installation will continue without a log file." -f $script:InstallLogFile, $_.Exception.Message)
+}
+
+Write-Host ''
+Write-Host ('Installation log: {0}' -f $script:InstallLogFile) -ForegroundColor Cyan
+Write-Host ''
 
 # ── Fields & Configuration ───────────────────────────────────────────────────
 
@@ -1458,60 +1499,60 @@ function Invoke-Main {
 	Write-Ok 'RdpAudit installation pipeline completed successfully.'
 }
 
-# Version: 1.1.0
-# Keeps the PowerShell console window open after the pipeline finishes so the
-# operator can read the installation summary (or the fatal-error stack) even
-# when the script was launched by a double-click / desktop shortcut that would
-# otherwise close the host immediately on `exit`. The pause is suppressed for
-# non-interactive callers (CI, other scripts) via the RDPAUDIT_NONINTERACTIVE
-# environment variable or when the host is not the ConsoleHost (ISE, VSCode).
-function Wait-BeforeExit {
+# Version: 1.3.0
+# Terminates the installer without blocking on user input. Historical builds
+# called $Host.UI.RawUI.ReadKey() at the end so a double-click launch would keep
+# the console visible, but that call also captured any keypress (including the
+# ones the operator uses to copy text with Ctrl+C / mouse selection + Enter),
+# so the window would appear to close spontaneously. Now every run writes a
+# complete transcript to RDPAudit_Install_<Date_Time>.log; the operator can
+# review the file at their own pace, and the console window is returned to the
+# shell so it stays fully interactive for further work.
+function Stop-InstallationTranscript {
+	if ($script:TranscriptStarted) {
+		try {
+			Stop-Transcript | Out-Null
+		} catch {
+			# Ignore — the transcript is best-effort and must never mask the real exit reason.
+		}
+		$script:TranscriptStarted = $false
+	}
+}
+
+function Show-InstallationLogHint {
 	param(
-		[int]$ExitCode
+		[Parameter(Mandatory)][int]$ExitCode
 	)
-
-	$nonInteractiveEnv = $env:RDPAUDIT_NONINTERACTIVE
-	if (-not [string]::IsNullOrWhiteSpace($nonInteractiveEnv) -and $nonInteractiveEnv -ne '0') {
-		return
-	}
-
-	if (-not [Environment]::UserInteractive) {
-		return
-	}
-
-	if ($Host.Name -ne 'ConsoleHost') {
-		return
-	}
 
 	Write-Host ''
 	if ($ExitCode -eq 0) {
-		Write-Host 'Installation finished. Press any key to close this window ...' -ForegroundColor Green
+		Write-Host 'Installation completed. Returning to the shell prompt.' -ForegroundColor Green
 	} else {
-		Write-Host "Installation FAILED with exit code $ExitCode. Press any key to close this window ..." -ForegroundColor Red
+		Write-Host ("Installation FAILED with exit code {0}." -f $ExitCode) -ForegroundColor Red
 	}
-
-	try {
-		$null = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')
-	} catch {
-		# Fallback for hosts without RawUI (should not happen in ConsoleHost) — use Read-Host so
-		# the operator still gets a chance to read the output before the window closes.
-		$null = Read-Host 'Press ENTER to close'
-	}
+	Write-Host ("Full log saved to: {0}" -f $script:InstallLogFile) -ForegroundColor Cyan
+	Write-Host ''
 }
 
 try {
-	Invoke-Main
-	Wait-BeforeExit -ExitCode 0
-	exit 0
-} catch {
-	Write-Section 'Fatal Error'
-	Write-ErrorMessage $_.Exception.Message
+	try {
+		Invoke-Main
+		$exitCode = 0
+	} catch {
+		Write-Section 'Fatal Error'
+		Write-ErrorMessage $_.Exception.Message
 
-	if ($null -ne $_.ScriptStackTrace) {
-		Write-Host ''
-		Write-Host $_.ScriptStackTrace -ForegroundColor DarkRed
+		if ($null -ne $_.ScriptStackTrace) {
+			Write-Host ''
+			Write-Host $_.ScriptStackTrace -ForegroundColor DarkRed
+		}
+
+		$exitCode = 1
 	}
 
-	Wait-BeforeExit -ExitCode 1
-	exit 1
+	Show-InstallationLogHint -ExitCode $exitCode
+} finally {
+	Stop-InstallationTranscript
 }
+
+exit $exitCode
