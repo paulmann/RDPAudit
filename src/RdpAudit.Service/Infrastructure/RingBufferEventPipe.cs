@@ -1,5 +1,5 @@
 /* Project: RDPAudit 2.0 | Author: Mikhail Deynekin | Site: Deynekin.com | Email: Mikhail@Deynekin.com */
-// Version: 2.1.0
+// Version: 2.1.1
 // File   : RingBufferEventPipe.cs
 // Project: RdpAudit.Service (RdpAudit.Service.Infrastructure)
 // Purpose: Zero-allocation IEventPipe adapter over the existing SPSC UnmanagedSpscRingBuffer.
@@ -149,6 +149,13 @@ public sealed class RingBufferEventPipe : IEventPipe, IDisposable
 			{
 				return false;
 			}
+
+			// If Dispose released the semaphore to wake us, treat it as "no data" so the caller
+			// unwinds cleanly instead of racing on a disposed ring/prefetch slot.
+			if (Volatile.Read(ref _disposed) != 0)
+			{
+				return false;
+			}
 		}
 		catch (OperationCanceledException)
 		{
@@ -211,6 +218,17 @@ public sealed class RingBufferEventPipe : IEventPipe, IDisposable
 	{
 		if (Interlocked.Exchange(ref _disposed, 1) == 0)
 		{
+			// Wake any pending WaitToReadAsync so it can observe _disposed and return false.
+			// SemaphoreSlim.Dispose alone does NOT unblock in-flight WaitAsync waiters — they
+			// would hang forever. Release once, tolerate SemaphoreFullException (a producer
+			// may have already released a pending edge).
+			try
+			{
+				_signal.Release();
+			}
+			catch (SemaphoreFullException) { }
+			catch (ObjectDisposedException) { }
+
 			_signal.Dispose();
 		}
 	}
