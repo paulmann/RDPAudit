@@ -310,7 +310,61 @@ public static class Program
 			sp.GetRequiredService<EventFloodGuard>(),
 			sp.GetRequiredService<IOptionsMonitor<RdpAuditOptions>>(),
 			sp.GetRequiredService<ServiceMetrics>()));
-		services.AddSingleton<IEventSourceFactory, EventLogWatcherEventSourceFactory>();
+		// IngestionMode selection: pick the transport factory once at startup and log the
+		// decision so operators can confirm which transport is armed. IngestionMode.Etw
+		// fail-fasts when the probe declines (throws at first resolution). Auto silently
+		// falls back to EventLog and records the reason. See EventSourceFactorySelector
+		// for the pure selection matrix and MonitoringConfigRepair for the out-of-range
+		// clamp that this branch relies on.
+		services.AddSingleton<EventLogWatcherEventSourceFactory>();
+		services.AddSingleton<EtwEventSourceFactory>();
+		services.AddSingleton<IEventSourceFactory>(sp =>
+		{
+			var options = sp.GetRequiredService<IOptions<RdpAuditOptions>>().Value;
+			var logger = sp.GetRequiredService<ILoggerFactory>().CreateLogger("RdpAudit.Service.EventSources.IngestionModeSelector");
+			var requested = options.Monitoring.IngestionMode;
+
+			var selection = EventSourceFactorySelector.Select(
+				requested,
+				// P0 step 2: ETW probe is not implemented yet. Callback always returns
+				// (false, reason) so IngestionMode.Auto transparently falls back to
+				// EventLog and IngestionMode.Etw fails fast with a clear message.
+				() => (false, "ETW backend not yet wired (P0 step 2 skeleton) — real TraceEventSession lands in commit 3."));
+
+			if (selection.RequestedMode == IngestionMode.Etw &&
+				selection.ChosenTransport == IngestionMode.Etw &&
+				selection.FallbackReason is not null)
+			{
+				// Fail-fast contract: operator asked for Etw explicitly and probe declined.
+				logger.LogCritical(
+					"IngestionMode=Etw requested but ETW is unavailable: {Reason}",
+					selection.FallbackReason);
+				throw new InvalidOperationException(
+					"IngestionMode=Etw requested but ETW is unavailable: " + selection.FallbackReason);
+			}
+
+			if (selection.FallbackReason is not null)
+			{
+				logger.LogWarning(
+					"IngestionMode={Requested} resolved to {Chosen}: {Reason}",
+					selection.RequestedMode,
+					selection.ChosenTransport,
+					selection.FallbackReason);
+			}
+			else
+			{
+				logger.LogInformation(
+					"Event ingestion transport: {Chosen} (IngestionMode={Requested}).",
+					selection.ChosenTransport,
+					selection.RequestedMode);
+			}
+
+			return selection.ChosenTransport switch
+			{
+				IngestionMode.Etw => sp.GetRequiredService<EtwEventSourceFactory>(),
+				_ => sp.GetRequiredService<EventLogWatcherEventSourceFactory>(),
+			};
+		});
 		services.AddSingleton<IChannelStatusSink, ServiceMetricsChannelStatusSink>();
 		services.AddSingleton<EventCollectorHost>();
 		services.AddSingleton<SessionCorrelationCache>();
