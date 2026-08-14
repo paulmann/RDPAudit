@@ -1,5 +1,5 @@
 /* Project: RDPAudit 2.0 | Author: Mikhail Deynekin | Site: Deynekin.com | Email: Mikhail@Deynekin.com */
-// Version: 2.0.0
+// Version: 2.0.1
 // File   : IpEventSummary.cs
 // Project: RdpAudit.Core (RdpAudit.Core.Models)
 // Purpose: Stores durable per-IP event totals and first/last event evidence for efficient IP investigation.
@@ -39,18 +39,28 @@ public sealed class IpEventSummary
 	public long SuccessCount { get; set; }
 	/// <summary>Number of failed authentication events.</summary>
 	public long FailureCount { get; set; }
-	/// <summary>Relative path of the IP shard when sharding is enabled.</summary>
-	public string ShardRelativePath { get; set; } = string.Empty;
-	/// <summary>Number of records currently retained by the shard.</summary>
-	public long ShardRecordCount { get; set; }
-	/// <summary>Current size of the shard in bytes.</summary>
-	public long ShardBytes { get; set; }
-	/// <summary>Binary format version of the shard.</summary>
-	public int ShardFormatVersion { get; set; }
-	/// <summary>Number of records evicted from the shard.</summary>
-	public long ShardEvictedCount { get; set; }
-	/// <summary>UTC ticks of the oldest record retained by the shard, if known.</summary>
+	// ── Shard metadata ───────────────────────────────────────────────────────────
+	// Every field below is null until a shard file actually exists on disk for this
+	// IP. Nothing writes them yet: ShardWriter is implemented and unit-tested but is
+	// not connected to the ingestion path, so no shard is ever created. They stay
+	// null rather than carrying zeros or an empty path, because an analyst reading a
+	// non-null ShardRelativePath during an incident will try to open that file. Null
+	// means "no shard"; a value means "a shard exists and these numbers describe it".
+
+	/// <summary>Relative path of the IP shard, or <see langword="null"/> when no shard file exists.</summary>
+	public string? ShardRelativePath { get; set; }
+	/// <summary>Number of records currently retained by the shard, or <see langword="null"/> when no shard file exists.</summary>
+	public long? ShardRecordCount { get; set; }
+	/// <summary>Size of the shard file in bytes, or <see langword="null"/> when no shard file exists.</summary>
+	public long? ShardBytes { get; set; }
+	/// <summary>Binary format version of the shard, or <see langword="null"/> when no shard file exists.</summary>
+	public int? ShardFormatVersion { get; set; }
+	/// <summary>Number of records evicted from the shard, or <see langword="null"/> when no shard file exists.</summary>
+	public long? ShardEvictedCount { get; set; }
+	/// <summary>UTC ticks of the oldest record retained by the shard, or <see langword="null"/> when no shard file exists.</summary>
 	public long? ShardOldestRetainedUtc { get; set; }
+	/// <summary>Indicates whether a shard file backs this summary row.</summary>
+	public bool HasShard => ShardRelativePath is not null;
 	/// <summary>Indicates that this row represents an aggregate subnet rather than one host.</summary>
 	public bool IsSubnetAggregate { get; set; }
 	/// <summary>Reserved bit flags for future aggregate state.</summary>

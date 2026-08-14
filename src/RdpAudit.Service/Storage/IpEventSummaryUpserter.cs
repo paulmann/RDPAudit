@@ -1,10 +1,12 @@
 /* Project: RDPAudit 2.0 | Author: Mikhail Deynekin | Site: Deynekin.com | Email: Mikhail@Deynekin.com */
-// Version: 2.0.0
+// Version: 2.0.1
 // File   : IpEventSummaryUpserter.cs
 // Project: RdpAudit.Service (RdpAudit.Service.Storage)
 // Purpose: Updates durable IP event summaries and per-event counters inside the caller's SQLite transaction.
 // Depends: SqliteConnection, SqliteTransaction, RawEvent
 // Extends: Add new summary counters by extending both prepared commands and IpEventRow construction.
+//          Shard columns are owned by the shard writer, not by this type: leave them untouched
+//          here until ShardWriter is wired into the ingestion path.
 
 using System.Net;
 using System.Net.Sockets;
@@ -19,23 +21,25 @@ public sealed class IpEventSummaryUpserter
 {
 	// ── Fields & DI ──────────────────────────────────────────────────────────────
 
-	private const int ShardCapacity = int.MaxValue;
-	private const int ShardFormatVersion = 1;
+	// This statement deliberately never names a Shard* column. Those columns describe
+	// a shard file on disk, and this type does not create one, so it has nothing
+	// truthful to say about them. They are left null by the INSERT and untouched by
+	// the ON CONFLICT branch. When ShardWriter is connected to the ingestion path it
+	// becomes their sole writer, updating them from the real shard header inside this
+	// same transaction.
 	private const string SummarySql = """
 INSERT INTO IpEventSummary (
 	IpBinary16, IpText, AddressFamily,
 	FirstEventUtc, FirstEventId, FirstEventSequence, FirstEventSnapshot,
 	LastEventUtc, LastEventId, LastEventSequence, LastEventSnapshot,
 	TotalEventCount, SuccessCount, FailureCount,
-	ShardRelativePath, ShardRecordCount, ShardBytes, ShardFormatVersion,
-	ShardEvictedCount, ShardOldestRetainedUtc, IsSubnetAggregate, Flags)
+	IsSubnetAggregate, Flags)
 VALUES (
 	$ip, $ipText, $family,
 	$firstUtc, $firstId, $firstSequence, $firstSnapshot,
 	$lastUtc, $lastId, $lastSequence, $lastSnapshot,
 	1, $successDelta, $failureDelta,
-	$shardPath, 1, $shardBytes, $shardVersion,
-	0, $lastUtc, 0, 0)
+	0, 0)
 ON CONFLICT(IpBinary16) DO UPDATE SET
 	LastEventUtc = excluded.LastEventUtc,
 	LastEventId = excluded.LastEventId,
@@ -43,14 +47,7 @@ ON CONFLICT(IpBinary16) DO UPDATE SET
 	LastEventSnapshot = excluded.LastEventSnapshot,
 	TotalEventCount = IpEventSummary.TotalEventCount + 1,
 	SuccessCount = IpEventSummary.SuccessCount + excluded.SuccessCount,
-	FailureCount = IpEventSummary.FailureCount + excluded.FailureCount,
-	ShardRecordCount = MIN(IpEventSummary.ShardRecordCount + 1, $shardCapacity),
-	ShardBytes = excluded.ShardBytes,
-	ShardEvictedCount = IpEventSummary.ShardEvictedCount + $evictedDelta,
-	ShardOldestRetainedUtc = CASE
-		WHEN $evictedDelta > 0 THEN excluded.LastEventUtc
-		ELSE IpEventSummary.ShardOldestRetainedUtc
-	END;
+	FailureCount = IpEventSummary.FailureCount + excluded.FailureCount;
 """;
 	private const string CounterSql = """
 INSERT INTO IpEventTypeCounter (IpBinary16, EventId, Count, FirstUtc, LastUtc)
@@ -114,11 +111,6 @@ ON CONFLICT(IpBinary16, EventId) DO UPDATE SET
 		AddParameter(command, "$lastSnapshot");
 		AddParameter(command, "$successDelta");
 		AddParameter(command, "$failureDelta");
-		AddParameter(command, "$shardPath");
-		AddParameter(command, "$shardBytes");
-		AddParameter(command, "$shardVersion");
-		AddParameter(command, "$shardCapacity");
-		AddParameter(command, "$evictedDelta");
 		return command;
 	}
 
@@ -167,10 +159,6 @@ ON CONFLICT(IpBinary16, EventId) DO UPDATE SET
 			rawEvent.EventId,
 			rawEvent.IngestionSequence,
 			snapshot,
-			string.Empty,
-			snapshot.LongLength,
-			ShardFormatVersion,
-			ShardCapacity,
 			isSuccess,
 			isFailure);
 		return true;
@@ -191,11 +179,6 @@ ON CONFLICT(IpBinary16, EventId) DO UPDATE SET
 		command.Parameters["$lastSnapshot"].Value = row.Snapshot;
 		command.Parameters["$successDelta"].Value = row.IsSuccess ? 1 : 0;
 		command.Parameters["$failureDelta"].Value = row.IsFailure ? 1 : 0;
-		command.Parameters["$shardPath"].Value = row.ShardRelativePath;
-		command.Parameters["$shardBytes"].Value = row.ShardBytes;
-		command.Parameters["$shardVersion"].Value = row.ShardFormatVersion;
-		command.Parameters["$shardCapacity"].Value = row.ShardCapacity;
-		command.Parameters["$evictedDelta"].Value = 0;
 	}
 
 	private static void BindCounter(SqliteCommand command, in IpEventRow row)
@@ -213,10 +196,6 @@ ON CONFLICT(IpBinary16, EventId) DO UPDATE SET
 		int EventId,
 		long IngestionSequence,
 		byte[] Snapshot,
-		string ShardRelativePath,
-		long ShardBytes,
-		int ShardFormatVersion,
-		int ShardCapacity,
 		bool IsSuccess,
 		bool IsFailure);
 }

@@ -26,9 +26,13 @@ The following items are not implemented and remain planned work:
   writing, shard capacity policy, global shard budget, disk-free floor, handle
   cache, and operator drill-down are not integrated into the active processor
   path.
-- The summary upserter currently records shard metadata placeholders rather
-  than a live shard writer result. Operators must treat `IpEventSummary` as an
-  aggregate store, not proof that a usable shard exists.
+- The summary upserter no longer records shard metadata at all. Every `Shard*`
+  column in `IpEventSummary` is nullable and stays `NULL` until a shard file
+  really exists, and migration `Stage11ShardMetadataNullable` clears the
+  placeholder values written by `Stage10IpShardsRetention`. A non-null
+  `ShardRelativePath` is therefore a reliable signal that a readable shard is on
+  disk. Until `ShardWriter` is wired into the ingestion path that signal never
+  fires: treat `IpEventSummary` as an aggregate store only.
 - No complete MPMC ring, ETW provider consumer, or per-event lost-event
   classification is present. High-rate behavior must be measured on the target
   Windows host before relying on it for an incident response SLA.
