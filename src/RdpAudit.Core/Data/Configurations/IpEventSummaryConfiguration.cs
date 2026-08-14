@@ -1,5 +1,5 @@
 /* Project: RDPAudit 2.0 | Author: Mikhail Deynekin | Site: Deynekin.com | Email: Mikhail@Deynekin.com */
-// Version: 2.0.0
+// Version: 2.0.1
 // File   : IpEventSummaryConfiguration.cs
 // Project: RdpAudit.Core (RdpAudit.Core.Data.Configurations)
 // Purpose: Maps the durable per-IP event summary model to its SQLite schema and query indexes.
@@ -34,11 +34,15 @@ public sealed class IpEventSummaryConfiguration : IEntityTypeConfiguration<IpEve
 		builder.Property(entity => entity.TotalEventCount).HasDefaultValue(0L);
 		builder.Property(entity => entity.SuccessCount).HasDefaultValue(0L);
 		builder.Property(entity => entity.FailureCount).HasDefaultValue(0L);
-		builder.Property(entity => entity.ShardRelativePath).IsRequired().HasMaxLength(260);
-		builder.Property(entity => entity.ShardRecordCount).HasDefaultValue(0L);
-		builder.Property(entity => entity.ShardBytes).HasDefaultValue(0L);
-		builder.Property(entity => entity.ShardFormatVersion).HasDefaultValue(1);
-		builder.Property(entity => entity.ShardEvictedCount).HasDefaultValue(0L);
+		// Shard columns are nullable with no default: null means no shard file exists.
+		// A default of 0 or an empty path would be indistinguishable from a real, empty
+		// shard, so the schema refuses to invent one.
+		builder.Property(entity => entity.ShardRelativePath).IsRequired(false).HasMaxLength(260);
+		builder.Property(entity => entity.ShardRecordCount).IsRequired(false);
+		builder.Property(entity => entity.ShardBytes).IsRequired(false);
+		builder.Property(entity => entity.ShardFormatVersion).IsRequired(false);
+		builder.Property(entity => entity.ShardEvictedCount).IsRequired(false);
+		builder.Ignore(entity => entity.HasShard);
 		builder.Property(entity => entity.IsSubnetAggregate).HasDefaultValue(false);
 		builder.Property(entity => entity.Flags).HasDefaultValue(0);
 		builder.HasIndex(entity => entity.LastEventUtc);

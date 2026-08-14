@@ -724,31 +724,22 @@ namespace RdpAudit.Core.Data.Migrations
                     b.Property<long>("LastEventUtc")
                         .HasColumnType("INTEGER");
 
-                    b.Property<long>("ShardBytes")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("INTEGER")
-                        .HasDefaultValue(0L);
+                    b.Property<long?>("ShardBytes")
+                        .HasColumnType("INTEGER");
 
-                    b.Property<long>("ShardEvictedCount")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("INTEGER")
-                        .HasDefaultValue(0L);
+                    b.Property<long?>("ShardEvictedCount")
+                        .HasColumnType("INTEGER");
 
-                    b.Property<int>("ShardFormatVersion")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("INTEGER")
-                        .HasDefaultValue(1);
+                    b.Property<int?>("ShardFormatVersion")
+                        .HasColumnType("INTEGER");
 
                     b.Property<long?>("ShardOldestRetainedUtc")
                         .HasColumnType("INTEGER");
 
-                    b.Property<long>("ShardRecordCount")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("INTEGER")
-                        .HasDefaultValue(0L);
+                    b.Property<long?>("ShardRecordCount")
+                        .HasColumnType("INTEGER");
 
                     b.Property<string>("ShardRelativePath")
-                        .IsRequired()
                         .HasMaxLength(260)
                         .HasColumnType("TEXT");
 
