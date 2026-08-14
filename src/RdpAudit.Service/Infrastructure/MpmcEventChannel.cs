@@ -1,5 +1,5 @@
 /* Project: RDPAudit 2.0 | Author: Mikhail Deynekin | Site: Deynekin.com | Email: Mikhail@Deynekin.com */
-// Version: 2.0.1
+// Version: 2.0.2
 // File   : MpmcEventChannel.cs
 // Project: RdpAudit.Service (RdpAudit.Service.Infrastructure)
 // Purpose: DropOldest-aware event pipe backed by the Vyukov MPMC ring buffer. Sibling
@@ -62,7 +62,9 @@ public sealed class MpmcEventChannel : IRawEventBackend
 	/// Enqueue a DTO. Returns <see langword="true"/> on a clean write, <see langword="false"/>
 	/// when the write forced a DropOldest eviction (the DTO still landed or the caller must
 	/// treat the row as dropped, which is accounted for in <see cref="OverflowCount"/>).
-	/// Never blocks and never allocates on the managed heap.
+	/// Never blocks and never allocates on the managed heap. This method is O(1) amortised
+	/// and does NOT loop indefinitely; the retry budget is bounded to a small constant so
+	/// producers never stall behind a slow consumer under sustained contention.
 	/// </summary>
 	[MethodImpl(MethodImplOptions.AggressiveInlining)]
 	public bool TryWrite(RawEventDto dto)
@@ -78,38 +80,38 @@ public sealed class MpmcEventChannel : IRawEventBackend
 			return true;
 		}
 
-		// Full path: evict then retry. Under sustained contention several producers may
-		// each evict a distinct slot before winning their own CAS; that is exactly the
-		// DropOldest budget we want. The outer retry budget is generous because two
-		// separate transient races (a slow producer that reserved _enqueuePos but has
-		// not yet published its sequence, and a slow consumer that reserved _dequeuePos
-		// but has not yet advanced the cell sequence) can each cause a spin-budget
-		// exhaustion inside the ring even when the ring is not genuinely full. A short
-		// SpinWait between outer retries yields the CPU so those in-flight producers
-		// and consumers can make progress.
-		int retries = _ringBuffer.Capacity switch
+		// Full-ring fallback: evict oldest and retry. We only make a small, fixed number
+		// of outer attempts. Each iteration is (evict, retry-write). The ring's own
+		// TryWrite/TryEvictOldest each spin internally with a capacity-proportional
+		// budget so a single outer attempt already tolerates significant transient
+		// contention. Looping thousands of times here would just stall the producer
+		// behind slow consumers under a full ring and violate the "never blocks"
+		// contract of this pipe.
+		const int outerRetryBudget = 8;
+		for (int i = 0; i < outerRetryBudget; i++)
 		{
-			<= 0 => 0,
-			var cap => (int)Math.Min(cap * 4L, 4096),
-		};
-
-		SpinWait spinner = default;
-		for (int i = 0; i < retries; i++)
-		{
-			_ = _ringBuffer.TryEvictOldest();
-			if (_ringBuffer.TryWrite(payload))
+			if (_ringBuffer.TryEvictOldest())
 			{
+				// A slot was freed; try to place our payload into it. Whether we win
+				// the follow-up TryWrite CAS or not, the DropOldest accounting was
+				// already done inside TryEvictOldest, so we always return false to
+				// signal "an eviction happened".
+				_ = _ringBuffer.TryWrite(payload);
 				return false;
 			}
-
-			spinner.SpinOnce();
+			// TryEvictOldest returned false: the ring looked empty at that instant
+			// (usually because a consumer just drained it). Retry TryWrite before
+			// declaring a hard drop; this is the fast path when a producer bursts
+			// into a ring that consumers are keeping up with.
+			if (_ringBuffer.TryWrite(payload))
+			{
+				return true;
+			}
 		}
 
-		// Genuine hard drop: after 'retries' full attempts the ring still refuses the
-		// payload. This is exceedingly rare in practice (it requires a producer or
-		// consumer to be de-scheduled for longer than the retry budget under sustained
-		// contention). Account for the lost row so the unified OverflowCount stays
-		// truthful even in that pathological case.
+		// Genuine hard drop: neither eviction nor write succeeded in the bounded budget.
+		// Account for the lost row so the unified OverflowCount stays truthful without
+		// putting the producer into an unbounded spin.
 		Interlocked.Increment(ref _hardDropCount);
 		return false;
 	}
@@ -143,12 +145,9 @@ public sealed class MpmcEventChannel : IRawEventBackend
 
 	// ── Disposal ─────────────────────────────────────────────────────────────────
 
-	/// <summary>Frees the underlying unmanaged buffer. Safe to call multiple times.</summary>
 	public void Dispose()
 	{
-		if (Interlocked.Exchange(ref _disposed, 1) == 0)
-		{
-			_ringBuffer.Dispose();
-		}
+		if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
+		_ringBuffer.Dispose();
 	}
 }

@@ -114,10 +114,35 @@ public sealed class EventCollectorHostTests
 
 	private sealed class RecordingSink : IChannelStatusSink
 	{
-		public List<(string Channel, string Status)> Statuses { get; } = new();
+		// The host publishes status transitions from background restart tasks concurrently
+		// with the test thread that asserts on the recorded values. A plain List<T> would
+		// throw InvalidOperationException ("Collection was modified") when Assert.Contains
+		// enumerates while the host is appending. Guard both write and read behind a lock
+		// and expose a defensive snapshot on read.
+		private readonly object _gate = new();
+		private readonly List<(string Channel, string Status)> _statuses = new();
+
+		public IReadOnlyList<(string Channel, string Status)> Statuses
+		{
+			get
+			{
+				lock (_gate)
+				{
+					return _statuses.ToArray();
+				}
+			}
+		}
+
 		public int Dropped;
 
-		public void SetChannelStatus(string channel, string status) => Statuses.Add((channel, status));
+		public void SetChannelStatus(string channel, string status)
+		{
+			lock (_gate)
+			{
+				_statuses.Add((channel, status));
+			}
+		}
+
 		public void IncrementDropped() => Interlocked.Increment(ref Dropped);
 	}
 
