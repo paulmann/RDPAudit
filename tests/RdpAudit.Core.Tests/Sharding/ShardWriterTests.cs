@@ -105,8 +105,24 @@ public sealed class ShardWriterTests : IDisposable
 		string path = CreatePath("allocation");
 		ShardRecord record = CreateRecord(1);
 		using ShardWriter writer = ShardWriter.OpenOrCreate(path, 16_384);
-		writer.Append(in record, out _);
+
+		// Warm-up: run 2000 real Append calls so tiered JIT promotes Append (and any
+		// method it inlines) to Tier1, resolves generic instantiations, and forces
+		// lazy runtime helpers (SafeHandle first-use fast path, PGO instrumentation,
+		// interface dispatch stubs) to finish their one-shot allocations before we
+		// start measuring. The steady-state hot path must be zero-alloc.
+		for (int index = 0; index < 2_000; index++)
+		{
+			writer.Append(in record, out _);
+		}
 		writer.Commit();
+
+		// Force a full GC so any pending finalizers or promoted objects settle before we
+		// snapshot allocated bytes. This keeps the measurement window clean of noise
+		// carried over from unrelated framework initialisation.
+		GC.Collect();
+		GC.WaitForPendingFinalizers();
+		GC.Collect();
 
 		long before = GC.GetAllocatedBytesForCurrentThread();
 		for (int index = 0; index < 10_000; index++)
@@ -115,7 +131,10 @@ public sealed class ShardWriterTests : IDisposable
 		}
 		long allocated = GC.GetAllocatedBytesForCurrentThread() - before;
 
-		Assert.Equal(0L, allocated);
+		Assert.True(allocated == 0L,
+			$"Append allocated {allocated} B across 10 000 ops " +
+			$"({(allocated / 10_000.0):0.###} B/op). Expected 0. " +
+			$"Suspect first-run tiered JIT promotion or a hidden boxing in the write path.");
 	}
 
 	[Fact]

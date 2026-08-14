@@ -77,6 +77,24 @@ param(
 	# way, so the full list of Passed tests is always available for inspection.
 	[switch]$VerboseTests,
 
+	# When present, dotnet test is invoked with maximum diagnostic instrumentation so a
+	# failing run leaves behind everything needed to root-cause the failure offline:
+	#   * Console + TRX loggers switch to 'detailed' verbosity.
+	#   * --blame-hang / --blame-hang-dump-type full : any test that exceeds the hang
+	#     timeout produces a FULL memory dump of the test host (heap + threads).
+	#   * --blame-crash / --blame-crash-dump-type full : a full dump is taken if the test
+	#     host itself crashes (unhandled exception, StackOverflow, AccessViolation).
+	#   * --diag <path> : dotnet test writes its internal diagnostic log (host launch,
+	#     data-collector attach, discovery, execution) next to the TRX file.
+	#   * DOTNET_TieredCompilation is set to 0 for the duration of the run so tiered JIT
+	#     promotion cannot introduce transient one-shot allocations into GC allocation
+	#     assertions (e.g. ShardWriter Append zero-alloc test).
+	#   * A per-run env-dump.txt captures OS, .NET runtime, CPU/RAM, environment
+	#     variables prefixed with DOTNET_/RDPAUDIT_, and the exact test command line.
+	# Implies -VerboseTests. Dumps and diag logs land in <LogDirectory>\test-results\
+	# so review is uniform with the TRX artifact.
+	[switch]$DebugTests,
+
 	# When present, the host PowerShell process itself is terminated after a successful
 	# installation (equivalent to typing 'exit' at the prompt). Useful for scripted /
 	# unattended runs launched from a task scheduler or one-shot desktop shortcut where
@@ -1805,12 +1823,84 @@ function Invoke-RdpAuditBuildPipeline {
 	}
 
 	$trxFileName = "RDPAudit_Tests_{0}.trx" -f $script:InstallLogTimestamp
-	$consoleVerbosity = if ($VerboseTests) { 'normal' } else { 'minimal' }
+	# -DebugTests implies -VerboseTests: no reason to hide the per-test stream when the
+	# operator has already opted into maximum diagnostic collection.
+	$effectiveVerbose = $VerboseTests -or $DebugTests
+	$consoleVerbosity = if ($DebugTests) { 'detailed' } elseif ($effectiveVerbose) { 'normal' } else { 'minimal' }
 
-	if ($VerboseTests) {
+	if ($DebugTests) {
+		Write-Info 'DEBUG diagnostic run enabled (-DebugTests): full hang/crash dumps, detailed logger, tiered JIT disabled.'
+	} elseif ($effectiveVerbose) {
 		Write-Info 'Full test output enabled (-VerboseTests). Every Passed/Failed test will be streamed.'
 	} else {
 		Write-Info 'Compact test output (default). Only Failed tests will be streamed; full results in the TRX file.'
+	}
+
+	# Snapshot environment + hardware for the diagnostic bundle when -DebugTests is set.
+	# Fully guarded: any single WMI/CIM query failure must not abort the installer, we just
+	# note it in the env-dump.txt and keep going.
+	if ($DebugTests -and $testResultsDirectory) {
+		$envDumpPath = Join-Path -Path $testResultsDirectory -ChildPath ('RDPAudit_EnvDump_{0}.txt' -f $script:InstallLogTimestamp)
+		try {
+			$dump = [System.Collections.Generic.List[string]]::new()
+			$dump.Add(('# RDPAudit debug env dump   {0} UTC' -f ([DateTime]::UtcNow.ToString('u'))))
+			$dump.Add(('PSVersion               : {0}' -f $PSVersionTable.PSVersion))
+			$dump.Add(('CLR Version             : {0}' -f [Environment]::Version))
+			$dump.Add(('OSVersion               : {0}' -f [Environment]::OSVersion))
+			$dump.Add(('MachineName             : {0}' -f [Environment]::MachineName))
+			$dump.Add(('ProcessorCount          : {0}' -f [Environment]::ProcessorCount))
+			$dump.Add(('Is64BitOperatingSystem  : {0}' -f [Environment]::Is64BitOperatingSystem))
+			$dump.Add(('Is64BitProcess          : {0}' -f [Environment]::Is64BitProcess))
+			$dump.Add(('CurrentDirectory        : {0}' -f (Get-Location).Path))
+			try {
+				$os = Get-CimInstance -ClassName Win32_OperatingSystem -ErrorAction Stop
+				$dump.Add(('OS.Caption              : {0}' -f $os.Caption))
+				$dump.Add(('OS.Version              : {0}' -f $os.Version))
+				$dump.Add(('OS.BuildNumber          : {0}' -f $os.BuildNumber))
+				$dump.Add(('OS.OSArchitecture       : {0}' -f $os.OSArchitecture))
+				$dump.Add(('OS.FreePhysicalMemoryKB : {0}' -f $os.FreePhysicalMemory))
+				$dump.Add(('OS.TotalVisibleMemoryKB : {0}' -f $os.TotalVisibleMemorySize))
+			} catch { $dump.Add(('OS query failed         : {0}' -f $_.Exception.Message)) }
+			try {
+				$cpu = Get-CimInstance -ClassName Win32_Processor -ErrorAction Stop | Select-Object -First 1
+				if ($cpu) {
+					$dump.Add(('CPU.Name                : {0}' -f $cpu.Name))
+					$dump.Add(('CPU.NumberOfCores       : {0}' -f $cpu.NumberOfCores))
+					$dump.Add(('CPU.LogicalProcessors   : {0}' -f $cpu.NumberOfLogicalProcessors))
+					$dump.Add(('CPU.MaxClockSpeedMHz    : {0}' -f $cpu.MaxClockSpeed))
+				}
+			} catch { $dump.Add(('CPU query failed        : {0}' -f $_.Exception.Message)) }
+			try {
+				$dotnetInfo = & dotnet --info 2>&1 | Out-String
+				$dump.Add('')
+				$dump.Add('# dotnet --info')
+				$dump.Add($dotnetInfo)
+			} catch { $dump.Add(('dotnet --info failed    : {0}' -f $_.Exception.Message)) }
+			$dump.Add('')
+			$dump.Add('# Filtered environment (DOTNET_*, RDPAUDIT_*, TEMP, USERNAME, USERDOMAIN)')
+			foreach ($ev in [Environment]::GetEnvironmentVariables().GetEnumerator() | Sort-Object Name) {
+				if ($ev.Name -match '^(DOTNET_|RDPAUDIT_|TEMP$|TMP$|USERNAME$|USERDOMAIN$|PROCESSOR_)') {
+					$dump.Add(('{0,-32} = {1}' -f $ev.Name, $ev.Value))
+				}
+			}
+			[System.IO.File]::WriteAllLines($envDumpPath, $dump.ToArray(), [System.Text.UTF8Encoding]::new($false))
+			Write-Info ("Env dump written: {0}" -f $envDumpPath)
+		} catch {
+			Write-WarningMessage ("Could not write env dump '{0}': {1}" -f $envDumpPath, $_.Exception.Message)
+		}
+
+		# Disable tiered JIT for this run only. Tiered promotion can cause a one-shot
+		# JIT metadata allocation to fall inside the measurement window of
+		# GC.GetAllocatedBytesForCurrentThread and turn a stable zero-alloc test into
+		# a flaky ~5 KB failure. Scoped to the child dotnet process via env inheritance.
+		$script:PreviousTieredCompilation = $env:DOTNET_TieredCompilation
+		$env:DOTNET_TieredCompilation = '0'
+		Write-Info 'DOTNET_TieredCompilation=0 exported for this dotnet test run.'
+	}
+
+	$diagLogPath = $null
+	if ($DebugTests -and $testResultsDirectory) {
+		$diagLogPath = Join-Path -Path $testResultsDirectory -ChildPath ('RDPAudit_TestDiag_{0}.log' -f $script:InstallLogTimestamp)
 	}
 
 	$testArguments = [System.Collections.Generic.List[string]]::new()
@@ -1821,21 +1911,59 @@ function Invoke-RdpAuditBuildPipeline {
 	$testArguments.Add('--no-build')
 	$testArguments.Add('--blame-hang')
 	$testArguments.Add('--blame-hang-timeout')
-	$testArguments.Add('90s')
+	if ($DebugTests) { $testArguments.Add('5min') } else { $testArguments.Add('90s') }
+	if ($DebugTests) {
+		$testArguments.Add('--blame-hang-dump-type')
+		$testArguments.Add('full')
+		$testArguments.Add('--blame-crash')
+		$testArguments.Add('--blame-crash-dump-type')
+		$testArguments.Add('full')
+		if ($diagLogPath) {
+			$testArguments.Add('--diag')
+			$testArguments.Add($diagLogPath)
+		}
+	}
 	$testArguments.Add('--logger')
 	$testArguments.Add(("console;verbosity={0}" -f $consoleVerbosity))
 	$testArguments.Add('--logger')
-	$testArguments.Add(("trx;LogFileName={0}" -f $trxFileName))
+	if ($DebugTests) {
+		$testArguments.Add(("trx;LogFileName={0};verbosity=detailed" -f $trxFileName))
+	} else {
+		$testArguments.Add(("trx;LogFileName={0}" -f $trxFileName))
+	}
 	if ($testResultsDirectory) {
 		$testArguments.Add('--results-directory')
 		$testArguments.Add($testResultsDirectory)
 	}
 
-	Invoke-CheckedCommand `
-		-FilePath 'dotnet' `
-		-Arguments $testArguments.ToArray() `
-		-WorkingDirectory $script:RepositoryDirectory `
-		-FailureMessage 'dotnet test failed.'
+	try {
+		Invoke-CheckedCommand `
+			-FilePath 'dotnet' `
+			-Arguments $testArguments.ToArray() `
+			-WorkingDirectory $script:RepositoryDirectory `
+			-FailureMessage 'dotnet test failed.'
+	} finally {
+		# Always restore tiered JIT state, even on test failure. The env var is process-scoped
+		# so a hard installer crash would still leak it, but the surrounding transcript keeps
+		# the operator informed.
+		if ($DebugTests) {
+			if ($null -eq $script:PreviousTieredCompilation) {
+				Remove-Item Env:\DOTNET_TieredCompilation -ErrorAction SilentlyContinue
+			} else {
+				$env:DOTNET_TieredCompilation = $script:PreviousTieredCompilation
+			}
+			Write-Info 'DOTNET_TieredCompilation restored.'
+			if ($diagLogPath -and (Test-Path -LiteralPath $diagLogPath)) {
+				Write-Ok ("dotnet test diagnostic log: {0}" -f $diagLogPath)
+			}
+			if ($testResultsDirectory) {
+				$dumps = Get-ChildItem -Path $testResultsDirectory -Filter '*.dmp' -ErrorAction SilentlyContinue
+				foreach ($dmp in $dumps) {
+					Write-Ok ("Memory dump collected: {0} ({1:N0} bytes)" -f $dmp.FullName, $dmp.Length)
+				}
+			}
+		}
+	}
 
 	if ($testResultsDirectory) {
 		$trxPath = Join-Path -Path $testResultsDirectory -ChildPath $trxFileName
