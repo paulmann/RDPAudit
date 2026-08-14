@@ -1,10 +1,10 @@
-// File:    src/RdpAudit.Service/Alerts/AlertRuleRegistration.cs
-// Module:  RdpAudit.Service.Alerts
-// Purpose: Registers every IAlertRule implementation with the DI container.
-//          Threshold rules receive AlertCooldownTracker via DI to dedupe alert floods.
-// Extends: System.Object
-// Author:  Mikhail Deynekin
-// Site:    https://Deynekin.com
+/* Project: RDPAudit 2.0 | Author: Mikhail Deynekin | Site: Deynekin.com | Email: Mikhail@Deynekin.com */
+// Version: 2.0.1
+// File   : AlertRuleRegistration.cs
+// Project: RdpAudit.Service (RdpAudit.Service.Alerts)
+// Purpose: Registers each alert rule and its shared cooldown dependencies with the service container.
+// Depends: IServiceCollection, IAlertRule, AlertCooldownTracker, ServiceMetrics
+// Extends: Register each new IAlertRule here, injecting AlertCooldownTracker whenever repeated threshold crossings require deduplication.
 
 using Microsoft.Extensions.DependencyInjection;
 using RdpAudit.Core.Events;
@@ -18,6 +18,9 @@ public static class AlertRuleRegistration
 	{
 		services.AddSingleton<IAlertRule>(sp => new BruteForceRule(sp.GetRequiredService<AlertCooldownTracker>()));
 		services.AddSingleton<IAlertRule>(sp => new BruteForceNtlmRule(sp.GetRequiredService<AlertCooldownTracker>()));
+		services.AddSingleton<IAlertRule>(sp => new PipelineLogFloodRule(
+			sp.GetRequiredService<ServiceMetrics>(),
+			sp.GetRequiredService<AlertCooldownTracker>()));
 		services.AddSingleton<IAlertRule, PassTheHashRule>();
 		services.AddSingleton<IAlertRule, GoldenTicketRule>();
 		services.AddSingleton<IAlertRule, OffHoursLoginRule>();
