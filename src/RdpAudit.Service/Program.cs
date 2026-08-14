@@ -318,6 +318,7 @@ public static class Program
 		// clamp that this branch relies on.
 		services.AddSingleton<EventLogWatcherEventSourceFactory>();
 		services.AddSingleton<EtwEventSourceFactory>();
+		services.AddSingleton<HybridEventSourceFactory>();
 		services.AddSingleton<IEventSourceFactory>(sp =>
 		{
 			var options = sp.GetRequiredService<IOptions<RdpAuditOptions>>().Value;
@@ -326,10 +327,10 @@ public static class Program
 
 			var selection = EventSourceFactorySelector.Select(
 				requested,
-				// P0 step 2: ETW probe is not implemented yet. Callback always returns
-				// (false, reason) so IngestionMode.Auto transparently falls back to
-				// EventLog and IngestionMode.Etw fails fast with a clear message.
-				() => (false, "ETW backend not yet wired (P0 step 2 skeleton) — real TraceEventSession lands in commit 3."));
+				// commit 3c: real ETW probe. Runs once per service start. Returns Ok=true when the
+				// host is Windows and the current process is elevated enough to open a real-time
+				// TraceEventSession. See EtwAvailabilityProbe for the exact conditions.
+				EtwAvailabilityProbe.Probe);
 
 			if (selection.RequestedMode == IngestionMode.Etw &&
 				selection.ChosenTransport == IngestionMode.Etw &&
@@ -361,7 +362,10 @@ public static class Program
 
 			return selection.ChosenTransport switch
 			{
-				IngestionMode.Etw => sp.GetRequiredService<EtwEventSourceFactory>(),
+				// IngestionMode.Etw does NOT mean "every channel via ETW". It means "prefer ETW
+				// where possible, fall back to EventLog per channel". The HybridEventSourceFactory
+				// consults EtwProviderMap at Create time and routes each channel independently.
+				IngestionMode.Etw => sp.GetRequiredService<HybridEventSourceFactory>(),
 				_ => sp.GetRequiredService<EventLogWatcherEventSourceFactory>(),
 			};
 		});

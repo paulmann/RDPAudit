@@ -1,17 +1,16 @@
 /* Project: RDPAudit 2.0 | Author: Mikhail Deynekin | Site: Deynekin.com | Email: Mikhail@Deynekin.com */
-// Version: 0.1.0
+// Version: 0.2.0
 // File   : EtwEventSourceFactory.cs
 // Project: RdpAudit.Service (RdpAudit.Service.EventSources)
-// Purpose: IEventSourceFactory that materializes EtwEventSource instances. Skeleton (v0.1.0):
-//          returns a per-channel EtwEventSource that transitions to Unsupported on start. The
-//          per-channel shape mirrors the EventLogWatcher factory contract so nothing downstream
-//          needs to know which transport is active. Commit 3 will consolidate all channels behind
-//          a single TraceEventSession while keeping this factory-per-channel view intact — the
-//          factory simply hands out lightweight session-projection instances at that point.
+// Purpose: IEventSourceFactory that materializes EtwEventSource instances per Event Log channel
+//          name. Version 0.2.0 wires the real TraceEventSession backed source. Bookmarks are
+//          intentionally ignored because ETW real-time sessions do not have a resume cursor;
+//          the onBookmark callback stays in the signature so we honour IEventSourceFactory.
 // Depends: IEventSourceFactory, EtwEventSource, IEventPipe, ILoggerFactory
-// Extends: When adding a new ETW provider (Microsoft-Windows-TerminalServices-*), wire it inside
-//          EtwEventSource; this factory continues to hand out one IEventSource per Event Log
-//          channel name because that is what the host expects for bookmark bookkeeping.
+// Extends: When adding a new real-time ETW provider (Microsoft-Windows-TerminalServices-*),
+//          register it in EtwProviderMap. This factory continues to hand out one IEventSource
+//          per Event Log channel name because that is the shape EventCollectorHost expects for
+//          its per-channel supervision, health policy, and restart logic.
 
 using System.Runtime.Versioning;
 using Microsoft.Extensions.Logging;
@@ -21,8 +20,9 @@ namespace RdpAudit.Service.EventSources;
 
 /// <summary>
 /// Production factory that wires <see cref="EtwEventSource"/> per Event Log channel name.
-/// The channel name is used purely as a stable identifier for the host's bookmark ledger and
-/// diagnostic logs — ETW providers themselves are enrolled inside <see cref="EtwEventSource"/>.
+/// The channel name is used as a stable identifier for the host's supervisor and diagnostic
+/// logs — the concrete ETW provider is resolved from that channel via <see cref="EtwProviderMap"/>
+/// inside <see cref="EtwEventSource"/>.
 /// </summary>
 [SupportedOSPlatform("windows")]
 public sealed class EtwEventSourceFactory : IEventSourceFactory
@@ -58,13 +58,15 @@ public sealed class EtwEventSourceFactory : IEventSourceFactory
 		ArgumentNullException.ThrowIfNull(onBookmark);
 		ArgumentNullException.ThrowIfNull(onWatcherFault);
 
-		// The skeleton EtwEventSource does not yet consume xpathQuery, bookmarkXml, onBookmark,
-		// or onWatcherFault — they are captured here so the signature contract with
-		// IEventSourceFactory stays honest, and commit 3 wires them through without disturbing
-		// the outer DI graph. See RdpAudit.Service/EventSources/EtwEventSource.cs.
+		// xpathQuery is unused: TraceEventSession filters by provider keywords, not XPath.
+		// bookmarkXml is unused: ETW real-time sessions do not resume from a cursor after a
+		// restart, which is exactly why EtwProviderMap advertises the covered channels as
+		// RealTimeCapable (a Windows-level trade-off surfaced to the operator).
+		// onBookmark stays wired but is never invoked from this transport.
 		return new EtwEventSource(
-			sessionName: $"RdpAudit-{channel}",
+			channel: channel,
 			pipe: _pipe,
-			logger: _loggerFactory.CreateLogger<EtwEventSource>());
+			logger: _loggerFactory.CreateLogger<EtwEventSource>(),
+			onWatcherFault: onWatcherFault);
 	}
 }
