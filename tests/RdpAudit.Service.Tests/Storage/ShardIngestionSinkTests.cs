@@ -1,11 +1,13 @@
 /* Project: RDPAudit 2.0 | Author: Mikhail Deynekin | Site: Deynekin.com | Email: Mikhail@Deynekin.com */
-// Version: 2.0.0
+// Version: 2.0.1
 // File   : ShardIngestionSinkTests.cs
 // Project: RdpAudit.Service.Tests (RdpAudit.Service.Tests.Storage)
 // Purpose: Verifies optional shard ingestion writes only truthful on-disk metadata.
 // Depends: ShardIngestionSink, ShardReader, AuditDbContext, SqliteConnection
 // Extends: Add recovery and aggregate-shard cases when cardinality protection is implemented.
 
+using System.Net;
+using System.Net.Sockets;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -177,12 +179,16 @@ public sealed class ShardIngestionSinkTests : IDisposable
 
 	private ShardColumns ReadColumns(string ip)
 	{
+		// IpEventSummary.IpText stores the canonical IPv6-mapped textual form (see IpEventSummaryUpserter).
+		// Normalize the query key so the reader matches the value written by the upserter.
+		IPAddress parsed = IPAddress.Parse(ip);
+		string canonical = (parsed.AddressFamily == AddressFamily.InterNetwork ? parsed.MapToIPv6() : parsed).ToString();
 		using SqliteCommand command = _connection.CreateCommand();
 		command.CommandText = """
 SELECT ShardRelativePath, ShardRecordCount, ShardBytes, ShardFormatVersion, ShardEvictedCount, ShardOldestRetainedUtc
 FROM IpEventSummary WHERE IpText = $ip;
 """;
-		command.Parameters.AddWithValue("$ip", ip);
+		command.Parameters.AddWithValue("$ip", canonical);
 		using SqliteDataReader reader = command.ExecuteReader();
 		Assert.True(reader.Read());
 		return new(

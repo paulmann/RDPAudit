@@ -1,5 +1,5 @@
 /* Project: RDPAudit 2.0 | Author: Mikhail Deynekin | Site: Deynekin.com | Email: Mikhail@Deynekin.com */
-// Version: 2.0.1
+// Version: 2.0.2
 // File   : ShardRecord.cs
 // Project: RdpAudit.Core (RdpAudit.Core.Storage.Sharding)
 // Purpose: Fixed 128-byte on-disk record layout for the per-IP shard file. Cache-line aligned,
@@ -138,7 +138,9 @@ public readonly struct ShardRecord : IEquatable<ShardRecord>
 	public const int SizeBytes = 128;
 
 	/// <summary>Offset of <see cref="Crc32C"/> from the record base, in bytes.</summary>
-	public const int Crc32COffset = 124;
+	// Fields end at offset 84 (Crc32C). The remaining 40 bytes are trailing padding from Size=128.
+	// CRC32C must be computed over [0..84) to exclude the CRC field itself and the padding.
+	public const int Crc32COffset = 84;
 
 	/// <summary>Creates a record with the CRC32C required by the on-disk format.</summary>
 	public static ShardRecord Create(
