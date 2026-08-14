@@ -1,9 +1,18 @@
-﻿// File:    src/RdpAudit.Core/Data/Migrations/20260814003237_Stage10IpShardsRetention.cs
-// Module:  RdpAudit.Core.Data.Migrations
-// Purpose: Stage 10 — adds per-IP aggregate tables (IpEventSummary, IpEventTypeCounter), the durable
+﻿/* Project: RDPAudit 2.0 | Author: Mikhail Deynekin | Site: Deynekin.com | Email: Mikhail@Deynekin.com */
+// Version: 2.0.2
+// File   : 20260814003237_Stage10IpShardsRetention.cs
+// Project: RdpAudit.Core (RdpAudit.Core.Data.Migrations)
+// Purpose: Stage 10 adds per-IP aggregate tables (IpEventSummary, IpEventTypeCounter), the durable
 //          IngestionSequence counter, per-event retention and enablement tables, the event-collection
 //          audit trail, and the RawEvents columns that back sharded storage (IngestionSequence,
-//          EventLayer, SourceIpBinary) together with their lookup indexes.
+//          EventLayer, SourceIpBinary). The IngestionSequence unique index is created as a partial
+//          index (filter IngestionSequence > 0) so pre-existing rows carrying the added-column
+//          default 0 do not violate the constraint on upgrade. Existing rows are backfilled with
+//          ROWID before the index is built, and the IngestionSequence sidecar is seeded past the
+//          highest backfilled value so subsequent ingestion never collides with the backfilled block.
+// Depends: RawEvent, IngestionSequence, Address
+// Extends: If IngestionSequence allocation semantics change, add a new migration; keep the partial
+//          filter unless every legacy 0 row has been purged.
 using Microsoft.EntityFrameworkCore.Migrations;
 
 #nullable disable
@@ -143,16 +152,24 @@ namespace RdpAudit.Core.Data.Migrations
                     table.PrimaryKey("PK_IpEventTypeCounter", x => new { x.IpBinary16, x.EventId });
                 });
 
-            migrationBuilder.InsertData(
-                table: "IngestionSequence",
-                columns: new[] { "Id", "NextValue" },
-                values: new object[] { 1, 1L });
+            // Backfill IngestionSequence for pre-existing rows (added with defaultValue 0) so that
+            // the unique index below succeeds on databases that already contain RawEvents. On fresh
+            // installs this UPDATE is a no-op. ROWID is guaranteed unique per row in SQLite.
+            migrationBuilder.Sql("UPDATE \"RawEvents\" SET \"IngestionSequence\" = ROWID WHERE \"IngestionSequence\" = 0;");
 
+            // Seed the singleton sidecar with NextValue past the highest backfilled sequence so that
+            // future ingestion allocations never collide with the backfilled block. COALESCE guards
+            // the fresh-install case where RawEvents is empty.
+            migrationBuilder.Sql("INSERT INTO \"IngestionSequence\" (\"Id\", \"NextValue\") VALUES (1, (SELECT COALESCE(MAX(\"IngestionSequence\"), 0) + 1 FROM \"RawEvents\"));");
+
+            // Partial unique index: enforce uniqueness only on ingestion-assigned sequences (> 0),
+            // tolerate the legacy default 0 on any row the backfill above could not reach (defensive).
             migrationBuilder.CreateIndex(
                 name: "IX_RawEvents_IngestionSequence",
                 table: "RawEvents",
                 column: "IngestionSequence",
-                unique: true);
+                unique: true,
+                filter: "\"IngestionSequence\" > 0");
 
             migrationBuilder.CreateIndex(
                 name: "IX_RawEvents_SourceIpBinary_TimeUtc",
