@@ -1,5 +1,5 @@
 /* Project: RDPAudit 2.0 | Author: Mikhail Deynekin | Site: Deynekin.com | Email: Mikhail@Deynekin.com */
-// Version: 2.1.0
+// Version: 2.2.0
 // File   : MonitoringOptions.cs
 // Project: RdpAudit.Core (RdpAudit.Core.Config)
 // Purpose: Configures monitored event sources and bounded pre-pipeline flood protection.
@@ -49,6 +49,15 @@ public sealed class MonitoringOptions
 	public int BatchTimeoutMilliseconds { get; set; } = 500;
 
 	public int ChannelCapacity { get; set; } = 50_000;
+
+	/// <summary>
+	/// Selects the underlying event pipe transport. Default is
+	/// <see cref="RingBufferBackend.Spsc"/> for compatibility with existing installations
+	/// (fast single-producer path). Set to <see cref="RingBufferBackend.Mpmc"/> when
+	/// multiple producers write concurrently (ETW hybrid ingestion, parallel backfill
+	/// workers). The MPMC backend is Vyukov-correct for any producer/consumer count.
+	/// </summary>
+	public RingBufferBackend RingBufferBackend { get; set; } = RingBufferBackend.Spsc;
 
 	/// <summary>Enables pre-enqueue sampling of non-critical events during a per-source flood.</summary>
 	public bool FloodGuardEnabled { get; set; } = true;

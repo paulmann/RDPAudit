@@ -1,5 +1,5 @@
 /* Project: RDPAudit 2.0 | Module: RdpAudit.Service.Infrastructure | Author: Mikhail Deynekin | Site: Deynekin.com | Email: Mikhail@Deynekin.com */
-// Version: 2.0.3
+// Version: 2.1.0
 
 using System;
 using System.Runtime.CompilerServices;
@@ -15,7 +15,7 @@ namespace RdpAudit.Service.Infrastructure;
 /// before writing the new one, preventing Torn Read race conditions in the underlying SPSC buffer.
 /// Tracks overflow count at this policy layer.
 /// </summary>
-public sealed class RingBufferEventChannel : IDisposable
+public sealed class RingBufferEventChannel : IRawEventBackend
 {
     private readonly UnmanagedSpscRingBuffer _ringBuffer;
     private long _overflowCount;

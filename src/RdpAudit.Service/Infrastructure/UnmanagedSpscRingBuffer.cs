@@ -13,7 +13,7 @@ namespace RdpAudit.Service.Infrastructure;
 
 /// <summary>
 /// Production-grade, lock-free Single-Producer Single-Consumer (SPSC) ring buffer.
-/// Strictly FIFO: returns false when full. Does NOT track overflow internally —
+/// Strictly FIFO: returns false when full. Does NOT track overflow internally â€”
 /// the caller (RingBufferEventChannel) is responsible for DropOldest policy.
 /// </summary>
 public sealed class UnmanagedSpscRingBuffer : IDisposable
@@ -54,7 +54,7 @@ public sealed class UnmanagedSpscRingBuffer : IDisposable
 
     /// <summary>
     /// Attempts to write payload. Returns false ONLY if buffer is full.
-    /// Does NOT increment any overflow counter — caller manages DropOldest policy.
+    /// Does NOT increment any overflow counter â€” caller manages DropOldest policy.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool TryWrite(ReadOnlySpan<byte> payload)

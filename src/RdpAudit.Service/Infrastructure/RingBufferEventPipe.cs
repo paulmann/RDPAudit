@@ -1,14 +1,15 @@
 /* Project: RDPAudit 2.0 | Author: Mikhail Deynekin | Site: Deynekin.com | Email: Mikhail@Deynekin.com */
-// Version: 2.1.1
+// Version: 2.2.0
 // File   : RingBufferEventPipe.cs
 // Project: RdpAudit.Service (RdpAudit.Service.Infrastructure)
-// Purpose: Zero-allocation IEventPipe adapter over the existing SPSC UnmanagedSpscRingBuffer.
-//          Forwards TryWrite/TryRead into RingBufferEventChannel unchanged and replaces the
-//          previous 5ms polling loop in WaitToReadAsync with a SemaphoreSlim signal released
-//          from TryWrite. The synchronous hot paths remain allocation-free; only the async
-//          wait now piggy-backs on the semaphore, eliminating p99 latency-jitter and CPU idle
-//          burn on quiet channels.
-// Depends: IEventPipe, EventChannel, RingBufferEventChannel, RawEventDto, SemaphoreSlim
+// Purpose: Zero-allocation IEventPipe adapter over IRawEventBackend (SPSC or MPMC).
+//          Forwards TryWrite/TryRead into the concrete backend unchanged and replaces the
+//          previous 5ms polling loop in WaitToReadAsync with a SemaphoreSlim signal
+//          released from TryWrite. The synchronous hot paths remain allocation-free;
+//          only the async wait now piggy-backs on the semaphore, eliminating p99
+//          latency-jitter and CPU idle burn on quiet channels. Backend selection is
+//          driven by the composition root (EventChannel), never by this adapter.
+// Depends: IEventPipe, EventChannel, IRawEventBackend, RawEventDto, SemaphoreSlim
 // Extends: When a v2 transport ships (MPMC ring, shared memory), add a sibling implementation
 //          that satisfies IEventPipe. Keep the semaphore-release call co-located with the
 //          concrete TryWrite success path — never leak signal-plumbing into IEventPipe callers.
@@ -41,7 +42,7 @@ public sealed class RingBufferEventPipe : IEventPipe, IDisposable
 {
 	// ── Fields & DI ──────────────────────────────────────────────────────────────
 
-	private readonly RingBufferEventChannel _ring;
+	private readonly IRawEventBackend _ring;
 
 	// Bounded to 1: one pending "data available" edge is enough to unblock the consumer. Extra
 	// writes past a still-unread signal are collapsed via the SemaphoreFullException swallow —
@@ -67,11 +68,12 @@ public sealed class RingBufferEventPipe : IEventPipe, IDisposable
 	public RingBufferEventPipe(EventChannel channel)
 	{
 		ArgumentNullException.ThrowIfNull(channel);
-		_ring = channel.Channel;
+		_ring = channel.Backend;
 	}
 
-	/// <summary>Testing / advanced constructor that binds to an already-built ring.</summary>
-	public RingBufferEventPipe(RingBufferEventChannel ring)
+	/// <summary>Testing / advanced constructor that binds to an already-built backend
+	/// (accepts either <see cref="RingBufferEventChannel"/> or <see cref="MpmcEventChannel"/>).</summary>
+	public RingBufferEventPipe(IRawEventBackend ring)
 	{
 		ArgumentNullException.ThrowIfNull(ring);
 		_ring = ring;
