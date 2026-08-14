@@ -1,10 +1,10 @@
-// File:    src/RdpAudit.Service/AppSettingsTemplate.cs
-// Module:  RdpAudit.Service
-// Purpose: Default appsettings.json template written on first service start.
-// Extends: System.Object
-// Author:  Mikhail Deynekin
-// Site:    https://Deynekin.com
-// Version: 1.4.2
+/* Project: RDPAudit 2.0 | Author: Mikhail Deynekin | Site: Deynekin.com | Email: Mikhail@Deynekin.com */
+// Version: 2.0.0
+// File   : AppSettingsTemplate.cs
+// Project: RdpAudit.Service (RdpAudit.Service)
+// Purpose: Provides the default persisted appsettings.json content written on first service startup.
+// Depends: RdpAuditOptions, MonitoringOptions
+// Extends: Add only option keys that have corresponding bound option properties and active service code.
 
 namespace RdpAudit.Service;
 
@@ -32,7 +32,13 @@ public static class AppSettingsTemplate
 			"TrackObjectAccess": true,
 			"BatchSize": 100,
 			"BatchTimeoutMilliseconds": 500,
-			"ChannelCapacity": 50000
+			"ChannelCapacity": 50000,
+			"FloodGuardEnabled": true,
+			"FloodGuardWindowSeconds": 10,
+			"FloodGuardSoftThreshold": 1000,
+			"FloodGuardHardThreshold": 10000,
+			"FloodGuardSampleEveryN": 32,
+			"FloodGuardBucketCount": 4096
 		},
 		"Alerts": {
 			"EnableBruteForceDetection": true,

@@ -1,20 +1,10 @@
-// File:    src/RdpAudit.Configurator/Forms/MainForm.cs
-// Module:  RdpAudit.Configurator.Forms
-// Purpose: Top-level WinForms shell with tab navigation across all configuration pages.
-//          Async event handlers use ConfigureAwait(true) so continuations stay on the UI thread.
-//
-//          v2.0.0 — dark UI redesign. The shell, the owner-drawn tab strip and the status bar are
-//          restyled with the shared DarkTheme palette, and every page has DarkTheme.Apply invoked on
-//          it after construction so the whole Configurator matches the MikroTik tab's styling.
-//          v2.2.0 — the outer tab strip uses the classic (Normal) appearance with an explicit dark
-//          band paint so the light system band no longer shows behind / under the tab row.
-//          v2.3.0 — version aligned with DarkTheme v2.3.0 (shared tab-strip band paint behaviour).
-//          v2.4.0 — the outer tab strip is themed via DarkTabStripPainter (Win32 subclass) so the light
-//                   band right of Settings / above Firewall and the wrapped-row tail are painted dark.
-// Extends: System.Windows.Forms.Form
-// Author:  Mikhail Deynekin
-// Site:    https://Deynekin.com
-// Version: 2.4.0
+/* Project: RDPAudit 2.0 | Author: Mikhail Deynekin | Site: Deynekin.com | Email: Mikhail@Deynekin.com */
+// Version: 2.0.0
+// File   : MainForm.cs
+// Project: RdpAudit.Configurator (RdpAudit.Configurator.Forms)
+// Purpose: Hosts the fixed-order Configurator tabs and displays the current service health summary.
+// Depends: IpcClient, DarkTheme, TabPage
+// Extends: Add a new page in both fixed tab-order collections when extending Configurator navigation.
 
 using System.Globalization;
 using System.Reflection;
@@ -118,6 +108,7 @@ public sealed class MainForm : Form
 		new ServicePage(_ipc) { Text = "⚙️ Service" },
 		new RdpConfigurationPage(_ipc) { Text = "\U0001F5A5️ RDP Configuration" },
 		new LiveEventsPage(_ipc) { Text = "\U0001F4E1 Live Events" },
+		new EventCollectionPage(_ipc) { Text = "\U0001F5C3️ Event Collection" },
 		new LogsPage(_ipc) { Text = "\U0001F4DC Logs" },
 		new FirewallPage(_ipc) { Text = "\U0001F6E1️ Firewall" },
 		new AttackStatisticsPage(_ipc) { Text = "\U0001F4C8 RDP Activity" },
@@ -140,6 +131,7 @@ public sealed class MainForm : Form
 		"⚙️ Service",
 		"\U0001F5A5️ RDP Configuration",
 		"\U0001F4E1 Live Events",
+		"\U0001F5C3️ Event Collection",
 		"\U0001F4DC Logs",
 		"\U0001F6E1️ Firewall",
 		"\U0001F4C8 RDP Activity",
