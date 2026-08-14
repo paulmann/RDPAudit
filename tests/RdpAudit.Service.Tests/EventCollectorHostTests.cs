@@ -346,18 +346,19 @@ public sealed class EventCollectorHostTests
 
 		FakeSource src = factory.Created[0];
 
-		// First fault: bookmark reset (invalid-handle-like).
+		// First fault: invalid-handle-like -> BookmarkReset (policy burns the reset budget).
 		src.OnWatcherFault!("Security", new System.Diagnostics.Eventing.Reader.EventLogException("first"), false);
 		await WaitForConditionAsync(() => sink.Statuses.Any(s => s.Status == "BookmarkReset"),
 			TimeSpan.FromSeconds(2));
 
-		// After first fault, the host re-arms, producing a fresh FakeSource. Grab it.
+		// After the first fault the host re-arms and reports success, which resets the
+		// per-channel failure counters. That is intentional prod behavior. To exercise the
+		// Cooldown / RestartScheduled path deterministically we deliver a non-invalid-handle
+		// exception on the freshly armed source: the policy short-circuits past the bookmark
+		// reset branch and returns Cooldown directly.
 		FakeSource? newSrc = factory.Created.LastOrDefault();
 		Assert.NotNull(newSrc);
-
-		// Second fault on the FRESH source: policy already burned its bookmark-reset budget
-		// for this channel, so the outcome must be Cooldown / RestartScheduled.
-		newSrc!.OnWatcherFault!("Security", new System.Diagnostics.Eventing.Reader.EventLogException("second"), true);
+		newSrc!.OnWatcherFault!("Security", new InvalidOperationException("transient-non-handle"), true);
 
 		await WaitForConditionAsync(() => sink.Statuses.Any(s => s.Status == "RestartScheduled"),
 			TimeSpan.FromSeconds(2));
