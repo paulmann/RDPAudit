@@ -2168,14 +2168,28 @@ try {
 	Stop-InstallationTranscript
 }
 
+# Publish the effective exit code so callers can inspect $LASTEXITCODE after the run.
+$global:LASTEXITCODE = $exitCode
+
 # When -ExitAfterInstall is set AND the installation succeeded, terminate the host
 # PowerShell process itself so a scripted launch closes cleanly. Without the switch
-# the script simply returns to the current prompt (regardless of outcome) so the
-# operator can keep working in the same window. Failed runs never auto-close the
+# the script simply returns control to the current prompt (regardless of outcome) so
+# the operator can keep working in the same window. Failed runs never auto-close the
 # host — the window must stay open so the fatal error and log path remain visible.
 if ($ExitAfterInstall -and $exitCode -eq 0 -and $Host.Name -eq 'ConsoleHost') {
-	Write-Host 'ExitAfterInstall requested — closing PowerShell host.' -ForegroundColor DarkGray
+	Write-Host 'ExitAfterInstall requested, closing PowerShell host.' -ForegroundColor DarkGray
 	[Environment]::Exit($exitCode)
 }
 
-exit $exitCode
+# When the script was launched from a physical file (pwsh -File install.ps1) we
+# honour classic script semantics and terminate the process with the exit code.
+# When the script was streamed inline via ScriptBlock invocation (irm | iex or
+# & ([scriptblock]::Create((irm ...))) style bootstrapping) $MyInvocation.MyCommand
+# has no source path, so an 'exit' here would close the operator's interactive
+# host window even on a routine prerequisite failure. In that case we simply
+# return control to the enclosing prompt with $LASTEXITCODE already set.
+$scriptPath = $null
+try { $scriptPath = $MyInvocation.MyCommand.Path } catch { $scriptPath = $null }
+if (-not [string]::IsNullOrWhiteSpace($scriptPath)) {
+	exit $exitCode
+}
