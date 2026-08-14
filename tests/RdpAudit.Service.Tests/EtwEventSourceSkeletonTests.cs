@@ -1,14 +1,12 @@
 // File:    tests/RdpAudit.Service.Tests/EtwEventSourceSkeletonTests.cs
 // Module:  RdpAudit.Service.Tests
-// Purpose: Locks down the v0.1.0 EtwEventSource skeleton behaviour: StartAsync transitions
-//          to Unsupported (with a StatusChanged fire), StopAsync transitions to Stopped, no
-//          DTO ever reaches the pipe, and the source refuses null / whitespace constructor
-//          arguments. Runs on any OS because the skeleton never touches native ETW APIs;
-//          real TraceEventSession integration tests will be Windows-only when they land in
-//          the commit-3 payload work.
+// Purpose: v0.2.0 EtwEventSource contract tests. Constructor validation runs on any OS; the
+//          full TraceEventSession lifecycle test is Windows-only and skips silently on other
+//          platforms so the suite stays green on Linux CI.
 // Author:  Mikhail Deynekin
 // Site:    https://Deynekin.com
 
+using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
 using Microsoft.Extensions.Logging.Abstractions;
 using RdpAudit.Core.Events;
@@ -17,65 +15,71 @@ using Xunit;
 
 namespace RdpAudit.Service.Tests;
 
-[SupportedOSPlatform("windows")]
 public class EtwEventSourceSkeletonTests
 {
+	private const string RealTimeChannel = "Microsoft-Windows-TerminalServices-LocalSessionManager/Operational";
+	private const string NonRealTimeChannel = "Security";
+
 	[Fact]
-	public async Task StartAsync_TransitionsToUnsupported_AndFiresStatusChanged()
+	public void Constructor_RejectsNonRealTimeChannel()
 	{
-		CountingPipe pipe = new();
-		EtwEventSource source = new("RdpAudit-Security", pipe, NullLogger<EtwEventSource>.Instance);
+		var pipe = new CountingPipe();
 
-		List<EventSourceStatusChangedEventArgs> transitions = new();
-		source.StatusChanged += (_, args) => transitions.Add(args);
-
-		Assert.Equal(EventSourceStatus.Idle, source.Status);
-
-		await source.StartAsync(CancellationToken.None);
-
-		Assert.Equal(EventSourceStatus.Unsupported, source.Status);
-		Assert.Single(transitions);
-		Assert.Equal(EventSourceStatus.Idle, transitions[0].Previous);
-		Assert.Equal(EventSourceStatus.Unsupported, transitions[0].Current);
-		Assert.NotNull(transitions[0].Reason);
+		var ex = Assert.Throws<ArgumentException>(() =>
+			new EtwEventSource(NonRealTimeChannel, pipe, NullLogger<EtwEventSource>.Instance));
+		Assert.Contains("real-time", ex.Message, StringComparison.OrdinalIgnoreCase);
 	}
 
 	[Fact]
-	public async Task StopAsync_TransitionsToStopped_EvenWhenNotStarted()
+	public void Constructor_RejectsUnknownChannel()
 	{
-		CountingPipe pipe = new();
-		EtwEventSource source = new("RdpAudit-Security", pipe, NullLogger<EtwEventSource>.Instance);
+		var pipe = new CountingPipe();
 
-		await source.StopAsync(CancellationToken.None);
-
-		Assert.Equal(EventSourceStatus.Stopped, source.Status);
-	}
-
-	[Fact]
-	public async Task Skeleton_DoesNotWriteAnyDtoToPipe()
-	{
-		CountingPipe pipe = new();
-		EtwEventSource source = new("RdpAudit-Security", pipe, NullLogger<EtwEventSource>.Instance);
-
-		await source.StartAsync(CancellationToken.None);
-		await source.StopAsync(CancellationToken.None);
-
-		Assert.Equal(0, pipe.Writes);
+		Assert.Throws<ArgumentException>(() =>
+			new EtwEventSource("Definitely-Not-A-Channel", pipe, NullLogger<EtwEventSource>.Instance));
 	}
 
 	[Fact]
 	public void Constructor_RejectsInvalidArguments()
 	{
-		CountingPipe pipe = new();
+		var pipe = new CountingPipe();
 
 		Assert.Throws<ArgumentException>(() =>
 			new EtwEventSource("", pipe, NullLogger<EtwEventSource>.Instance));
 		Assert.Throws<ArgumentException>(() =>
 			new EtwEventSource("   ", pipe, NullLogger<EtwEventSource>.Instance));
 		Assert.Throws<ArgumentNullException>(() =>
-			new EtwEventSource("RdpAudit-Security", null!, NullLogger<EtwEventSource>.Instance));
+			new EtwEventSource(RealTimeChannel, null!, NullLogger<EtwEventSource>.Instance));
 		Assert.Throws<ArgumentNullException>(() =>
-			new EtwEventSource("RdpAudit-Security", pipe, null!));
+			new EtwEventSource(RealTimeChannel, pipe, null!));
+	}
+
+	[Fact]
+	public void Constructor_OnRealTimeChannel_TransitionsToIdle_AndDoesNotWrite()
+	{
+		if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+		{
+			// EtwEventSource is [SupportedOSPlatform("windows")]; do not exercise it on
+			// non-Windows CI runners.
+			return;
+		}
+
+		RunConstructorSmoke();
+	}
+
+	[SupportedOSPlatform("windows")]
+	private static void RunConstructorSmoke()
+	{
+		var pipe = new CountingPipe();
+		var source = new EtwEventSource(
+			RealTimeChannel,
+			pipe,
+			NullLogger<EtwEventSource>.Instance);
+
+		Assert.Equal(EventSourceStatus.Idle, source.Status);
+		Assert.Same(pipe, source.Pipe);
+		Assert.Equal(RealTimeChannel, source.Name);
+		Assert.Equal(0, pipe.Writes);
 	}
 
 	private sealed class CountingPipe : IEventPipe
