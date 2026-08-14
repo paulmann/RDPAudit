@@ -1,7 +1,7 @@
 // File:    tests/RdpAudit.Service.Tests/RuntimeVersionResolverPinTests.cs
 // Module:  RdpAudit.Service.Tests
 // Purpose: Locks the Service runtime version surfaced via IPC ServiceStatus.Version at exactly
-//          2.0.1 — the SemVer publish.ps1 emits and the value the Configurator's Service tab
+//          2.0.2 — the SemVer publish.ps1 emits and the value the Configurator's Service tab
 //          contrasts against the installed and distribution binaries. The complementary core
 //          gate lives in RdpAuditVersionMetadataTests; this one targets the Service assembly
 //          and the resolver path the running service actually uses at runtime.
@@ -16,11 +16,11 @@ using Xunit;
 
 namespace RdpAudit.Service.Tests;
 
-/// <summary>Pins the Service runtime version at exactly 2.0.1, blocking both the prior 1.0.0
+/// <summary>Pins the Service runtime version at exactly 2.0.2, blocking both the prior 1.0.0
 /// placeholder default and the previous 1.6.x/1.5.x release streams from regressing.</summary>
 public class RuntimeVersionResolverPinTests
 {
-	private const string ExpectedSemVer  = "2.0.1";
+	private const string ExpectedSemVer  = "2.0.2";
 	private const string ForbiddenLegacy = "1.0.0";
 	private const string ForbiddenPrev   = "1.6.3";
 

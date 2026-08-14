@@ -1020,7 +1020,8 @@ namespace RdpAudit.Core.Data.Migrations
                     b.HasIndex("AddressId");
 
                     b.HasIndex("IngestionSequence")
-                        .IsUnique();
+                        .IsUnique()
+                        .HasFilter("\"IngestionSequence\" > 0");
 
                     b.HasIndex("SessionRefId");
 
