@@ -1,5 +1,5 @@
 /* Project: RDPAudit 2.0 | Author: Mikhail Deynekin | Site: Deynekin.com | Email: Mikhail@Deynekin.com */
-// Version: 2.0.0
+// Version: 2.0.1
 // File   : EventCollectorHostedWorkerIntegrationTests.cs
 // Project: RdpAudit.Service.Tests (RdpAudit.Service.Tests)
 // Purpose: Runtime lifecycle tests for EventCollectorHostedWorker composed against a real
@@ -186,7 +186,7 @@ public sealed class EventCollectorHostedWorkerIntegrationTests
 			return;
 		}
 
-		(EventCollectorHost host, BookmarkStore store, ChannelHealthPolicy policy, InMemoryDbContextFactory factory, _) = BuildComposition();
+		(EventCollectorHost host, BookmarkStore store, ChannelHealthPolicy policy, InMemoryDbContextFactory factory, FakeIntegrationFactory sourceFactory) = BuildComposition();
 		try
 		{
 			EventCollectorHostedWorker worker = BuildWorker(host, store, policy, factory);
@@ -200,8 +200,9 @@ public sealed class EventCollectorHostedWorkerIntegrationTests
 
 			await worker.StopAsync(CancellationToken.None);
 
-			// If we got here without hanging or throwing, the idle branch honored cancellation.
-			Assert.True(true);
+			Assert.Empty(host.Channels);
+			Assert.Equal(0, sourceFactory.CreateCalls);
+			Assert.False(host.HasUnflushedBookmarks());
 		}
 		finally
 		{
