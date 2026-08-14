@@ -1,5 +1,5 @@
 /* Project: RDPAudit 2.0 | Author: Mikhail Deynekin | Site: Deynekin.com | Email: Mikhail@Deynekin.com */
-// Version: 2.0.1
+// Version: 2.0.2
 // File   : ServiceMetrics.cs
 // Project: RdpAudit.Service (RdpAudit.Service)
 // Purpose: Exposes thread-safe pipeline and service counters to diagnostics and alert rules.
@@ -66,6 +66,11 @@ public sealed class ServiceMetrics
 	private long _ringBufferWriteCount;
 	private long _floodSuppressedCount;
 	private long _floodSampledCount;
+	private long _shardRecordsAppended;
+	private long _shardsOpen;
+	private long _shardEvictions;
+	private long _shardWriteFailures;
+	private long _shardBudgetRefusals;
 
 	public long EventsCaptured => Interlocked.Read(ref _captured);
 
@@ -251,6 +256,11 @@ public sealed class ServiceMetrics
 
 	/// <summary>Cumulative count of full-detail events selected by flood-guard sampling.</summary>
 	public long FloodSampledCount => Interlocked.Read(ref _floodSampledCount);
+	public long ShardRecordsAppended => Interlocked.Read(ref _shardRecordsAppended);
+	public long ShardsOpen => Interlocked.Read(ref _shardsOpen);
+	public long ShardEvictions => Interlocked.Read(ref _shardEvictions);
+	public long ShardWriteFailures => Interlocked.Read(ref _shardWriteFailures);
+	public long ShardBudgetRefusals => Interlocked.Read(ref _shardBudgetRefusals);
 
 	public void IncrementCaptured() => Interlocked.Increment(ref _captured);
 
@@ -545,4 +555,10 @@ public sealed class ServiceMetrics
 	/// <summary>Increments the pre-enqueue flood sample counter.</summary>
 	public void IncrementFloodSampled() =>
 		Interlocked.Increment(ref _floodSampledCount);
+
+	public void IncrementShardRecordsAppended() => Interlocked.Increment(ref _shardRecordsAppended);
+	public void SetShardsOpen(long value) => Interlocked.Exchange(ref _shardsOpen, value);
+	public void IncrementShardEvictions() => Interlocked.Increment(ref _shardEvictions);
+	public void IncrementShardWriteFailures() => Interlocked.Increment(ref _shardWriteFailures);
+	public void IncrementShardBudgetRefusals() => Interlocked.Increment(ref _shardBudgetRefusals);
 }

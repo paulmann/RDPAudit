@@ -1,5 +1,5 @@
 /* Project: RDPAudit 2.0 | Author: Mikhail Deynekin | Site: Deynekin.com | Email: Mikhail@Deynekin.com */
-// Version: 2.0.0
+// Version: 2.0.1
 // File   : DefaultAppSettings.cs
 // Project: RdpAudit.Configurator (RdpAudit.Configurator.Services)
 // Purpose: Renders the first-run default appsettings.json without taking a Configurator-to-Service dependency.
@@ -77,7 +77,14 @@ internal static class DefaultAppSettings
 				"LogRetentionDays": 90,
 				"AlertRetentionDays": 730
 			},
-			"Diagnostics": {
+			"Sharding": {
+			"Enabled": false,
+			"ActionsRoot": "",
+			"ShardCapacityRecords": 1024,
+			"MaxOpenWriters": 128,
+			"MaxShardFiles": 4096
+		},
+		"Diagnostics": {
 				"DebugMode": false,
 				"LogEventXmlAtDebug": false,
 				"LogChannelDrops": true,

@@ -1,5 +1,5 @@
 /* Project: RDPAudit 2.0 | Author: Mikhail Deynekin | Site: Deynekin.com | Email: Mikhail@Deynekin.com */
-// Version: 2.0.1
+// Version: 2.0.3
 // File   : IpEventSummary.cs
 // Project: RdpAudit.Core (RdpAudit.Core.Models)
 // Purpose: Stores durable per-IP event totals and first/last event evidence for efficient IP investigation.
@@ -40,18 +40,20 @@ public sealed class IpEventSummary
 	/// <summary>Number of failed authentication events.</summary>
 	public long FailureCount { get; set; }
 	// ── Shard metadata ───────────────────────────────────────────────────────────
-	// Every field below is null until a shard file actually exists on disk for this
-	// IP. Nothing writes them yet: ShardWriter is implemented and unit-tested but is
-	// not connected to the ingestion path, so no shard is ever created. They stay
-	// null rather than carrying zeros or an empty path, because an analyst reading a
-	// non-null ShardRelativePath during an incident will try to open that file. Null
-	// means "no shard"; a value means "a shard exists and these numbers describe it".
+	// Every field below remains null until ShardIngestionSink observes a real shard file.
+	// It is the sole writer and takes values only from a shard header or actual file length.
+	// An analyst can therefore rely on a non-null ShardRelativePath as a confirmed artifact;
+	// null means no shard is confirmed or the corresponding fact is unknown.
 
 	/// <summary>Relative path of the IP shard, or <see langword="null"/> when no shard file exists.</summary>
 	public string? ShardRelativePath { get; set; }
 	/// <summary>Number of records currently retained by the shard, or <see langword="null"/> when no shard file exists.</summary>
 	public long? ShardRecordCount { get; set; }
-	/// <summary>Size of the shard file in bytes, or <see langword="null"/> when no shard file exists.</summary>
+	/// <summary>
+	/// On-disk length of the shard file in bytes, or <see langword="null"/> when no shard file exists.
+	/// A shard is pre-allocated to its full ring capacity, so this is the space the file occupies, not
+	/// the volume of retained evidence. Use <see cref="ShardRecordCount"/> for the number of records.
+	/// </summary>
 	public long? ShardBytes { get; set; }
 	/// <summary>Binary format version of the shard, or <see langword="null"/> when no shard file exists.</summary>
 	public int? ShardFormatVersion { get; set; }
