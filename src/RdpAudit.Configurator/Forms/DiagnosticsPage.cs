@@ -16,6 +16,7 @@ using System.Globalization;
 using System.Runtime.Versioning;
 using System.Text;
 using RdpAudit.Configurator.Ipc;
+using RdpAudit.Configurator.Services;
 using RdpAudit.Core.Ipc;
 using RdpAudit.Core.Ipc.Contracts;
 using RdpAudit.Core.Util;
@@ -32,6 +33,7 @@ public sealed class DiagnosticsPage : TabPage
 	private readonly Button _copy;
 	private readonly Button _export;
 	private readonly Button _probe;
+	private readonly Button _diagnoseService;
 	private readonly Label _status;
 
 	public DiagnosticsPage(IpcClient ipc)
@@ -52,12 +54,18 @@ public sealed class DiagnosticsPage : TabPage
 		_copy = new Button { Text = "Copy to clipboard", Width = 150 };
 		_export = new Button { Text = "Export to file…", Width = 150 };
 		_probe = new Button { Text = "Run Security Auth Probe", Width = 200 };
+		_diagnoseService = new Button
+		{
+			Text = "Diagnose service startup",
+			Width = 210,
+		};
 		_refresh.Click += async (_, _) => await RefreshAsync().ConfigureAwait(true);
 		_copy.Click += OnCopy;
 		_export.Click += OnExport;
 		_probe.Click += async (_, _) => await RunProbeAsync().ConfigureAwait(true);
+		_diagnoseService.Click += async (_, _) => await RunServiceStartupDiagnosticsAsync().ConfigureAwait(true);
 
-		toolbar.Controls.AddRange(new Control[] { _refresh, _copy, _export, _probe });
+		toolbar.Controls.AddRange(new Control[] { _refresh, _copy, _export, _probe, _diagnoseService });
 
 		_status = new Label
 		{
@@ -249,6 +257,62 @@ public sealed class DiagnosticsPage : TabPage
 		catch (Exception ex)
 		{
 			_status.Text = "Export failed: " + ex.Message;
+		}
+	}
+
+	// Version: 1.0.0
+	/// <summary>Runs the IPC-free service startup diagnostics runner and dumps the report into
+	/// the read-only text box. Prompts the operator before running the optional console self-test
+	/// because it actually launches the service executable in this session.</summary>
+	private async Task RunServiceStartupDiagnosticsAsync()
+	{
+		DialogResult selfTest = MessageBox.Show(
+			this,
+			"Also launch the service executable with --console for up to 8 seconds to capture the " +
+			"startup exception directly?\n\n" +
+			"Yes  — include the console self-test (service must be stopped, admin recommended).\n" +
+			"No   — collect logs and SCM state only.",
+			"Diagnose service startup",
+			MessageBoxButtons.YesNoCancel,
+			MessageBoxIcon.Question,
+			MessageBoxDefaultButton.Button2);
+
+		if (selfTest == DialogResult.Cancel)
+		{
+			return;
+		}
+
+		bool runConsoleSelfTest = selfTest == DialogResult.Yes;
+
+		_status.Text = "Collecting service startup diagnostics…";
+		_diagnoseService.Enabled = false;
+		_refresh.Enabled         = false;
+		_probe.Enabled           = false;
+
+		try
+		{
+			ServiceStartupDiagnosticsRunner runner = new(
+				configuratorDirectory: AppContext.BaseDirectory,
+				runConsoleSelfTest:    runConsoleSelfTest);
+
+			string report = await Task.Run(() => runner.CollectAsync()).ConfigureAwait(true);
+
+			_report.Text = report;
+			_status.Text = "Service startup diagnostics collected " +
+				(runConsoleSelfTest ? "(with console self-test)" : "(logs + SCM only)") +
+				"  —  Copy / Export apply to this report.";
+		}
+		catch (Exception ex)
+		{
+			_status.Text = "Startup diagnostics failed: " + ex.GetType().Name;
+			_report.Text = "Startup diagnostics failed: " + ex.GetType().Name + " — " + ex.Message +
+				Environment.NewLine + Environment.NewLine + ex.StackTrace;
+		}
+		finally
+		{
+			_diagnoseService.Enabled = true;
+			_refresh.Enabled         = true;
+			_probe.Enabled           = true;
 		}
 	}
 }
