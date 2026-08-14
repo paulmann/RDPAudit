@@ -1,10 +1,10 @@
 /* Project: RDPAudit 2.0 | Author: Mikhail Deynekin | Site: Deynekin.com | Email: Mikhail@Deynekin.com */
-// Version: 2.0.0
-
-// File:    src/RdpAudit.Service/ServiceMetrics.cs
-// Module:  RdpAudit.Service
-// Purpose: Thread-safe runtime counters surfaced via the IPC GetStatus command.
-// Extends: System.Object
+// Version: 2.0.1
+// File   : ServiceMetrics.cs
+// Project: RdpAudit.Service (RdpAudit.Service)
+// Purpose: Exposes thread-safe pipeline and service counters to diagnostics and alert rules.
+// Depends: System.Threading, RdpAudit.Service.Workers
+// Extends: Add a paired read-only property and Interlocked mutation method for each new operational counter.
 
 using RdpAudit.Service.Workers;
 
@@ -64,6 +64,8 @@ public sealed class ServiceMetrics
 	private long _ringBufferOverflowCount;
 	private long _ringBufferReadCount;
 	private long _ringBufferWriteCount;
+	private long _floodSuppressedCount;
+	private long _floodSampledCount;
 
 	public long EventsCaptured => Interlocked.Read(ref _captured);
 
@@ -243,6 +245,12 @@ public sealed class ServiceMetrics
 
 	/// <summary>Cumulative count of successful Ring Buffer writes by the EventCollectorHostedWorker.</summary>
 	public long RingBufferWriteCount => Interlocked.Read(ref _ringBufferWriteCount);
+
+	/// <summary>Cumulative count of non-critical event details suppressed by the flood guard.</summary>
+	public long FloodSuppressedCount => Interlocked.Read(ref _floodSuppressedCount);
+
+	/// <summary>Cumulative count of full-detail events selected by flood-guard sampling.</summary>
+	public long FloodSampledCount => Interlocked.Read(ref _floodSampledCount);
 
 	public void IncrementCaptured() => Interlocked.Increment(ref _captured);
 
@@ -529,4 +537,12 @@ public sealed class ServiceMetrics
 	/// <summary>Increments the Ring Buffer write counter.</summary>
 	public void IncrementRingBufferWrite() => 
 		Interlocked.Increment(ref _ringBufferWriteCount);
+
+	/// <summary>Increments the pre-enqueue flood suppression counter.</summary>
+	public void IncrementFloodSuppressed() =>
+		Interlocked.Increment(ref _floodSuppressedCount);
+
+	/// <summary>Increments the pre-enqueue flood sample counter.</summary>
+	public void IncrementFloodSampled() =>
+		Interlocked.Increment(ref _floodSampledCount);
 }

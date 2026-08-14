@@ -286,6 +286,16 @@ public static class Program
 		services.AddSingleton<BookmarkCheckpointLedger>();
 		services.AddSingleton<EventChannel>();
 		services.AddSingleton<ServiceMetrics>();
+		services.AddSingleton(sp =>
+		{
+			MonitoringOptions monitoring = sp.GetRequiredService<IOptionsMonitor<RdpAuditOptions>>().CurrentValue.Monitoring;
+			return new EventFloodGuard(
+				monitoring.FloodGuardBucketCount,
+				TimeSpan.FromSeconds(Math.Max(1, monitoring.FloodGuardWindowSeconds)),
+				monitoring.FloodGuardSoftThreshold,
+				monitoring.FloodGuardHardThreshold,
+				monitoring.FloodGuardSampleEveryN);
+		});
 
 		// v2 event-collection composition. The IEventPipe adapter reuses the same underlying
 		// ring-buffer instance that lives inside EventChannel, so every hosted worker — the
@@ -293,8 +303,13 @@ public static class Program
 		// the EventProcessorWorker consumer (iter17) — shares a single physical transport with
 		// no duplication, no dropped pipeline hop, and a semaphore-backed wake on every write.
 		services.AddSingleton<ChannelHealthPolicy>();
-		services.AddSingleton<IEventPipe>(sp =>
+		services.AddSingleton<RingBufferEventPipe>(sp =>
 			new RingBufferEventPipe(sp.GetRequiredService<EventChannel>()));
+		services.AddSingleton<IEventPipe>(sp => new FloodGuardEventPipe(
+			sp.GetRequiredService<RingBufferEventPipe>(),
+			sp.GetRequiredService<EventFloodGuard>(),
+			sp.GetRequiredService<IOptionsMonitor<RdpAuditOptions>>(),
+			sp.GetRequiredService<ServiceMetrics>()));
 		services.AddSingleton<IEventSourceFactory, EventLogWatcherEventSourceFactory>();
 		services.AddSingleton<IChannelStatusSink, ServiceMetricsChannelStatusSink>();
 		services.AddSingleton<EventCollectorHost>();

@@ -1,9 +1,10 @@
-// File:    src/RdpAudit.Core/Config/MonitoringOptions.cs
-// Module:  RdpAudit.Core.Config
-// Purpose: Configures which event channels and event IDs are monitored.
-// Extends: System.Object
-// Author:  Mikhail Deynekin
-// Site:    https://Deynekin.com
+/* Project: RDPAudit 2.0 | Author: Mikhail Deynekin | Site: Deynekin.com | Email: Mikhail@Deynekin.com */
+// Version: 2.0.1
+// File   : MonitoringOptions.cs
+// Project: RdpAudit.Core (RdpAudit.Core.Config)
+// Purpose: Configures monitored event sources and bounded pre-pipeline flood protection.
+// Depends: System.Collections.Generic
+// Extends: Add new capture controls here when an event source needs a persisted operational threshold.
 
 namespace RdpAudit.Core.Config;
 
@@ -40,4 +41,22 @@ public sealed class MonitoringOptions
 	public int BatchTimeoutMilliseconds { get; set; } = 500;
 
 	public int ChannelCapacity { get; set; } = 50_000;
+
+	/// <summary>Enables pre-enqueue sampling of non-critical events during a per-source flood.</summary>
+	public bool FloodGuardEnabled { get; set; } = true;
+
+	/// <summary>Sliding-window duration for per-channel and per-source flood accounting.</summary>
+	public int FloodGuardWindowSeconds { get; set; } = 10;
+
+	/// <summary>Hits in one window before periodic detail sampling begins.</summary>
+	public long FloodGuardSoftThreshold { get; set; } = 1_000;
+
+	/// <summary>Hits in one window after which only aggregate accounting is retained.</summary>
+	public long FloodGuardHardThreshold { get; set; } = 10_000;
+
+	/// <summary>Retains one full-detail event for every N hits between soft and hard thresholds.</summary>
+	public int FloodGuardSampleEveryN { get; set; } = 32;
+
+	/// <summary>Fixed number of collision-tolerant flood-accounting buckets.</summary>
+	public int FloodGuardBucketCount { get; set; } = 4_096;
 }
