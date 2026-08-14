@@ -63,6 +63,7 @@ using RdpAudit.Core.Models;
 using RdpAudit.Core.Util;
 using RdpAudit.Service.Infrastructure;
 using RdpAudit.Service.Processors;
+using RdpAudit.Service.Storage;
 
 namespace RdpAudit.Service.Workers;
 
@@ -106,6 +107,7 @@ public sealed class EventProcessorWorker : BackgroundService
 	private readonly ILogger<EventProcessorWorker> _logger;
 	private readonly IOptionsMonitor<RdpAuditOptions> _options;
 	private readonly IOperationLogWriter _opLog;
+	private readonly IpEventSummaryUpserter? _ipEventSummaryUpserter;
 
 	/// <summary>Bookmark persistence. Null keeps the legacy split commit (collector owns bookmarks).</summary>
 	private readonly BookmarkStore? _bookmarks;
@@ -137,7 +139,8 @@ public sealed class EventProcessorWorker : BackgroundService
 		IOptionsMonitor<RdpAuditOptions> options,
 		IOperationLogWriter opLog,
 		BookmarkStore? bookmarks = null,
-		BookmarkCheckpointLedger? checkpoints = null)
+		BookmarkCheckpointLedger? checkpoints = null,
+		IpEventSummaryUpserter? ipEventSummaryUpserter = null)
 	{
 		ArgumentNullException.ThrowIfNull(pipe);
 		ArgumentNullException.ThrowIfNull(metrics);
@@ -158,6 +161,7 @@ public sealed class EventProcessorWorker : BackgroundService
 		_opLog = opLog;
 		_bookmarks = bookmarks;
 		_checkpoints = checkpoints;
+		_ipEventSummaryUpserter = ipEventSummaryUpserter;
 
 		// Unified commit needs both halves. Supplying only one is a composition mistake that would
 		// silently degrade to the legacy split-commit behaviour, so surface it loudly at startup.
@@ -506,6 +510,17 @@ public sealed class EventProcessorWorker : BackgroundService
 		try
 		{
 			int addressesUpserted = await UpsertAddressesAsync(db, entities, now, ct).ConfigureAwait(false);
+			IngestionSequence sequence = await db.IngestionSequences
+				.SingleAsync(item => item.Id == 1, ct)
+				.ConfigureAwait(false);
+			long nextSequence = sequence.NextValue;
+			foreach (RawEvent entity in entities)
+			{
+				entity.IngestionSequence = checked(nextSequence);
+				nextSequence = checked(nextSequence + 1);
+			}
+
+			sequence.NextValue = nextSequence;
 
 			db.RawEvents.AddRange(entities);
 
@@ -521,6 +536,20 @@ public sealed class EventProcessorWorker : BackgroundService
 				.ConfigureAwait(false);
 
 			await db.SaveChangesAsync(ct).ConfigureAwait(false);
+
+			if (_ipEventSummaryUpserter is not null)
+			{
+				if (db.Database.GetDbConnection() is not SqliteConnection connection
+					|| tx.GetDbTransaction() is not SqliteTransaction sqliteTransaction)
+				{
+					throw new InvalidOperationException(
+						"IpEventSummaryUpserter requires the configured SQLite connection and transaction.");
+				}
+
+				await _ipEventSummaryUpserter
+					.UpsertBatchAsync(connection, sqliteTransaction, entities, ct)
+					.ConfigureAwait(false);
+			}
 
 			// Unified durability boundary: the bookmark advance rides the SAME commit as the events
 			// it would otherwise skip past. Written last so it covers everything above it, and

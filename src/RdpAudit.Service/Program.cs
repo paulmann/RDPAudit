@@ -48,6 +48,7 @@ using RdpAudit.Service.Firewall;
 using RdpAudit.Service.Infrastructure;
 using RdpAudit.Service.Ipc;
 using RdpAudit.Service.Processors;
+using RdpAudit.Service.Storage;
 using RdpAudit.Service.Services;
 using RdpAudit.Service.Workers;
 using Serilog;
@@ -302,6 +303,7 @@ public static class Program
 		services.AddSingleton<SessionIpCorrelationUpserter>();
 		services.AddSingleton<RdpConnectionFactUpserter>();
 		services.AddSingleton<AuthAttemptFactUpserter>();
+		services.AddSingleton<IpEventSummaryUpserter>();
 		services.AddSingleton<SecurityCorrelationWatchdog>();
 		services.AddSingleton<EventNormalizer>();
 		services.AddSingleton<DbAlertContext>();
@@ -422,6 +424,7 @@ public static class Program
 		services.AddTimedHostedService(sp => sp.GetRequiredService<AttackStatsRefreshWorker>(), nameof(AttackStatsRefreshWorker));
 
 		services.AddTimedHostedService<AlertWorker>(nameof(AlertWorker));
+		services.AddTimedHostedService<RetentionWorker>(nameof(RetentionWorker));
 		services.AddTimedHostedService<MaintenanceWorker>(nameof(MaintenanceWorker));
 		services.AddTimedHostedService<FirewallAutoBlockWorker>(nameof(FirewallAutoBlockWorker));
 		services.AddTimedHostedService<FirewallExpirationWorker>(nameof(FirewallExpirationWorker));

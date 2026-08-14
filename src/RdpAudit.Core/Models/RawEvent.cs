@@ -1,9 +1,10 @@
-// File:    src/RdpAudit.Core/Models/RawEvent.cs
-// Module:  RdpAudit.Core.Models
-// Purpose: Persisted, normalized representation of a single Windows event.
-// Extends: System.Object
-// Author:  Mikhail Deynekin
-// Site:    https://Deynekin.com
+/* Project: RDPAudit 2.0 | Author: Mikhail Deynekin | Site: Deynekin.com | Email: Mikhail@Deynekin.com */
+// Version: 2.0.0
+// File   : RawEvent.cs
+// Project: RdpAudit.Core (RdpAudit.Core.Models)
+// Purpose: Persists a normalized Windows event and its durable ingestion metadata.
+// Depends: Address, Session
+// Extends: Add persisted event metadata with a matching RawEventConfiguration mapping.
 
 namespace RdpAudit.Core.Models;
 
@@ -13,14 +14,28 @@ namespace RdpAudit.Core.Models;
 /// </summary>
 public sealed class RawEvent
 {
+	/// <summary>Surrogate primary key.</summary>
 	public long Id { get; set; }
 
+	/// <summary>Windows event identifier.</summary>
 	public int EventId { get; set; }
 
+	/// <summary>Windows event channel name.</summary>
 	public string Channel { get; set; } = string.Empty;
 
+	/// <summary>UTC timestamp reported by Windows.</summary>
 	public DateTime TimeUtc { get; set; }
 
+	/// <summary>Monotonic ingestion sequence assigned by the collector.</summary>
+	public long IngestionSequence { get; set; }
+
+	/// <summary>Persisted numeric event-layer classification.</summary>
+	public int EventLayer { get; set; }
+
+	/// <summary>Canonical 16-byte IPv6-mapped binary source IP, when resolved.</summary>
+	public byte[]? SourceIpBinary { get; set; }
+
+	/// <summary>Resolved textual source IP, when available.</summary>
 	public string? SourceIp { get; set; }
 
 	/// <summary>
