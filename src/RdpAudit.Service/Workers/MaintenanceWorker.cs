@@ -1,13 +1,10 @@
-// File:    src/RdpAudit.Service/Workers/MaintenanceWorker.cs
-// Module:  RdpAudit.Service.Workers
-// Purpose: Daily housekeeping — retention pruning across RawEvents, Alerts, AbuseReports,
-//          inactive ActiveBlocks and stale AttackStats; bounded incremental_vacuum; ThreatScore
-//          decay; log rotation. All pruning is batched, cancellable, and tolerates SQLite busy
-//          (codes 5/6) errors with exponential backoff so the writer lock is never held for long.
-// Extends: Microsoft.Extensions.Hosting.BackgroundService
-// Author:  Mikhail Deynekin
-// Site:    https://Deynekin.com
-
+/* Project: RDPAudit 2.0 | Author: Mikhail Deynekin | Site: Deynekin.com | Email: Mikhail@Deynekin.com */
+// Version: 2.0.0
+// File   : MaintenanceWorker.cs
+// Project: RdpAudit.Service (RdpAudit.Service.Workers)
+// Purpose: Performs bounded housekeeping for non-RawEvent telemetry and service files.
+// Depends: AuditDbContext, RdpAuditOptions, ILogger
+// Extends: Keep RawEvent retention delegated to RetentionWorker when adding maintenance work.
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Hosting;
@@ -99,7 +96,6 @@ public sealed class MaintenanceWorker : BackgroundService
 		// Resolve retention cutoffs with safe minima — operators can lower these intentionally,
 		// but never below the floors documented in StorageOptions.
 		DateTime utcNow = DateTime.UtcNow;
-		DateTime eventCutoff = utcNow.AddDays(-Math.Max(7, storage.EventRetentionDays));
 		DateTime alertCutoff = utcNow.AddDays(-Math.Max(30, storage.AlertRetentionDays));
 		DateTime abuseCutoff = utcNow.AddDays(-Math.Max(30, storage.AbuseReportRetentionDays));
 		DateTime activeBlockCutoff = utcNow.AddDays(-Math.Max(7, storage.ActiveBlockRetentionDays));
@@ -107,10 +103,10 @@ public sealed class MaintenanceWorker : BackgroundService
 		DateTime correlationCutoff = utcNow.AddDays(-Math.Max(7, storage.SessionIpCorrelationRetentionDays));
 		DateTime connectionFactCutoff = utcNow.AddDays(-Math.Max(30, storage.RdpConnectionFactRetentionDays));
 
-		int eventsDeleted = await PruneBatchedAsync(
-			db => db.RawEvents.Where(e => e.TimeUtc < eventCutoff),
-			batch,
-			ct).ConfigureAwait(false);
+		// RawEvents retention is owned by RetentionWorker because it honours per-event overrides,
+		// including the explicit zero-day \"retain forever\" policy. A global maintenance sweep
+		// here would silently violate that policy once per day.
+		int eventsDeleted = 0;
 
 		int alertsDeleted = await PruneBatchedAsync(
 			db => db.Alerts.Where(a => a.TimeUtc < alertCutoff),
