@@ -427,6 +427,8 @@ public sealed class IpcDispatcher
 			SecurityReadDenied = flags.SecurityReadDenied,
 			ChannelDisabled = flags.ChannelDisabled,
 			BookmarkStaleOrLogRetentionGap = flags.BookmarkStaleOrLogRetentionGap,
+			FirewallScanBackend = _metrics.FirewallScanBackend,
+			FirewallScanSwitchCount = _metrics.FirewallScanSwitchCount,
 		};
 	}
 
@@ -667,6 +669,7 @@ public sealed class IpcDispatcher
 		await using AuditDbContext db = await _factory.CreateDbContextAsync(ct).ConfigureAwait(false);
 		return await db.Addresses.AsNoTracking()
 			.OrderByDescending(a => a.LastSeen)
+			.ThenByDescending(a => a.Id)
 			.Take(500)
 			.ToListAsync(ct)
 			.ConfigureAwait(false);
@@ -677,6 +680,7 @@ public sealed class IpcDispatcher
 		await using AuditDbContext db = await _factory.CreateDbContextAsync(ct).ConfigureAwait(false);
 		return await db.Sessions.AsNoTracking()
 			.OrderByDescending(s => s.ConnectUtc)
+			.ThenByDescending(s => s.Id)
 			.Take(500)
 			.ToListAsync(ct)
 			.ConfigureAwait(false);
@@ -1316,6 +1320,7 @@ public sealed class IpcDispatcher
 		await using AuditDbContext db = await _factory.CreateDbContextAsync(ct).ConfigureAwait(false);
 		List<WhitelistEntry> rows = await db.WhitelistEntries.AsNoTracking()
 			.OrderByDescending(w => w.AddedUtc)
+			.ThenByDescending(w => w.Id)
 			.Take(2000)
 			.ToListAsync(ct).ConfigureAwait(false);
 
@@ -1647,6 +1652,7 @@ public sealed class IpcDispatcher
 		await using AuditDbContext db = await _factory.CreateDbContextAsync(ct).ConfigureAwait(false);
 		List<ActiveBlock> rows = await db.ActiveBlocks.AsNoTracking()
 			.OrderByDescending(b => b.CreatedUtc)
+			.ThenByDescending(b => b.Id)
 			.Take(2000)
 			.ToListAsync(ct).ConfigureAwait(false);
 
@@ -1741,6 +1747,7 @@ public sealed class IpcDispatcher
 		await using AuditDbContext db = await _factory.CreateDbContextAsync(ct).ConfigureAwait(false);
 		List<LoginRule> rows = await db.LoginRules.AsNoTracking()
 			.OrderByDescending(r => r.AddedUtc)
+			.ThenByDescending(r => r.Id)
 			.Take(2000)
 			.ToListAsync(ct).ConfigureAwait(false);
 
@@ -1859,6 +1866,7 @@ public sealed class IpcDispatcher
 		await using AuditDbContext db = await _factory.CreateDbContextAsync(ct).ConfigureAwait(false);
 		List<ActiveBlock> rows = await db.ActiveBlocks.AsNoTracking()
 			.OrderByDescending(b => b.CreatedUtc)
+			.ThenByDescending(b => b.Id)
 			.Take(2000)
 			.ToListAsync(ct).ConfigureAwait(false);
 
@@ -3948,6 +3956,7 @@ public sealed class IpcDispatcher
 		List<RawEvent> recent = await db.RawEvents.AsNoTracking()
 			.Where(e => e.SourceIp == ip)
 			.OrderByDescending(e => e.TimeUtc)
+			.ThenByDescending(e => e.Id)
 			.Take(limit)
 			.ToListAsync(ct).ConfigureAwait(false);
 
@@ -3977,9 +3986,9 @@ public sealed class IpcDispatcher
 
 		dto.AttemptedUserNames = await db.RawEvents.AsNoTracking()
 			.Where(e => e.SourceIp == ip && e.UserName != null && e.UserName != string.Empty)
-			.OrderByDescending(e => e.TimeUtc)
 			.Select(e => e.UserName!)
 			.Distinct()
+			.OrderBy(u => u)
 			.Take(20)
 			.ToListAsync(ct).ConfigureAwait(false);
 
@@ -4505,6 +4514,7 @@ public sealed class IpcDispatcher
 				.GroupBy(e => e.Channel)
 				.Select(g => new DiagnosticsChannelCount { Channel = g.Key, Count = g.LongCount() })
 				.OrderByDescending(x => x.Count)
+				.ThenBy(x => x.Channel)
 				.Take(20)
 				.ToListAsync(sct).ConfigureAwait(false);
 			dto.RawEventsByChannel.AddRange(byChannel);
@@ -4521,6 +4531,8 @@ public sealed class IpcDispatcher
 					Count = g.LongCount(),
 				})
 				.OrderByDescending(x => x.Count)
+				.ThenBy(x => x.Channel)
+				.ThenBy(x => x.EventId)
 				.Take(30)
 				.ToListAsync(sct).ConfigureAwait(false);
 			dto.RawEventsByEventId.AddRange(byEventId);
@@ -4537,6 +4549,8 @@ public sealed class IpcDispatcher
 					Count = g.LongCount(),
 				})
 				.OrderByDescending(x => x.Count)
+				.ThenBy(x => x.EvidenceEventId)
+				.ThenBy(x => x.Outcome)
 				.Take(30)
 				.ToListAsync(sct).ConfigureAwait(false);
 			dto.AuthAttemptFactsByOutcome.AddRange(byOutcome);
@@ -5109,6 +5123,7 @@ public sealed class IpcDispatcher
 					&& f.AuthPackage != null && f.AuthPackage != string.Empty)
 				.Select(f => f.AuthPackage!)
 				.Distinct()
+				.OrderBy(p => p)
 				.Take(AuthSuccessLabelCapPerLogin)
 				.ToListAsync(ct).ConfigureAwait(false);
 			login.SuccessAuthPackages = authPackages.OrderBy(p => p, StringComparer.OrdinalIgnoreCase).ToList();
@@ -5120,6 +5135,7 @@ public sealed class IpcDispatcher
 					&& f.SubStatusMeaning != null && f.SubStatusMeaning != string.Empty)
 				.Select(f => f.SubStatusMeaning!)
 				.Distinct()
+				.OrderBy(r => r)
 				.Take(AuthSuccessLabelCapPerLogin)
 				.ToListAsync(ct).ConfigureAwait(false);
 			login.FailureReasons = reasons.OrderBy(r => r, StringComparer.OrdinalIgnoreCase).ToList();

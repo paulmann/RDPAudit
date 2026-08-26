@@ -467,6 +467,12 @@ public sealed class EventCollectorHost : IAsyncDisposable
 			_pendingBookmarkEventCounts.Remove(channel);
 		}
 
+		// Purge any pending ledger checkpoints for this channel. Without this, the next unified
+		// commit would re-persist the stale pre-reset bookmark the moment any later sequence is
+		// durably committed, defeating the reset: the watcher would re-arm from the position the
+		// now-deleted bookmark encoded instead of from the actual tail.
+		_checkpoints?.ForgetChannel(channel);
+
 		try
 		{
 			await _bookmarks.DeleteBookmarkAsync(channel, ct).ConfigureAwait(false);

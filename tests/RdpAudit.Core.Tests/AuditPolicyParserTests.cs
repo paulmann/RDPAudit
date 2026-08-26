@@ -1,9 +1,9 @@
 // File:    tests/RdpAudit.Core.Tests/AuditPolicyParserTests.cs
 // Module:  RdpAudit.Core.Tests
-// Purpose: Locale-tolerant decoding of the auditpol /r "Inclusion Setting" column.
-//          Guards against the previous bug where the Audit tab "Current" column
-//          always displayed "?" because the parser expected a numeric bitfield while
-//          auditpol actually emits localized text such as "Success and Failure".
+// Purpose: Locale-tolerant decoding of the auditpol /r CSV text. Guards against the previous bug
+//          where the Audit tab "Current" column always displayed "?" because the parser expected a
+//          numeric bitfield while auditpol actually emits localized text such as "Success and Failure".
+//          Also pins the pure CSV parser (D6) used by AuditPolicyManager without spawning auditpol.
 // Extends: System.Object
 // Author:  Mikhail Deynekin
 // Site:    https://Deynekin.com
@@ -13,8 +13,8 @@ using Xunit;
 
 namespace RdpAudit.Core.Tests;
 
-/// <summary>Verifies that AuditPolicyManager.DecodeInclusion handles all known
-/// auditpol /r inclusion-setting text values across supported Windows locales.</summary>
+/// <summary>Verifies that AuditPolicyManager.DecodeInclusion and ParseAuditpolCsv handle all
+/// known auditpol output variants across supported Windows locales, without launching auditpol.</summary>
 public class AuditPolicyParserTests
 {
 	[Theory]
@@ -46,5 +46,85 @@ public class AuditPolicyParserTests
 	public void NormalizeGuid_ProducesStableUppercaseBraceForm(string input, string expected)
 	{
 		Assert.Equal(expected, AuditPolicyManager.NormalizeGuid(input));
+	}
+
+	// ── Pure auditpol CSV parser (D6: no process spawning) ─────────────────────
+
+	[Fact]
+	public void ParseAuditpolCsv_EnglishHeader_SuccessAndFailure()
+	{
+		const string csv =
+			"Machine Name,Policy Target,Subcategory,Subcategory GUID,Inclusion Setting,Exclusion Setting\r\n"
+			+ "HOST,System,Logon,{0CCE9215-69AE-11D9-BED3-505054503030},Success and Failure,\r\n";
+
+		AuditPolicyState? state = AuditPolicyManager.ParseAuditpolCsv(csv, AuditPolicyManager.GuidLogon);
+
+		Assert.NotNull(state);
+		Assert.True(state!.Success);
+		Assert.True(state.Failure);
+	}
+
+	[Fact]
+	public void ParseAuditpolCsv_EnglishHeader_SuccessOnly()
+	{
+		const string csv =
+			"Machine Name,Policy Target,Subcategory,Subcategory GUID,Inclusion Setting,Exclusion Setting\r\n"
+			+ "HOST,System,Special Logon,{0CCE921B-69AE-11D9-BED3-505054503030},Success,\r\n";
+
+		AuditPolicyState? state = AuditPolicyManager.ParseAuditpolCsv(csv, AuditPolicyManager.GuidSpecialLogon);
+
+		Assert.NotNull(state);
+		Assert.True(state!.Success);
+		Assert.False(state.Failure);
+	}
+
+	[Fact]
+	public void ParseAuditpolCsv_RussianHeader_LocalizedInclusion()
+	{
+		const string csv =
+			"Имя компьютера,Целевой объект политики,Подкатегория,GUID подкатегории,Параметр включения,Параметр исключения\r\n"
+			+ "HOST,Система,Вход в систему,{0CCE9215-69AE-11D9-BED3-505054503030},Успех и Отказ,\r\n";
+
+		AuditPolicyState? state = AuditPolicyManager.ParseAuditpolCsv(csv, AuditPolicyManager.GuidLogon);
+
+		Assert.NotNull(state);
+		Assert.True(state!.Success);
+		Assert.True(state.Failure);
+	}
+
+	[Fact]
+	public void ParseAuditpolCsv_HeaderlessCanonicalLayout_NumericInclusion()
+	{
+		// Canonical fallback: no recognizable header -> columns 3 (GUID) and 4 (Inclusion).
+		const string csv =
+			",,,{0CCE9215-69AE-11D9-BED3-505054503030},3,\r\n";
+
+		AuditPolicyState? state = AuditPolicyManager.ParseAuditpolCsv(csv, AuditPolicyManager.GuidLogon);
+
+		Assert.NotNull(state);
+		Assert.True(state!.Success);
+		Assert.True(state.Failure);
+	}
+
+	[Fact]
+	public void ParseAuditpolCsv_DifferentGuidRow_ReturnsNull()
+	{
+		const string csv =
+			"Machine Name,Policy Target,Subcategory,Subcategory GUID,Inclusion Setting,Exclusion Setting\r\n"
+			+ "HOST,System,Logoff,{0CCE9216-69AE-11D9-BED3-505054503030},Success,\r\n";
+
+		Assert.Null(AuditPolicyManager.ParseAuditpolCsv(csv, AuditPolicyManager.GuidLogon));
+	}
+
+	[Fact]
+	public void ParseAuditpolCsv_EmptyText_Throws()
+	{
+		Assert.Throws<ArgumentException>(() => AuditPolicyManager.ParseAuditpolCsv(string.Empty, AuditPolicyManager.GuidLogon));
+	}
+
+	[Fact]
+	public void ParseAuditpolCsv_BlankGuid_Throws()
+	{
+		Assert.Throws<ArgumentException>(() => AuditPolicyManager.ParseAuditpolCsv("anything", " "));
 	}
 }

@@ -10,7 +10,7 @@
 //          Adds a new 2.0 helper set (ExtractSourceIp, ExtractLogonId, ExtractSessionId,
 //          ExtractActivityId, PopulateFrom) that fills the new RawEventDto correlation fields
 //          from event payloads. All heap allocations stay confined to the (documented) XmlDocument
-//          construction — DOM is required by the legacy contract; the new helpers avoid it.
+//          construction - DOM is required by the legacy contract; the new helpers avoid it.
 // Depends: EventCatalog, RawEventDto, EventLayer
 // Extends: When adding parsers for new event ids, extend the switch in ExtractSourceIp /
 //          PopulateFrom. Never widen XmlReaderSettings; if a legitimate payload trips a limit,
@@ -33,15 +33,15 @@ public static class EventXmlParser
 	// line of defence in case that clip is bypassed.
 
 	/// <summary>Hard ceiling on total characters processed by the reader. Anything larger
-	/// short-circuits with a null result — never allocates a growing document.</summary>
+	/// short-circuits with a null result - never allocates a growing document.</summary>
 	private const long MaxCharactersInDocument = 1L * 1024 * 1024;
 
 	/// <summary>Hard ceiling on characters produced by entity expansion. DTD is prohibited so
-	/// this is defence-in-depth — a malformed DOCTYPE that slips through still cannot bloat.</summary>
+	/// this is defence-in-depth - a malformed DOCTYPE that slips through still cannot bloat.</summary>
 	private const long MaxCharactersInEntities = 4L * 1024;
 
 	/// <summary>Maximum <see cref="XmlReader.Depth"/> accepted (inclusive) before parsing aborts.
-	/// Real Windows event payloads nest at most 6 levels — <c>Event/EventData/Data/text()</c> reaches
+	/// Real Windows event payloads nest at most 6 levels - <c>Event/EventData/Data/text()</c> reaches
 	/// depth 3, and the deepest live payload (<c>UserData/EventXML/…</c>) reaches depth 4.
 	/// <para>
 	/// Semantics: any node observed with <c>reader.Depth &gt; MaxDepth</c> aborts the parse. Depth
@@ -60,7 +60,7 @@ public static class EventXmlParser
 
 	private static XmlReaderSettings BuildHardenedSettings()
 	{
-		XmlReaderSettings s = new()
+		return new XmlReaderSettings
 		{
 			IgnoreWhitespace = true,
 			IgnoreComments = true,
@@ -73,7 +73,6 @@ public static class EventXmlParser
 			MaxCharactersInDocument = MaxCharactersInDocument,
 			MaxCharactersFromEntities = MaxCharactersInEntities,
 		};
-		return s;
 	}
 
 	// ── Legacy public API (kept identical to 1.0) ────────────────────────────────
@@ -90,7 +89,7 @@ public static class EventXmlParser
 			return null;
 		}
 
-		// First-line size gate — cheaper than instantiating XmlReader on a 5 MiB blob.
+		// First-line size gate - cheaper than instantiating XmlReader on a 5 MiB blob.
 		if ((long)xml.Length > MaxCharactersInDocument)
 		{
 			return null;
@@ -125,7 +124,7 @@ public static class EventXmlParser
 
 	/// <summary>Reads a named <c>EventData/UserData</c> value, normalising blank Windows
 	/// sentinels (<c>""</c>, <c>"-"</c>, <c>"N/A"</c>) to <c>null</c>. Returns <c>null</c>
-	/// when the field is missing or the value exceeds <see cref="MaxFieldLength"/> —
+	/// when the field is missing or the value exceeds <see cref="MaxFieldLength"/> -
 	/// oversize values are attacker-controlled and refused.</summary>
 	public static string? GetData(XmlDocument? doc, string name)
 	{
@@ -169,7 +168,7 @@ public static class EventXmlParser
 	/// <summary>Reads the Nth child of <c>EventData</c> by ordinal position (zero-based),
 	/// matching cameyo rdpmon's <c>EventRecord.Properties[N]</c> compatibility semantics. Used
 	/// only as a defensive fallback when an event payload omits the standard <c>@Name</c>
-	/// attributes on its Data elements (older Windows builds and stripped event sources) —
+	/// attributes on its Data elements (older Windows builds and stripped event sources) -
 	/// Windows still emits the values in a stable positional order. Returns <c>null</c> when
 	/// the index is out of range, the value is blank, or one of the Windows sentinels
 	/// (<c>"-"</c> / <c>"N/A"</c>).</summary>
@@ -197,7 +196,7 @@ public static class EventXmlParser
 	/// <summary>Extracts the source IP from an event payload, respecting per-event id field
 	/// naming conventions. Returns <c>null</c> when unresolved. Never allocates beyond
 	/// the underlying XmlDocument DOM. New event ids (22, 39, 40, 1150, 1158, 4778, 4779)
-	/// are covered here — extend the switch to teach the parser about new ones.</summary>
+	/// are covered here - extend the switch to teach the parser about new ones.</summary>
 	public static string? ExtractSourceIp(XmlDocument? doc, int eventId) => eventId switch
 	{
 		// TerminalServices-LocalSessionManager
@@ -242,7 +241,7 @@ public static class EventXmlParser
 			return null;
 		}
 
-		// Windows emits LUIDs as 0x-prefixed hex — usually 0x1234_5678.
+		// Windows emits LUIDs as 0x-prefixed hex - usually 0x1234_5678.
 		if (raw.StartsWith("0x", StringComparison.OrdinalIgnoreCase)
 			&& long.TryParse(raw.AsSpan(2), NumberStyles.HexNumber, CultureInfo.InvariantCulture, out long hex))
 		{
@@ -350,7 +349,7 @@ public static class EventXmlParser
 	}
 
 	/// <summary>Validates that a supplied field name only contains characters legal for a
-	/// Windows event data name — letters, digits and underscore. This is defence in depth
+	/// Windows event data name - letters, digits and underscore. This is defence in depth
 	/// against callers that build the name from untrusted input; the current callers all
 	/// pass literals, but the XPath is composed via string interpolation so the invariant
 	/// must be enforced here.</summary>

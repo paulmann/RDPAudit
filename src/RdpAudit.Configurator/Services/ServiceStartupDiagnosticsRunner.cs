@@ -101,7 +101,7 @@ public sealed class ServiceStartupDiagnosticsRunner
 		AppendSection(sb, "5. appsettings.json integrity", () => FormatAppSettings(layout.AppSettingsPath));
 
 		AppendSection(sb, "6. ProgramData ACL and SQLite database writability",
-			() => FormatWritabilityChecks(layout.ProgramDataDirectory, layout.DefaultDatabasePath));
+			() => FormatWritabilityChecks(layout.ProgramDataDirectory, layout.DefaultDatabasePath, scmInfo));
 
 		AppendSection(sb, "7. On-disk log tails (ipc-startup.log, RDPAudit_DEBUG_Log.txt, crash reports)",
 			() => FormatExtras(layout));
@@ -360,7 +360,7 @@ public sealed class ServiceStartupDiagnosticsRunner
 		}
 	}
 
-	private static string FormatWritabilityChecks(string? programDataRdp, string dbPath)
+	private static string FormatWritabilityChecks(string? programDataRdp, string dbPath, ServiceInstallationInfo? scmInfo)
 	{
 		StringBuilder sb = new();
 		if (string.IsNullOrEmpty(programDataRdp))
@@ -384,12 +384,90 @@ public sealed class ServiceStartupDiagnosticsRunner
 				sb.AppendLine("    Size:     " + fi.Length.ToString("N0", CultureInfo.InvariantCulture) + " bytes");
 				sb.AppendLine("    LastWrite: " + fi.LastWriteTimeUtc.ToString("yyyy-MM-dd HH:mm:ss'Z'", CultureInfo.InvariantCulture));
 				sb.AppendLine("    ReadOnly:  " + fi.IsReadOnly);
-				sb.AppendLine("    Locked:    " + IsFileLocked(dbPath));
+				sb.AppendLine("    Locked:    " + FormatDatabaseLock(dbPath, scmInfo));
 			}
 			catch (Exception ex)
 			{
 				sb.AppendLine("    Stat failed: " + ex.GetType().Name + " — " + ex.Message);
 			}
+		}
+		return sb.ToString();
+	}
+
+	/// <summary>Renders the SQLite WAL lock probe with owner context. A lock held by the running
+	/// RdpAuditService (the PID SCM reports while the service is up) is the normal WAL operating
+	/// state, not a fault; a lock from any other process is surfaced with its owner PID so the
+	/// operator knows exactly what to stop before restarting the service.</summary>
+	private static string FormatDatabaseLock(string dbPath, ServiceInstallationInfo? scmInfo)
+	{
+		if (!IsFileLocked(dbPath))
+		{
+			return "false";
+		}
+
+		if (scmInfo?.IsRunning == true && scmInfo.ProcessId is int servicePid)
+		{
+			return "true (normal - held by the running RdpAuditService, PID " +
+				servicePid.ToString(CultureInfo.InvariantCulture) + ")";
+		}
+
+		string holder = TryResolveForeignHolder();
+		if (holder.Length > 0)
+		{
+			return "true (foreign - " + holder + "; stop it before restarting the service)";
+		}
+
+		return "true (foreign - owner PID could not be resolved; verify no other SQLite client is attached)";
+	}
+
+	/// <summary>Best-effort discovery of a non-self process that plausibly holds the SQLite lock.
+	/// Matches the InstallTransfer philosophy: Process enumeration instead of Restart Manager, and
+	/// access-denied / exited processes are skipped rather than treated as errors.</summary>
+	private static string TryResolveForeignHolder()
+	{
+		StringBuilder sb = new();
+		try
+		{
+			int selfPid = Environment.ProcessId;
+			bool first = true;
+			foreach (Process process in Process.GetProcesses())
+			{
+				try
+				{
+					if (process.Id == selfPid)
+					{
+						continue;
+					}
+
+					string name = process.ProcessName;
+					if (!name.Contains("RdpAudit", StringComparison.OrdinalIgnoreCase)
+						&& !name.Contains("sqlite", StringComparison.OrdinalIgnoreCase)
+						&& !name.Contains("db browser", StringComparison.OrdinalIgnoreCase))
+					{
+						continue;
+					}
+
+					if (!first)
+					{
+						sb.Append(", ");
+					}
+					sb.Append("PID ").Append(process.Id.ToString(CultureInfo.InvariantCulture))
+						.Append(" (").Append(name).Append(')');
+					first = false;
+				}
+				catch (Exception)
+				{
+					// Process exited or MainModule access denied - keep scanning.
+				}
+				finally
+				{
+					process.Dispose();
+				}
+			}
+		}
+		catch (Exception)
+		{
+			// Process enumeration failed - fall through to the generic message.
 		}
 		return sb.ToString();
 	}
@@ -484,7 +562,7 @@ public sealed class ServiceStartupDiagnosticsRunner
 
 			StringBuilder sb = new();
 			AppendTail(sb, "ipc-startup.log (logs\\ipc-startup.log)", extras.IpcStartupLogTail);
-			AppendTail(sb, "RDPAudit_DEBUG_Log.txt (root)", extras.DebugLogTail);
+			AppendTail(sb, "RDPAudit_DEBUG_Log.txt (logs\\)", extras.DebugLogTail);
 			AppendTail(sb, "service-*.log (logs\\ — newest)", extras.ServiceLogTail);
 			AppendCrash(sb, extras);
 			return sb.ToString();
@@ -600,17 +678,22 @@ public sealed class ServiceStartupDiagnosticsRunner
 	private static string FormatInterpretation(ServiceInstallationInfo? scmInfo)
 	{
 		StringBuilder sb = new();
-		sb.AppendLine("  * Win32ExitCode 1067 (ERROR_PROCESS_ABORTED) means the service process aborted during");
-		sb.AppendLine("    startup. Section 3 (event log) and section 7 (log tails) contain the exception; section");
-		sb.AppendLine("    8 (console self-test, if enabled) reproduces it in the current console with the full");
-		sb.AppendLine("    stack trace visible.");
+		if (scmInfo?.Win32ExitCode is 1067)
+		{
+			sb.AppendLine("  * Win32ExitCode 1067 (ERROR_PROCESS_ABORTED) means the service process aborted during");
+			sb.AppendLine("    startup. Section 3 (event log) and section 7 (log tails) contain the exception; section");
+			sb.AppendLine("    8 (console self-test, if enabled) reproduces it in the current console with the full");
+			sb.AppendLine("    stack trace visible.");
+		}
+
 		sb.AppendLine("  * If section 4 shows 'WindowsDesktop.App 8=NO', install .NET 8 Desktop Runtime x64. This");
 		sb.AppendLine("    is required even though the Service itself is a console app because publish.ps1 produces");
 		sb.AppendLine("    framework-dependent binaries.");
 		sb.AppendLine("  * If section 5 flags invalid JSON, restore appsettings.json from the previous version or");
 		sb.AppendLine("    delete it and let the first-run wizard rebuild it.");
-		sb.AppendLine("  * If section 6 shows 'Locked=true' on the database, another RdpAudit process still owns");
-		sb.AppendLine("    the SQLite file — kill it before restarting the service.");
+		sb.AppendLine("  * If section 6 shows 'Locked=true (normal ...' on the database, the running service holds");
+		sb.AppendLine("    the WAL lock - this is expected while the service is up, not a fault. A 'foreign ...'");
+		sb.AppendLine("    verdict names the owning PID; stop that process before restarting the service.");
 		if (scmInfo?.Win32ExitCode is 1053)
 		{
 			sb.AppendLine("  * You are hitting exit 1053 (timeout). ExecuteAsync is running but never returning from");

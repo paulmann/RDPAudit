@@ -1,5 +1,5 @@
 /* Project: RDPAudit 2.0 | Author: Mikhail Deynekin | Site: Deynekin.com | Email: Mikhail@Deynekin.com */
-// Version: 2.0.0
+// Version: 2.0.1
 // File   : BookmarkStore.cs
 // Project: RdpAudit.Core (RdpAudit.Core.Events)
 // Purpose: Thread-safe persisted store of EventLogWatcher bookmark XML strings keyed by channel.
@@ -7,6 +7,9 @@
 //          batch, so bookmarks and their events cross a single durability boundary. The legacy EF
 //          API (SaveBookmarkAsync, DeleteBookmarkAsync, LoadAllAsync, GetBookmarkXml) is preserved
 //          bit-for-bit so existing callers keep working during the migration.
+//          v2.0.1 adds an in-memory UpdatedUtc cache plus TryGetBookmark so the collector's startup
+//          resume diagnostic can print the persisted timestamp alongside the resumed RecordId,
+//          satisfying D1 acceptance criterion "resuming from bookmark RecordId=N, UpdatedUtc=...".
 // Depends: AuditDbContext, Bookmark, SqliteConnection, SqliteTransaction, IDbContextFactory<T>
 // Extends: When adding a new bookmark-adjacent artefact (e.g. shard-cursor watermark) that must
 //          participate in the same commit, add a peer UPSERT method that takes the same
@@ -54,6 +57,14 @@ public sealed class BookmarkStore
 	private readonly IDbContextFactory<AuditDbContext> _factory;
 	private readonly ILogger<BookmarkStore> _logger;
 	private readonly Dictionary<string, string> _cache = new(StringComparer.OrdinalIgnoreCase);
+
+	/// <summary>
+	/// Timestamp of the last successful persistence per channel, mirrored from the
+	/// <c>Bookmarks.UpdatedUtc</c> column so the startup resume diagnostic can print it without a
+	/// synchronous database read. Always mutated under <see cref="_gate"/>.
+	/// </summary>
+	private readonly Dictionary<string, DateTime> _updatedUtc = new(StringComparer.OrdinalIgnoreCase);
+
 	private readonly object _gate = new();
 
 	// ── Construction ─────────────────────────────────────────────────────────────
@@ -78,9 +89,11 @@ public sealed class BookmarkStore
 		lock (_gate)
 		{
 			_cache.Clear();
+			_updatedUtc.Clear();
 			foreach (Bookmark row in rows)
 			{
 				_cache[row.Channel] = row.BookmarkXml;
+				_updatedUtc[row.Channel] = row.UpdatedUtc;
 			}
 		}
 
@@ -97,28 +110,54 @@ public sealed class BookmarkStore
 	}
 
 	/// <summary>
+	/// Returns the cached bookmark XML for <paramref name="channel"/> together with the timestamp
+	/// of its last successful persistence. Returns <c>false</c> when no bookmark is cached, in
+	/// which case <paramref name="bookmarkXml"/> is <c>null</c> and <paramref name="updatedUtc"/>
+	/// is <see cref="DateTime.MinValue"/>. Used by startup diagnostics that must distinguish
+	/// "first read, no bookmark" from "resuming with RecordId=N, UpdatedUtc=...".
+	/// </summary>
+	public bool TryGetBookmark(string channel, out string? bookmarkXml, out DateTime updatedUtc)
+	{
+		lock (_gate)
+		{
+			if (_cache.TryGetValue(channel, out string? xml))
+			{
+				bookmarkXml = xml;
+				updatedUtc = _updatedUtc.TryGetValue(channel, out DateTime utc) ? utc : DateTime.MinValue;
+				return true;
+			}
+
+			bookmarkXml = null;
+			updatedUtc = DateTime.MinValue;
+			return false;
+		}
+	}
+
+	/// <summary>
 	/// Legacy self-contained save. Updates the cache and commits its own EF transaction. Callers
 	/// that need bookmark durability tied to an event batch MUST use
 	/// <see cref="SaveInSameTransactionAsync"/> instead.
 	/// </summary>
 	public async Task SaveBookmarkAsync(string channel, string xml, CancellationToken ct = default)
 	{
+		DateTime nowUtc = DateTime.UtcNow;
 		lock (_gate)
 		{
 			_cache[channel] = xml;
+			_updatedUtc[channel] = nowUtc;
 		}
 
 		await using AuditDbContext db = await _factory.CreateDbContextAsync(ct).ConfigureAwait(false);
 		Bookmark? row = await db.Bookmarks.FirstOrDefaultAsync(b => b.Channel == channel, ct).ConfigureAwait(false);
 		if (row is null)
 		{
-			row = new Bookmark { Channel = channel, BookmarkXml = xml, UpdatedUtc = DateTime.UtcNow };
+			row = new Bookmark { Channel = channel, BookmarkXml = xml, UpdatedUtc = nowUtc };
 			db.Bookmarks.Add(row);
 		}
 		else
 		{
 			row.BookmarkXml = xml;
-			row.UpdatedUtc = DateTime.UtcNow;
+			row.UpdatedUtc = nowUtc;
 		}
 
 		await db.SaveChangesAsync(ct).ConfigureAwait(false);
@@ -133,6 +172,7 @@ public sealed class BookmarkStore
 		lock (_gate)
 		{
 			_cache.Remove(channel);
+			_updatedUtc.Remove(channel);
 		}
 
 		await using AuditDbContext db = await _factory.CreateDbContextAsync(ct).ConfigureAwait(false);
@@ -157,7 +197,7 @@ public sealed class BookmarkStore
 	/// Rationale: readers (e.g. watcher-arming code paths) must never observe a stale bookmark
 	/// when a fresher one is already committed to disk. Updating the cache before the commit
 	/// guarantees that ordering; the small window in which the cache is ahead of the database
-	/// is closed either by <see cref="MarkCommitted"/> (on success — no-op today, reserved for
+	/// is closed either by <see cref="MarkCommitted"/> (on success - no-op today, reserved for
 	/// future observability) or <see cref="RollbackCache"/> (on failure, which restores the
 	/// previously cached value).
 	/// </remarks>
@@ -170,6 +210,7 @@ public sealed class BookmarkStore
 		{
 			_cache.TryGetValue(channel, out string? previous);
 			_cache[channel] = xml;
+			_updatedUtc[channel] = DateTime.UtcNow;
 			return previous;
 		}
 	}
@@ -189,6 +230,7 @@ public sealed class BookmarkStore
 			if (previousXml is null)
 			{
 				_cache.Remove(channel);
+				_updatedUtc.Remove(channel);
 			}
 			else
 			{

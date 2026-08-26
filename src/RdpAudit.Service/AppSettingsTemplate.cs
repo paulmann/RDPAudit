@@ -51,6 +51,10 @@ public static class AppSettingsTemplate
 			"OffHoursAlertEnabled": true,
 			"BusinessHoursStart": "08:00:00",
 			"BusinessHoursEnd": "20:00:00",
+			"EnablePrivilegedLoginDetection": true,
+			"PrivilegedLoginSuppressionWindowMinutes": 5,
+			"PrivilegedLoginRateLimitPerMinute": 20,
+			"AlertEventMaxAgeMinutes": 5,
 			"KerberosExpectedEncryptionType": "0x12",
 			"WhitelistIps": [],
 			"WhitelistUsers": []
@@ -68,7 +72,9 @@ public static class AppSettingsTemplate
 			"MaxActiveBlocks": 10000,
 			"WhitelistIps": [],
 			"RefusePrivateAddressBlock": true,
-			"AutoBlockDebounceSeconds": 60
+			"AutoBlockDebounceSeconds": 60,
+			"PowerShellScanTimeoutSeconds": 30,
+			"PowerShellRetryProbeIntervalMinutes": 15
 		},
 		"Storage": {
 			"DatabasePath": "",

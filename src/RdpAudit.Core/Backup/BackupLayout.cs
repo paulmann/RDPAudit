@@ -30,11 +30,13 @@ public sealed record BackupSnapshotPaths(
 /// No I/O is performed here; all filesystem work lives in the Configurator backup runner.</summary>
 public static class BackupLayout
 {
-	/// <summary>Subdirectory under <c>%ProgramData%\RdpAudit</c> that holds every snapshot.</summary>
-	public const string BackupsFolderName = "Backups";
+	/// <summary>Subdirectory under <c>%ProgramData%\RdpAudit</c> that holds every snapshot.
+	/// Mirrors <see cref="RdpAuditPaths.BackupsFolderName"/> (single source of truth, D2).</summary>
+	public const string BackupsFolderName = RdpAuditPaths.BackupsFolderName;
 
-	/// <summary>Canonical name of the appsettings.json copy inside a snapshot.</summary>
-	public const string AppSettingsFileName = "appsettings.json";
+	/// <summary>Canonical name of the appsettings.json copy inside a snapshot.
+	/// Mirrors <see cref="RdpAuditPaths.AppSettingsFileName"/> (single source of truth, D2).</summary>
+	public const string AppSettingsFileName = RdpAuditPaths.AppSettingsFileName;
 
 	/// <summary>Audit policy CSV export (one row per subcategory).</summary>
 	public const string AuditPolicyFileName = "audit-policy.csv";

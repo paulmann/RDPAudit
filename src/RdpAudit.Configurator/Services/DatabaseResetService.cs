@@ -14,6 +14,7 @@
 using System.Globalization;
 using System.Runtime.Versioning;
 using RdpAudit.Core.Data;
+using RdpAudit.Core.Util;
 
 namespace RdpAudit.Configurator.Services;
 
@@ -130,7 +131,7 @@ public sealed class DatabaseResetService
 		{
 			return marker.DatabasePath;
 		}
-		return Path.Combine(programDataDirectory, "rdpaudit.db");
+		return Path.Combine(programDataDirectory, RdpAuditPaths.DatabaseFileName);
 	}
 
 	private static string BackupWithSidecars(string dbPath, string suffix, System.Text.StringBuilder log)

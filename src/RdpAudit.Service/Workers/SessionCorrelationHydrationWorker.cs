@@ -78,6 +78,7 @@ public sealed class SessionCorrelationHydrationWorker : BackgroundService
 			.AsNoTracking()
 			.Where(r => r.LastSeenUtc >= cutoff)
 			.OrderByDescending(r => r.LastSeenUtc)
+			.ThenByDescending(r => r.Id)
 			.Take(HydrationRowCap)
 			.Select(r => new SessionCorrelationCache.HydrationRow(
 				r.LogonId,

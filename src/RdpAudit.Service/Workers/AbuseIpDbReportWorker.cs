@@ -176,6 +176,7 @@ public sealed class AbuseIpDbReportWorker : BackgroundService
 				&& !string.IsNullOrEmpty(s.Ip))
 			.OrderByDescending(s => s.ThreatScore)
 			.ThenByDescending(s => s.LastSeenUtc)
+			.ThenBy(s => s.Ip)
 			.Take(MaxCandidatesPerPass)
 			.ToListAsync(ct)
 			.ConfigureAwait(false);

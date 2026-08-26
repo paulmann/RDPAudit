@@ -132,6 +132,7 @@ public sealed class RetentionWorker : BackgroundService
 			totalPruned += await db.RawEvents
 				.Where(item => item.EventId == retention.Key && item.TimeUtc < cutoffUtc)
 				.OrderBy(item => item.TimeUtc)
+				.ThenBy(item => item.Id)
 				.Take(batchSize)
 				.ExecuteDeleteAsync(cancellationToken)
 				.ConfigureAwait(false);
@@ -147,6 +148,7 @@ public sealed class RetentionWorker : BackgroundService
 
 		totalPruned += await globallyRetained
 			.OrderBy(item => item.TimeUtc)
+			.ThenBy(item => item.Id)
 			.Take(batchSize)
 			.ExecuteDeleteAsync(cancellationToken)
 			.ConfigureAwait(false);
@@ -166,18 +168,21 @@ public sealed class RetentionWorker : BackgroundService
 		long pruned = await db.SessionIpCorrelations
 			.Where(item => item.LastSeenUtc < nowUtc.AddDays(-sessionDays))
 			.OrderBy(item => item.LastSeenUtc)
+			.ThenBy(item => item.Id)
 			.Take(batchSize)
 			.ExecuteDeleteAsync(cancellationToken)
 			.ConfigureAwait(false);
 		pruned += await db.RdpConnectionFacts
 			.Where(item => item.LastSeenUtc < nowUtc.AddDays(-connectionDays))
 			.OrderBy(item => item.LastSeenUtc)
+			.ThenBy(item => item.Id)
 			.Take(batchSize)
 			.ExecuteDeleteAsync(cancellationToken)
 			.ConfigureAwait(false);
 		pruned += await db.AttackStats
 			.Where(item => item.LastSeenUtc < nowUtc.AddDays(-attackDays))
 			.OrderBy(item => item.LastSeenUtc)
+			.ThenBy(item => item.Ip)
 			.Take(batchSize)
 			.ExecuteDeleteAsync(cancellationToken)
 			.ConfigureAwait(false);

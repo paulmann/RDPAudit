@@ -89,14 +89,17 @@ public sealed class RawEventDto
 	public byte SourceIpConfidence { get; set; }
 
 	/// <summary>
-	/// Serialized <c>EventLogWatcher</c> bookmark XML captured for this event. Set on the
-	/// captured DTO by <c>EventCollectorWorker.TryCaptureDto</c> so the bookmark can cross the
-	/// same durability boundary as the event insert in <c>EventProcessorWorker.PersistBatchAsync</c>
-	/// (via <c>BookmarkStore.SaveBatchInSameTransactionAsync</c>). Null when bookmark serialisation
-	/// failed or when the source did not produce a bookmark (e.g. synthetic backfill DTOs). Only
-	/// the LAST bookmark per channel in a batch is written; older bookmarks in the same batch are
-	/// intentionally shadowed because Windows event bookmarks are monotonically increasing per
-	/// channel and older values would only rewind the read position.
+	/// Serialized <c>EventLogWatcher</c> bookmark XML captured for this event. Set once, on the
+	/// captured DTO, by the producing event source (bookmarks are transport-specific: the
+	/// EventLog-backed <c>EventLogWatcherEventSource</c> sets it, while ETW sources and synthetic
+	/// backfill DTOs leave it null). When non-null, the source also reports the bookmark through
+	/// its <c>onBookmark</c> callback together with the DTO's <see cref="IngestionSequence"/>,
+	/// which is how the bookmark crosses the same durability boundary as the event insert in
+	/// <c>EventProcessorWorker.PersistBatchAsync</c> (via <c>BookmarkStore.SaveBatchInSame
+	/// TransactionAsync</c>). Only the LAST bookmark per channel in a batch is written; older
+	/// bookmarks in the same batch are intentionally shadowed because Windows event bookmarks
+	/// are monotonically increasing per channel and older values would only rewind the read
+	/// position. Null when bookmark serialisation failed or the source produced no bookmark.
 	/// </summary>
 	public string? BookmarkXml { get; set; }
 }

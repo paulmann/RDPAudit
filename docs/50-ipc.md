@@ -147,6 +147,19 @@ All Stage 1 DTOs live under `RdpAudit.Core.Ipc.Contracts.*` with explicit `[Mess
 
 * Manual: restart service, point Configurator at it, walk every tab, confirm round-trip.
 * Automated: `IpcCommandStabilityTests` (Core.Tests) — fails if any ordinal is reused or renumbered. Add a fakes-based dispatcher test if you change `IpcDispatcher`.
+* Lifecycle coverage: `IpcServerWorkerLifecycleTests` / `IpcServerWorkerInstanceCapTests` (Service.Tests) — must stay green when `IpcServerWorker`, `Program.RegisterServices`, or `TimedHostedService` change.
+
+## IpcServerWorker lifecycle observability (v2.3.5)
+
+Each `IpcServerWorker` instance carries a stable `Guid instanceId` and writes append-only, file-size-capped (512 KiB) lines to `%ProgramData%\RdpAudit\logs\ipc-startup.log`:
+
+- constructor — `instance constructed (pid=…, instanceId=…)`;
+- `ExecuteAsync` start — `ExecuteAsync entered (pid=…, instanceId=…, entry=N)`;
+- `ExecuteAsync` exit — `ExecuteAsync exiting (…, entryCount, exitCount, iteration, activeHandlers, livePipes, stoppingTokenCancelled, hostApplicationStoppingCancelled, exitReason, lifetimeMs)`.
+
+`exitReason` is `HostStop` (host stopping), `ServiceStop` (stopping token cancelled but host still running), `Faulted:<type>` (accept loop fault), or `LoopExited` otherwise.
+
+Interpretation: repeated `entered` lines with the same `instanceId` (entry=2/3) mean one worker instance was started more than once; multiple distinct `instanceId` values mean more than one worker or host instance was created. The same facts are also emitted through `ILogger` as structured log events.
 
 ## Stage 6A — Attack Statistics IPC (this branch)
 

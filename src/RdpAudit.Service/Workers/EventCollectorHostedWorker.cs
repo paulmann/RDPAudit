@@ -1,5 +1,5 @@
 /* Project: RDPAudit 2.0 | Author: Mikhail Deynekin | Site: Deynekin.com | Email: Mikhail@Deynekin.com */
-// Version: 2.0.0
+// Version: 2.0.2
 // File   : EventCollectorHostedWorker.cs
 // Project: RdpAudit.Service (RdpAudit.Service.Workers)
 // Purpose: Thin BackgroundService shim over EventCollectorHost. Owns three orchestration
@@ -19,6 +19,7 @@
 //          on EventCollectorHost.FlushBookmarksAsync being idempotent.
 
 using System.Diagnostics.Eventing.Reader;
+using System.Globalization;
 using System.Runtime.Versioning;
 using System.Text;
 using Microsoft.EntityFrameworkCore;
@@ -193,11 +194,14 @@ public sealed class EventCollectorHostedWorker : BackgroundService
 	/// <summary>
 	/// Builds the XPath query and returns the effective event-id list for <paramref name="channel"/>.
 	/// Kept as a public static so future hosts (ETW replay, EVTX offline) can share the same
-	/// filter logic without depending on this worker's lifecycle.
+	/// filter logic without depending on this worker's lifecycle. When
+	/// <paramref name="firstReadFloorUtc"/> is supplied the query gains a TimeCreated lower
+	/// bound so a bookmark-less arm does not replay unbounded channel history.
 	/// </summary>
 	public static (string Xpath, IReadOnlyList<int> Ids) BuildWatcherQuery(
 		string channel,
-		IReadOnlyCollection<int> globalFilter)
+		IReadOnlyCollection<int> globalFilter,
+		DateTime? firstReadFloorUtc = null)
 	{
 		ArgumentNullException.ThrowIfNull(channel);
 		ArgumentNullException.ThrowIfNull(globalFilter);
@@ -216,11 +220,19 @@ public sealed class EventCollectorHostedWorker : BackgroundService
 				}
 			}
 
-			return (SecurityAuthQuery.BuildXPath(securityIds), securityIds);
+			return firstReadFloorUtc is { } floor
+				? (SecurityAuthQuery.BuildXPath(securityIds, floor), securityIds)
+				: (SecurityAuthQuery.BuildXPath(securityIds), securityIds);
 		}
 
 		if (channelIds.Count == 0)
 		{
+			if (firstReadFloorUtc is { } wildcardFloor)
+			{
+				string isoFloor = wildcardFloor.ToString("yyyy-MM-ddTHH:mm:ss.fffZ", CultureInfo.InvariantCulture);
+				return ("*[System[TimeCreated[@SystemTime >= '" + isoFloor + "']]]", channelIds);
+			}
+
 			return ("*", channelIds);
 		}
 
@@ -238,7 +250,15 @@ public sealed class EventCollectorHostedWorker : BackgroundService
 			xpath.Append(channelIds[i]);
 		}
 
-		xpath.Append(")]]");
+		xpath.Append(')');
+		if (firstReadFloorUtc is { } floorUtc)
+		{
+			xpath.Append(" and TimeCreated[@SystemTime >= '");
+			xpath.Append(floorUtc.ToString("yyyy-MM-ddTHH:mm:ss.fffZ", CultureInfo.InvariantCulture));
+			xpath.Append("']");
+		}
+
+		xpath.Append("]]");
 		return (xpath.ToString(), channelIds);
 	}
 
@@ -404,10 +424,21 @@ public sealed class EventCollectorHostedWorker : BackgroundService
 				_health.ReportUnavailable(channel, probe.Reason);
 				_metrics.SetChannelStatus(channel, BuildSkippedUnavailableStatus(probe.Reason));
 
-				_logger.LogWarning(
-					"Skipping optional channel {Channel}: {Reason}",
-					channel,
-					probe.Reason);
+				if (probe.Reason.StartsWith("Access denied", StringComparison.OrdinalIgnoreCase))
+				{
+					// Channel exists but this account cannot read it - a real audit-coverage gap.
+					_logger.LogWarning(
+						"Optional channel {Channel} exists but is not readable: {Reason}",
+						channel,
+						probe.Reason);
+				}
+				else
+				{
+					_logger.LogInformation(
+						"Skipping optional channel {Channel}: {Reason}",
+						channel,
+						probe.Reason);
+				}
 
 				return;
 			}
@@ -418,7 +449,63 @@ public sealed class EventCollectorHostedWorker : BackgroundService
 				probe.Reason);
 		}
 
-		(string xpath, _) = BuildWatcherQuery(channel, filterSet);
+		// Per-channel startup position diagnostics BEFORE arming/replay: operators can see,
+		// for every enabled channel, whether ingestion resumes from a persisted bookmark or
+		// reads a bounded first-read window. This closes the gap where the only observable
+		// startup signal was the global "Loaded N bookmarks" line followed by silence.
+		string? persistedBookmark = _bookmarks.GetBookmarkXml(channel);
+		DateTime? firstReadFloorUtc = null;
+
+		if (persistedBookmark is null)
+		{
+			int lookbackHours = Math.Max(0, _options.CurrentValue.Monitoring.FirstReadLookbackHours);
+			if (lookbackHours > 0)
+			{
+				firstReadFloorUtc = DateTime.UtcNow - TimeSpan.FromHours(lookbackHours);
+				_logger.LogInformation(
+					"Channel {Channel}: no persisted bookmark - arming with first-read window {LookbackHours}h (FirstReadLookbackHours).",
+					channel,
+					lookbackHours);
+			}
+			else
+			{
+				_logger.LogWarning(
+					"Channel {Channel}: no persisted bookmark and FirstReadLookbackHours=0 - replaying the full matching channel history.",
+					channel);
+			}
+		}
+		else
+		{
+			// D1 resume diagnostic. Restart idempotency is delivered by the persisted event
+			// bookmark: EventLogWatcher resumes strictly after RecordId=N, so already-processed
+			// records are never re-delivered. (Channel, EventRecordId) is deliberately NOT used
+			// as an additional dedup key - EventRecordId is not persisted, is absent on
+			// ETW-transport channels, and can repeat across channel-rotation instances. The
+			// DB-level exactly-once backstop is the unique partial index on the watermark-assigned
+			// RawEvents.IngestionSequence (filter: "IngestionSequence" > 0). This line reports
+			// the resumed position (RecordId extracted from the cached bookmark XML) plus the
+			// bookmark's last-persisted UpdatedUtc, satisfying the acceptance criterion
+			// "resuming from bookmark RecordId=N, UpdatedUtc=...".
+			long resumeRecordId = -1;
+			DateTime resumeUpdatedUtc = DateTime.MinValue;
+			if (_bookmarks.TryGetBookmark(channel, out _, out DateTime cachedUpdatedUtc))
+			{
+				if (!BookmarkRecordIdParser.TryParseRecordId(persistedBookmark, out resumeRecordId))
+				{
+					resumeRecordId = -1;
+				}
+
+				resumeUpdatedUtc = cachedUpdatedUtc;
+			}
+
+			_logger.LogInformation(
+				"Channel {Channel}: resuming from persisted bookmark RecordId={RecordId}, UpdatedUtc={UpdatedUtc}",
+				channel,
+				resumeRecordId,
+				resumeUpdatedUtc);
+		}
+
+		(string xpath, _) = BuildWatcherQuery(channel, filterSet, firstReadFloorUtc);
 
 		try
 		{

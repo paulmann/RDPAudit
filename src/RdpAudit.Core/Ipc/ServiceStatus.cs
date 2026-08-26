@@ -125,4 +125,12 @@ public sealed class ServiceStatus
 	/// channel's retention window — backfill cannot resume from where the service left off and
 	/// recent events have already aged out. Operator should delete the bookmark and restart.</summary>
 	public bool BookmarkStaleOrLogRetentionGap { get; set; }
+
+	/// <summary>Current firewall live-scan backend ("PowerShellJson" / "NetshText"), or null before
+	/// the first scan. Backed by <c>ServiceMetrics.FirewallScanBackend</c>.</summary>
+	public string? FirewallScanBackend { get; set; }
+
+	/// <summary>Cumulative count of PowerShell-to-netsh latch switch-overs since service start.
+	/// Backed by <c>ServiceMetrics.FirewallScanSwitchCount</c>.</summary>
+	public long FirewallScanSwitchCount { get; set; }
 }

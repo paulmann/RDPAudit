@@ -65,6 +65,24 @@ public sealed class AlertOptions
 
 	public List<string> WhitelistUsers { get; set; } = new();
 
+	/// <summary>Enables the PRIVILEGED_LOGIN rule (Event 4672, sensitive privileges granted).</summary>
+	public bool EnablePrivilegedLoginDetection { get; set; } = true;
+
+	/// <summary>Suppression window for PRIVILEGED_LOGIN: identical (user, source ip, logon type)
+	/// triggers inside the window are counted, not alerted, and one summary alert carrying the
+	/// suppressed count is emitted when the window expires. Default 5 minutes.</summary>
+	public int PrivilegedLoginSuppressionWindowMinutes { get; set; } = 5;
+
+	/// <summary>Per-rule alert budget for PRIVILEGED_LOGIN. Once the budget is exhausted within
+	/// a minute, further alerts are dropped and the throttling fact is logged once per minute.
+	/// Default 20.</summary>
+	public int PrivilegedLoginRateLimitPerMinute { get; set; } = 20;
+
+	/// <summary>Maximum age of an event that may still produce an alert. Events older than this
+	/// (backfill / replay / first-start hydration) are persisted as facts but never alerted on.
+	/// Default 5 minutes.</summary>
+	public int AlertEventMaxAgeMinutes { get; set; } = 5;
+
 	public List<string> PrivilegedGroups { get; set; } = new()
 	{
 		"Administrators",

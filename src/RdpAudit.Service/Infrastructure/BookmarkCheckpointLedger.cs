@@ -8,7 +8,7 @@
 //          the bookmark" and "processor persisted the batch".
 // Depends: RawEventDto.IngestionSequence (stamped by RawEventSerializer.Serialize)
 // Extends: When adding a second durability sink (for example the shard writer), advance the
-//          watermark only after ALL sinks report the sequence durable — take the minimum.
+//          watermark only after ALL sinks report the sequence durable - take the minimum.
 
 using System;
 using System.Collections.Generic;
@@ -24,7 +24,7 @@ namespace RdpAudit.Service.Infrastructure;
 /// The collector stamps a bookmark the moment it hands an event to the pipe, but the event is
 /// only durable once <c>EventProcessorWorker</c> commits its batch. Persisting the bookmark
 /// before that commit means a crash in between resumes the watcher <em>past</em> events that
-/// were never written — silent evidence loss, and precisely the class of gap an attacker who
+/// were never written - silent evidence loss, and precisely the class of gap an attacker who
 /// can crash the host would exploit.
 /// </para>
 /// <para>
@@ -115,7 +115,7 @@ public sealed class BookmarkCheckpointLedger
 
 	/// <summary>
 	/// Collects, per channel, the newest bookmark whose covering sequence is at or below
-	/// <paramref name="committedThroughSequence"/>. Does not mutate ledger state — the caller
+	/// <paramref name="committedThroughSequence"/>. Does not mutate ledger state - the caller
 	/// must call <see cref="Prune"/> only after its transaction actually commits.
 	/// </summary>
 	/// <param name="committedThroughSequence">Highest sequence the caller's transaction covers.</param>
@@ -195,7 +195,22 @@ public sealed class BookmarkCheckpointLedger
 	}
 
 	/// <summary>
-	/// Returns the bookmarks that are safe to persist outside a unified commit — used by the
+	/// Removes every pending checkpoint for <paramref name="channel"/> without touching the
+	/// committed watermark. Used by bookmark-reset paths so a stale pre-reset position cannot be
+	/// re-persisted by the next unified commit. Idempotent when the channel is unknown.
+	/// </summary>
+	public void ForgetChannel(string channel)
+	{
+		ArgumentException.ThrowIfNullOrWhiteSpace(channel);
+
+		lock (_gate)
+		{
+			_pending.Remove(channel);
+		}
+	}
+
+	/// <summary>
+	/// Returns the bookmarks that are safe to persist outside a unified commit - used by the
 	/// collector's fallback flush path on shutdown and for idle channels. Equivalent to
 	/// <see cref="CollectCommittable"/> against the current watermark.
 	/// </summary>

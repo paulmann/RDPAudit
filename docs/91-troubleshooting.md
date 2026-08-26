@@ -147,6 +147,102 @@ parent (`...\RdpAudit\Service\` and `...\RdpAudit\Configurator\`) or use the Con
 "Browse..." control to point at an explicit Service location. The published layout from
 `publish.ps1` is the canonical reference.
 
+## 11. Service exits immediately with code 0x1000 (already running)
+
+**Symptom.** `RdpAudit.Service.exe` starts and exits immediately. In `--console` mode
+stderr shows the refusal line ending with `ExitCode=0x1000`; in service mode the SCM
+shows an abrupt stop and the service log contains the structured single-instance refusal
+event (`ExpectedState=Running`, `ActualState=AlreadyRunning`, `MutexName=Global\RdpAuditService`).
+
+**Cause.** Another RdpAuditService process already owns the kernel mutex
+`Global\RdpAuditService`. `Program.Main` acquires this mutex through
+`SingleInstanceGuard` before building the host, so a second instance (for example a
+manual `publish\Service\RdpAudit.Service.exe --console` while the Windows service is
+running) is refused with the project exit code `0x1000`.
+
+**Fix.** Stop the running instance first:
+
+```powershell
+Get-Process RdpAudit.Service -ErrorAction SilentlyContinue | Stop-Process
+# or, for the installed service:
+Stop-Service RdpAudit
+```
+
+Then start the desired instance (service or console). `0x1000` is intentional, not a
+crash: it is outside the `0..255` process-error range and distinct from Win32 code `2`
+and the host-fault exit code `1`. If the code still appears with no other process
+visible, a stale abandoned mutex from a crashed process is normally recovered as
+`RecoveredAbandoned`; when recovery is not possible, restart the session or reboot to
+release the kernel object.
+
+## 12. Shard batches dropped with EventID 7013
+
+**Symptom.** The Windows Event Log records `EventID 7013` (the generic .NET
+host-lifecycle fault) shortly after events are ingested, and the per-IP
+forensic shard files under the actions root stop receiving records while
+`RawEvents` keeps growing. In older builds the exception text read
+"BeginTransaction requires an open connection" or named a closed SQLite
+connection.
+
+**Cause.** The shard flush ran on the same `SqliteConnection` that EF Core
+owned for the main `RawEvents` transaction. EF Core closes that connection
+together with the disposed transaction, so any shard `BeginTransaction` after
+the main commit threw and silently dropped the shard batch. In v2.3.4 the
+shard phase was further hardened: it now runs OUTSIDE the main commit's
+try/catch, so a shard failure could no longer roll back already-committed
+`RawEvents` or discard the pending queue.
+
+**Fix.** Confirm the installed service binary is v2.3.4 or newer
+(Service tab -> Runtime version). In v2.3.4+:
+
+* Shard rows are written on a dedicated live `SqliteConnection` with the same
+  WAL/NORMAL pragmas and bounded `SQLITE_BUSY` / `SQLITE_LOCKED` retries.
+* `ShardIngestionSink.CommitAsync()` is a true durability boundary: the
+  pending queue is cleared and the writer pool trimmed only after the whole
+  batch succeeds. A failure inside the batch retains the queue, and the next
+  successful flush recovers it.
+* Cancellation during the shard phase keeps both the committed `RawEvents`
+  and the pending shard queue.
+
+If shard files still do not grow on >= v2.3.4, check
+`ServiceMetrics.ShardWriteFailures` in the Diagnostics tab: a saturated shard
+file budget shows the `Shard file budget reached` warning, while repeated
+`SQLITE_BUSY` retries followed by a Warning in the service log point at
+long-running writers on the audit database.
+
+---
+
+## 13. Repeated `IpcServerWorker` ExecuteAsync entries in one PID
+
+**Symptom.** `%ProgramData%\RdpAudit\logs\ipc-startup.log` shows more than one
+`ExecuteAsync entered` line for the same PID (`entry=2` / `entry=3`), or several
+`instance constructed` lines with different `instanceId` values.
+
+**Cause.** Either one worker instance was started more than once, or more than one
+worker / host instance was created in the same process.
+
+**Diagnosis.** In v2.3.5+ each `IpcServerWorker` carries a stable `Guid instanceId`
+and writes `instance constructed` / `ExecuteAsync entered` / `ExecuteAsync exiting`
+to `ipc-startup.log`. Read the log alongside the process list:
+
+```powershell
+Get-CimInstance Win32_Process -Filter "Name='RdpAudit.Service.exe'" | Select ProcessId, CommandLine
+Get-Content "$env:ProgramData\RdpAudit\logs\ipc-startup.log" -Tail 30
+```
+
+- Repeated `entered` lines with the same `instanceId` (entry=2/3) mean one worker
+  instance was started more than once.
+- Multiple distinct `instanceId` values mean more than one worker or host instance
+  was created.
+
+**Fix.** If the symptom persists, the installed binary may not match the current
+source: compare the SHA-256 of the deployed `RdpAudit.Service.exe` against the
+published build and confirm the running `CommandLine` points inside
+`%ProgramFiles%\RdpAudit\Service`. Restart the service
+(`Restart-Service RdpAudit`) and verify the log shows one `instance constructed`,
+one `entered ... entry=1`, and one `exiting ... exitReason=HostStop,
+hostApplicationStoppingCancelled=True`.
+
 ---
 
 If a problem doesn't appear here, open a GitHub issue with:

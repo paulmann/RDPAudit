@@ -7,6 +7,7 @@
 // Extends: Add cardinality-protection settings when subnet aggregation is implemented.
 
 using RdpAudit.Core.Storage.Sharding;
+using RdpAudit.Core.Util;
 
 namespace RdpAudit.Core.Config;
 
@@ -40,9 +41,6 @@ public sealed class ShardingOptions
 			return ActionsRoot;
 		}
 
-		return Path.Combine(
-			Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
-			"RdpAudit",
-			ShardPath.ActionsRootFolder);
+		return RdpAuditPaths.Default.ActionsRootDirectory;
 	}
 }
