@@ -72,6 +72,19 @@ public sealed class FirewallOptions
 	/// </remarks>
 	public int AutoBlockDebounceSeconds { get; set; } = 60;
 
+	/// <summary>Hard timeout in seconds for the locale-independent PowerShell live firewall scan
+	/// (<c>Get-NetFirewallRule … | ConvertTo-Json</c>). After the first timeout or failure the scanner
+	/// latches onto the netsh text fallback and re-probes PowerShell at most once per
+	/// <see cref="PowerShellRetryProbeIntervalMinutes"/>. Defaults to 30 seconds; values below 1 are
+	/// treated as the default.</summary>
+	public int PowerShellScanTimeoutSeconds { get; set; } = 30;
+
+	/// <summary>Minimum interval between PowerShell re-probe attempts while the live firewall scanner is
+	/// latched onto the netsh text fallback. Defaults to 15 minutes; values below 1 are treated as the
+	/// default. This is the anti-flood guard: while latched, every per-tick scan is served by netsh and
+	/// PowerShell is spawned at most once per this window.</summary>
+	public int PowerShellRetryProbeIntervalMinutes { get; set; } = 15;
+
 	/// <summary>Scope of the inbound block rule: RDP listener port only, or all inbound traffic.</summary>
 	/// <remarks>
 	/// Defaults to <see cref="FirewallBlockScope.AllInbound"/>: a host actively under brute-force

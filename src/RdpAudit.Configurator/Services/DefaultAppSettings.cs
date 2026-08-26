@@ -49,7 +49,8 @@ internal static class DefaultAppSettings
 				"FloodGuardSoftThreshold": 1000,
 				"FloodGuardHardThreshold": 10000,
 				"FloodGuardSampleEveryN": 32,
-				"FloodGuardBucketCount": 4096
+				"FloodGuardBucketCount": 4096,
+				"FirstReadLookbackHours": 24
 			},
 			"Alerts": {
 				"EnableBruteForceDetection": true,
@@ -64,12 +65,22 @@ internal static class DefaultAppSettings
 				"BusinessHoursEnd": "20:00:00",
 				"KerberosExpectedEncryptionType": "0x12",
 				"WhitelistIps": [],
-				"WhitelistUsers": []
+				"WhitelistUsers": [],
+				"EnablePrivilegedLoginDetection": true,
+				"PrivilegedLoginSuppressionWindowMinutes": 5,
+				"PrivilegedLoginRateLimitPerMinute": 20,
+				"AlertEventMaxAgeMinutes": 5
 			},
 			"Firewall": {
 				"AutoBlockBruteForce": false,
 				"AutoBlockThreshold": 50,
-				"BlockRuleName": "RdpAudit-Block"
+				"BlockRuleName": "RdpAudit-Block",
+			"DefaultBlockDurationMinutes": 4320,
+			"MaxActiveBlocks": 10000,
+			"RefusePrivateAddressBlock": true,
+			"AutoBlockDebounceSeconds": 60,
+			"PowerShellScanTimeoutSeconds": 30,
+			"PowerShellRetryProbeIntervalMinutes": 15
 			},
 			"Storage": {
 				"DatabasePath": "__RDPAUDIT_DB_PATH__",

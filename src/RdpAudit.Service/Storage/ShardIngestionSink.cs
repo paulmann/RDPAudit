@@ -1,8 +1,15 @@
 /* Project: RDPAudit 2.0 | Author: Mikhail Deynekin | Site: Deynekin.com | Email: Mikhail@Deynekin.com */
-// Version: 2.0.1
+// Version: 2.1.0
 // File   : ShardIngestionSink.cs
 // Project: RdpAudit.Service (RdpAudit.Service.Storage)
 // Purpose: Writes committed event evidence into bounded per-IP forensic shard files.
+//          v2.1.0: CommitAsync() is now a true durability boundary for the shard batch.
+//          _touched is cleared and TrimOpenWriters() runs ONLY after the whole batch
+//          commits; IOException / UnauthorizedAccessException / SqliteException /
+//          OperationCanceledException are propagated to the caller so
+//          CommitShardsAfterDatabaseCommitAsync can classify SQLITE_BUSY/LOCKED and
+//          bounded-retry the real shard writes. A failed per-record commit no longer
+//          calls CloseAndRemove(), so the pending queue is retained for the next flush.
 // Depends: RdpAuditOptions, ShardWriter, RawEvent, ServiceMetrics, SqliteConnection
 // Extends: Add subnet aggregation only with a cardinality policy that preserves the truthful metadata contract.
 
@@ -17,6 +24,18 @@ using RdpAudit.Core.Models;
 using RdpAudit.Core.Storage.Sharding;
 
 namespace RdpAudit.Service.Storage;
+
+/// <summary>
+/// Minimal writer seam used by tests and by <see cref="ShardFileWriterAdapter"/>.
+/// Kept internal so the public <see cref="ShardIngestionSink"/> contract is unchanged.
+/// </summary>
+internal interface IShardFileWriter : IDisposable
+{
+	uint Count { get; }
+	ulong TotalEvicted { get; }
+	void Append(in ShardRecord record, out bool evictedOne);
+	void Commit();
+}
 
 /// <summary>Best-effort, single-consumer sink for per-IP forensic shards.</summary>
 public sealed class ShardIngestionSink : IDisposable
@@ -37,6 +56,7 @@ WHERE IpBinary16 = $ip;
 	private readonly IOptionsMonitor<RdpAuditOptions> _options;
 	private readonly ILogger<ShardIngestionSink> _logger;
 	private readonly ServiceMetrics _metrics;
+	private readonly Func<string, int, IShardFileWriter> _writerFactory;
 	private readonly Dictionary<string, Entry> _writers = new(StringComparer.OrdinalIgnoreCase);
 	private readonly List<Entry> _touched = [];
 	private long _tick;
@@ -46,10 +66,21 @@ WHERE IpBinary16 = $ip;
 
 	// ── Construction ─────────────────────────────────────────────────────────────
 
+	/// <summary>Production constructor. Creates real <see cref="ShardWriter"/> instances.</summary>
 	public ShardIngestionSink(
 		IOptionsMonitor<RdpAuditOptions> options,
 		ILogger<ShardIngestionSink> logger,
 		ServiceMetrics metrics)
+		: this(options, logger, metrics, null)
+	{
+	}
+
+	/// <summary>Internal test seam. <paramref name="writerFactory"/> replaces writer creation.</summary>
+	internal ShardIngestionSink(
+		IOptionsMonitor<RdpAuditOptions> options,
+		ILogger<ShardIngestionSink> logger,
+		ServiceMetrics metrics,
+		Func<string, int, IShardFileWriter>? writerFactory)
 	{
 		ArgumentNullException.ThrowIfNull(options);
 		ArgumentNullException.ThrowIfNull(logger);
@@ -57,6 +88,7 @@ WHERE IpBinary16 = $ip;
 		_options = options;
 		_logger = logger;
 		_metrics = metrics;
+		_writerFactory = writerFactory ?? CreateProductionWriter;
 	}
 
 	// ── Public API ───────────────────────────────────────────────────────────────
@@ -137,7 +169,9 @@ WHERE IpBinary16 = $ip;
 		}
 	}
 
-	/// <summary>Commits touched shard headers and updates truthful metadata in the supplied transaction.</summary>
+	/// <summary>Commits touched shard headers and updates truthful metadata in the supplied
+	/// transaction. On any per-record failure the exception is rethrown and the touched queue
+	/// is left intact; only a fully successful batch clears it.</summary>
 	public async Task CommitAsync(SqliteConnection connection, SqliteTransaction transaction, CancellationToken ct)
 	{
 		if (_touched.Count == 0)
@@ -145,48 +179,35 @@ WHERE IpBinary16 = $ip;
 			return;
 		}
 
-		try
+		await using SqliteCommand command = CreateUpdateCommand(connection, transaction);
+		await command.PrepareAsync(ct).ConfigureAwait(false);
+		for (int index = 0; index < _touched.Count; index++)
 		{
-			await using SqliteCommand command = CreateUpdateCommand(connection, transaction);
-			await command.PrepareAsync(ct).ConfigureAwait(false);
-			for (int index = 0; index < _touched.Count; index++)
-			{
-				ct.ThrowIfCancellationRequested();
-				Entry entry = _touched[index];
-				try
-				{
-					entry.Writer.Commit();
-					FileInfo file = new(entry.AbsolutePath);
-					if (!file.Exists)
-					{
-						throw new IOException("Shard file disappeared before metadata update.");
-					}
+			ct.ThrowIfCancellationRequested();
+			Entry entry = _touched[index];
 
-					BindUpdate(command, entry, file.Length);
-					await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
-				}
-				catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or SqliteException)
-				{
-					_logger.LogWarning(ex, "Failed to commit forensic shard {ShardPath}", entry.RelativePath);
-					_metrics.IncrementShardWriteFailures();
-					CloseAndRemove(entry);
-				}
-			}
-		}
-		catch (Exception ex) when (ex is OperationCanceledException or SqliteException or IOException or UnauthorizedAccessException)
-		{
-			_logger.LogWarning(ex, "Failed to commit forensic shard batch");
-			_metrics.IncrementShardWriteFailures();
-		}
-		finally
-		{
-			for (int index = 0; index < _touched.Count; index++)
+			// A failure here aborts the whole batch: do NOT close/remove the writer, because
+			// the pending queue must survive for the next flush. Rethrow so the caller can
+			// classify SQLITE_BUSY/LOCKED and retry the same queue.
+			entry.Writer.Commit();
+			FileInfo file = new(entry.AbsolutePath);
+			if (!file.Exists)
 			{
-				_touched[index].Touched = false;
+				throw new IOException("Shard file disappeared before metadata update.");
 			}
-			_touched.Clear();
-			TrimOpenWriters();
+
+			BindUpdate(command, entry, file.Length);
+			await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
 		}
+
+		// The queue must not be cleared before this point. Only a fully successful batch
+		// flushes the touched flag, clears the queue and trims the writer pool.
+		for (int index = 0; index < _touched.Count; index++)
+		{
+			_touched[index].Touched = false;
+		}
+		_touched.Clear();
+		TrimOpenWriters();
 	}
 
 	/// <summary>Discards uncommitted writer state after the source database transaction rolls back.</summary>
@@ -240,7 +261,7 @@ WHERE IpBinary16 = $ip;
 		}
 
 		Directory.CreateDirectory(directory);
-		ShardWriter writer = ShardWriter.OpenOrCreate(absolutePath, Math.Max(1, options.ShardCapacityRecords));
+		IShardFileWriter writer = _writerFactory(absolutePath, Math.Max(1, options.ShardCapacityRecords));
 		Entry created = new(absolutePath, relativePath, ipBinary16, writer)
 		{
 			LastUsedTick = ++_tick,
@@ -250,6 +271,9 @@ WHERE IpBinary16 = $ip;
 		_metrics.SetShardsOpen(_writers.Count);
 		return created;
 	}
+
+	private static ShardFileWriterAdapter CreateProductionWriter(string absolutePath, int capacity)
+		=> new(ShardWriter.OpenOrCreate(absolutePath, capacity));
 
 	private bool TryReserveShardFile(string actionsRoot, int maximum)
 	{
@@ -442,15 +466,25 @@ WHERE IpBinary16 = $ip;
 		}
 	}
 
-	private sealed class Entry(string absolutePath, string relativePath, byte[] ipBinary16, ShardWriter writer)
+	private sealed class Entry(string absolutePath, string relativePath, byte[] ipBinary16, IShardFileWriter writer)
 	{
 		public string AbsolutePath { get; } = absolutePath;
 		public string RelativePath { get; } = relativePath;
 		public byte[] IpBinary16 { get; } = ipBinary16;
-		public ShardWriter Writer { get; } = writer;
+		public IShardFileWriter Writer { get; } = writer;
 		public long LastUsedTick { get; set; }
 		public long? OldestRetainedUtc { get; set; }
 		public bool CanReportOldest { get; init; }
 		public bool Touched { get; set; }
+	}
+
+	private sealed class ShardFileWriterAdapter(ShardWriter inner) : IShardFileWriter
+	{
+		public uint Count => inner.Count;
+		public ulong TotalEvicted => inner.TotalEvicted;
+
+		public void Append(in ShardRecord record, out bool evictedOne) => inner.Append(in record, out evictedOne);
+		public void Commit() => inner.Commit();
+		public void Dispose() => inner.Dispose();
 	}
 }

@@ -85,7 +85,7 @@ public sealed class SettingsPage : TabPage
 			Location = new Point(8, 30),
 		};
 		// When DEBUG mode is on, the service mirrors every log line into a single persistent file
-		// (RDPAudit_DEBUG_Log.txt) regardless of the day-rolling JSON log — this link opens it (or, if
+		// (logs\RDPAudit_DEBUG_Log.txt, UTC with a trailing Z) regardless of the day-rolling JSON log — this link opens it (or, if
 		// the service has not written it yet, opens the containing %ProgramData%\RdpAudit\logs directory).
 		_debugLogLink = new LinkLabel
 		{
@@ -671,11 +671,7 @@ public sealed class SettingsPage : TabPage
 
 	/// <summary>Resolves the persistent DEBUG log path the service writes to when
 	/// Diagnostics.DebugMode is enabled (see RdpAudit.Service Program.ConfigureSerilog).</summary>
-	private static string GetDebugLogFilePath()
-	{
-		string programData = Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData);
-		return Path.Combine(programData, "RdpAudit", "RDPAudit_DEBUG_Log.txt");
-	}
+	private static string GetDebugLogFilePath() => RdpAuditPaths.Default.DebugLogPath;
 
 	/// <summary>Opens the DEBUG log file in the default text viewer; falls back to opening the
 	/// containing folder when the file has not been created yet (DEBUG mode never enabled, or the
@@ -713,11 +709,7 @@ public sealed class SettingsPage : TabPage
 	/// <summary>Resolves the IPC accept-loop startup/fatal breadcrumb path IpcServerWorker always
 	/// writes to (regardless of DEBUG mode) — moved under the "logs" subfolder alongside the
 	/// structured Serilog output so every service log artifact lives in one place.</summary>
-	private static string GetIpcStartupLogFilePath()
-	{
-		string programData = Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData);
-		return Path.Combine(programData, "RdpAudit", "logs", "ipc-startup.log");
-	}
+	private static string GetIpcStartupLogFilePath() => RdpAuditPaths.Default.IpcStartupLogPath;
 
 	/// <summary>Opens the IPC startup/fatal log; falls back to opening the "logs" folder when the
 	/// file has not been created yet. Never throws to the UI thread.</summary>

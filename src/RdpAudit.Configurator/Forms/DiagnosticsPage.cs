@@ -363,7 +363,7 @@ public sealed class DiagnosticsPage : TabPage
 			string failed = marker.PendingMigrations.Count > 0 ? marker.PendingMigrations[0] : "(unknown)";
 			string exception = (marker.ExceptionType ?? "Exception") + " — " + (marker.ExceptionMessage ?? "(no message)");
 			string dbPath = string.IsNullOrWhiteSpace(marker.DatabasePath)
-				? Path.Combine(programData, "rdpaudit.db")
+				? RdpAuditPaths.Default.DatabasePath
 				: marker.DatabasePath;
 
 			string message =
@@ -436,11 +436,7 @@ public sealed class DiagnosticsPage : TabPage
 		}
 	}
 
-	private static string ResolveProgramDataDirectory()
-	{
-		string root = Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData);
-		return Path.Combine(root, "RdpAudit");
-	}
+	private static string ResolveProgramDataDirectory() => RdpAuditPaths.Default.ProgramDataDirectory;
 }
 
 /// <summary>Pure formatter that turns a <see cref="DiagnosticsSnapshotDto"/> into a flat,

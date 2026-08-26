@@ -14,6 +14,7 @@
 using System.Runtime.Versioning;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using RdpAudit.Core.Util;
 
 namespace RdpAudit.Core.Data;
 
@@ -60,8 +61,9 @@ public sealed record MigrationFailureMarkerPayload
 /// <summary>Reads and writes the migration failure marker file under ProgramData\RdpAudit.</summary>
 public static class DatabaseMigrationFailureMarker
 {
-	/// <summary>Marker file name kept next to appsettings.json.</summary>
-	public const string FileName = "migration-failure.marker.json";
+	/// <summary>Marker file name kept next to appsettings.json. Mirrors
+	/// <see cref="RdpAuditPaths.MigrationFailureMarkerFileName"/> (single source of truth, D2).</summary>
+	public const string FileName = RdpAuditPaths.MigrationFailureMarkerFileName;
 
 	private static readonly JsonSerializerOptions SerializerOptions = new()
 	{

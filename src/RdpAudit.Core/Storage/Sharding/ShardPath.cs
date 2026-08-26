@@ -13,6 +13,7 @@ using System.Buffers.Binary;
 using System.Net;
 using System.Net.Sockets;
 using System.Runtime.CompilerServices;
+using RdpAudit.Core.Util;
 
 namespace RdpAudit.Core.Storage.Sharding;
 
@@ -21,8 +22,9 @@ public static class ShardPath
 {
 	// ── Public API ───────────────────────────────────────────────────────────────
 
-	/// <summary>Root directory name under <c>%ProgramData%\RdpAudit\</c>.</summary>
-	public const string ActionsRootFolder = "actions";
+	/// <summary>Root directory name under <c>%ProgramData%\RdpAudit\</c>. Mirrors
+	/// <see cref="RdpAuditPaths.ActionsRootFolderName"/> (single source of truth, D2).</summary>
+	public const string ActionsRootFolder = RdpAuditPaths.ActionsRootFolderName;
 
 	/// <summary>Shard file extension.</summary>
 	public const string ShardExtension = ".rdpshard";

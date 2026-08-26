@@ -15,9 +15,9 @@ public sealed class DesignTimeAuditDbContextFactory : IDesignTimeDbContextFactor
 {
 	public AuditDbContext CreateDbContext(string[] args)
 	{
-		DbContextOptions<AuditDbContext> options = new DbContextOptionsBuilder<AuditDbContext>()
-			.UseSqlite("Data Source=:memory:")
-			.Options;
-		return new AuditDbContext(options);
+		DbContextOptionsBuilder<AuditDbContext> builder = new DbContextOptionsBuilder<AuditDbContext>()
+			.UseSqlite("Data Source=:memory:");
+		AuditDbContextOptions.ApplyWarningPolicy(builder);
+		return new AuditDbContext(builder.Options);
 	}
 }

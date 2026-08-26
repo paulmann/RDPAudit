@@ -1,5 +1,5 @@
 /* Project: RDPAudit 2.0 | Author: Mikhail Deynekin | Site: Deynekin.com | Email: Mikhail@Deynekin.com */
-// Version: 2.3.2
+// Version: 2.3.5
 // File   : EventProcessorWorker.cs
 // Project: RdpAudit.Service (RdpAudit.Service.Workers)
 // Purpose: Drains the lock-free ring buffer in batches, normalises payloads, and persists to
@@ -12,19 +12,19 @@
 //          in EventProcessorWorkerRingBufferTests.InvokeDrainBatchAsync hard-casts the result to
 //          Task<List<RawEventDto>>. Reverted to Task<T>; kept non-async via Task.FromResult
 //          since the synchronous fast-path (Channel.TryRead) never awaits. Constructor
-//          guard clauses relaxed to channel/metrics/logger/options only — the same test suite
+//          guard clauses relaxed to channel/metrics/logger/options only - the same test suite
 //          constructs the worker with `null!` for factory/normalizer/correlationUpserter/
 //          connectionFactUpserter/authAttemptFactUpserter/securityWatchdog/opLog while
 //          exercising only DrainBatchAsync, which never dereferences those fields.
 //          v2.1.5: DrainBatchAsync_EmptyBuffer_ReturnsEmptyListAfterTimeout asserts
-//          Assert.Empty(result) — an empty List<RawEventDto>, not null. Contract corrected:
+//          Assert.Empty(result) - an empty List<RawEventDto>, not null. Contract corrected:
 //          DrainBatchAsync now ALWAYS returns a non-null List<RawEventDto> (Task<List<...>>,
 //          never Task<List<...>?>), returning the shared EmptyBatch instance on timeout/
-//          cancellation instead of null — this also avoids allocating a fresh empty List on
+//          cancellation instead of null - this also avoids allocating a fresh empty List on
 //          every idle drain tick. EmptyBatch is declared exactly once, in Fields & DI.
 //          v2.2.0: ROOT-CAUSE FIX for empty RDP Activity with healthy Live Events. ExecuteAsync
 //          now yields immediately (await Task.Yield()) so BackgroundService.StartAsync returns
-//          control to the Generic Host synchronously — previously the synchronous DrainBatchAsync
+//          control to the Generic Host synchronously - previously the synchronous DrainBatchAsync
 //          fast-path plus a tight `continue` idle loop could delay the StartAsync return long
 //          enough that AttackStatsRefreshWorker (registered later) never received StartAsync,
 //          leaving AttackStats permanently empty. The idle drain path is now cooperatively
@@ -37,11 +37,32 @@
 //          with the iter16 producer path (SecurityBackfillWorker / EventCollectorHostedWorker
 //          via IEventPipe.TryWrite). DrainBatchAsync’s idle path replaced the shrinking-budget
 //          Channel.WaitToReadAsync call with IEventPipe.WaitToReadAsync, which is backed by the
-//          semaphore installed in RingBufferEventPipe v2.1.0 — the producer’s Release() on every
+//          semaphore installed in RingBufferEventPipe v2.1.0 - the producer’s Release() on every
 //          TryWrite wakes an idle consumer within microseconds instead of after the timeout
 //          budget. Fast-path (IEventPipe.TryRead) still runs at the top of every iteration; the
 //          reflection-tested Task<List<RawEventDto>> return contract and EmptyBatch idle
 //          singleton are unchanged.
+//          v2.3.3: forensic shard commit moved off the EF-owned SqliteConnection. EF Core
+//          closes the connection it implicitly opened once BeginTransaction/Commit dispose the
+//          transaction, so calling BeginTransaction on that same connection after CommitAsync
+//          threw InvalidOperationException (EventID 7013) and silently dropped every shard batch.
+//          Shard writes now use a dedicated SqliteConnection with the same WAL/NORMAL pragmas,
+//          bounded SQLITE_BUSY/SQLITE_LOCKED retries, and the pending queue is deliberately
+//          retained on failure so the next successful flush recovers it.
+//          v2.3.4: PersistBatchAsync now enforces two independent durability boundaries.
+//          The pre-commit block (normalize -> facts -> bookmark write -> tx.CommitAsync) is the
+//          only path that rolls back and discards pending shard records when it fails. The
+//          post-commit shard flush runs OUTSIDE that try/catch, so a shard-phase failure can
+//          never call RollbackAsync on the already-committed RawEvents transaction nor
+//          DiscardPending on the retained shard queue; it is only logged and counted.
+//          v2.3.5 (D1): unified bookmark cache ordering brought in line with the documented
+//          contract - UpdateCache BEFORE BeginTransaction, RollbackCache AFTER Rollback,
+//          MarkCommitted AFTER Commit. Previously the cache update happened inside the
+//          transaction (after BeginTransaction) and was never rolled back when CommitAsync
+//          threw, letting readers observe a bookmark position that was never made durable.
+//          The ledger watermark also advances on EVERY committed batch now, not only when a
+//          bookmark row was written, so batches without a bookmark advance can no longer grow
+//          pending checkpoints without bound or let the fallback flush publish stale positions.
 // Depends: IEventPipe, IDbContextFactory<AuditDbContext>, EventNormalizer,
 //          SessionIpCorrelationUpserter, RdpConnectionFactUpserter, AuthAttemptFactUpserter,
 //          SecurityCorrelationWatchdog, ServiceMetrics, IOptionsMonitor<RdpAuditOptions>
@@ -91,7 +112,7 @@ public sealed class EventProcessorWorker : BackgroundService
 	/// <summary>
 	/// Shared immutable empty-batch instance returned by <see cref="DrainBatchAsync"/> on
 	/// timeout/cancellation. Avoids allocating a fresh empty <see cref="List{T}"/> on every idle
-	/// drain tick. Safe to share because callers only ever read <c>Count</c> on this path — the
+	/// drain tick. Safe to share because callers only ever read <c>Count</c> on this path - the
 	/// list is never mutated downstream.
 	/// </summary>
 	private static readonly List<RawEventDto> EmptyBatch = new(capacity: 0);
@@ -167,81 +188,23 @@ public sealed class EventProcessorWorker : BackgroundService
 		_shardSink = shardSink;
 
 		// Unified commit needs both halves. Supplying only one is a composition mistake that would
-		// silently degrade to the legacy split-commit behaviour, so surface it loudly at startup.
+		// silently degrade to the legacy split-commit behaviour, so surface it loudly at startup
+		// with a Critical log line AND a hard throw so DI activation fails immediately.
 		if ((bookmarks is null) != (checkpoints is null))
 		{
+			_logger.LogCritical(
+				"EventProcessorWorker composition error: BookmarkStore and BookmarkCheckpointLedger " +
+				"must be supplied together ({BookmarksProvided}/{CheckpointsProvided}). Unified " +
+				"bookmark commit is unavailable and the service will not start until the registration " +
+				"is fixed.",
+				bookmarks is not null,
+				checkpoints is not null);
+
 			throw new ArgumentException(
 				"BookmarkStore and BookmarkCheckpointLedger must be supplied together to enable " +
 				"unified bookmark commit, or both omitted to keep the legacy split commit.",
 				nameof(bookmarks));
 		}
-	}
-
-	// ── Unified Commit ───────────────────────────────────────────────────────────
-
-	/// <summary>
-	/// Writes every bookmark made durable by the current transaction through
-	/// <paramref name="tx"/>, so the bookmark advance and the events it covers share one commit.
-	/// </summary>
-	/// <param name="db">Context whose connection and transaction are borrowed.</param>
-	/// <param name="tx">The in-flight EF transaction. Not committed or disposed here.</param>
-	/// <param name="committedThroughSequence">Highest ingestion sequence in this batch.</param>
-	/// <param name="ct">Cancellation token.</param>
-	/// <returns>Bookmarks written, so the caller can prune the ledger after a successful commit.</returns>
-	private async Task<int> WriteBookmarksInTransactionAsync(
-		AuditDbContext db,
-		IDbContextTransaction tx,
-		long committedThroughSequence,
-		CancellationToken ct)
-	{
-		if (_bookmarks is null || _checkpoints is null || committedThroughSequence <= 0)
-		{
-			return 0;
-		}
-
-		Dictionary<string, string> committable = new(StringComparer.OrdinalIgnoreCase);
-		if (_checkpoints.CollectCommittable(committedThroughSequence, committable) == 0)
-		{
-			return 0;
-		}
-
-		// Borrow EF's own connection and transaction rather than opening a second one: a separate
-		// connection would deadlock against the writer lock this transaction already holds under
-		// SQLite WAL, and would defeat the atomicity the unified commit exists to provide.
-		if (db.Database.GetDbConnection() is not SqliteConnection conn ||
-			tx.GetDbTransaction() is not SqliteTransaction sqliteTx)
-		{
-			_logger.LogWarning(
-				"Unified bookmark commit skipped: provider is not SQLite for {ChannelCount} channels",
-				committable.Count);
-			return 0;
-		}
-
-		// Update the in-memory cache BEFORE the commit and roll it back on failure, matching the
-		// ordering contract documented on BookmarkStore.SaveInSameTransactionAsync.
-		Dictionary<string, string?> previous = new(StringComparer.OrdinalIgnoreCase);
-		foreach (KeyValuePair<string, string> entry in committable)
-		{
-			previous[entry.Key] = _bookmarks.UpdateCache(entry.Key, entry.Value);
-		}
-
-		try
-		{
-			await _bookmarks
-				.SaveBatchInSameTransactionAsync(conn, sqliteTx, committable, ct)
-				.ConfigureAwait(false);
-		}
-		catch
-		{
-			foreach (KeyValuePair<string, string?> entry in previous)
-			{
-				_bookmarks.RollbackCache(entry.Key, entry.Value);
-			}
-
-			throw;
-		}
-
-		return committable.Count;
 	}
 
 	private bool DebugEnabled => _options.CurrentValue.Diagnostics.DebugMode;
@@ -287,7 +250,7 @@ public sealed class EventProcessorWorker : BackgroundService
 						if (_consecutiveFailures >= MaxConsecutiveFailures)
 						{
 							_logger.LogCritical(
-								"DB persistence has failed {ConsecutiveFailures} batches in a row — pausing 30s before retry",
+								"DB persistence has failed {ConsecutiveFailures} batches in a row - pausing 30s before retry",
 								_consecutiveFailures);
 
 							await _opLog.ErrorAsync(
@@ -309,9 +272,9 @@ public sealed class EventProcessorWorker : BackgroundService
 				catch (Exception ex)
 				{
 					// A worker must never take the whole service down. Record as Critical and
-					// continue after a short backoff — an unexpected fault in one iteration
+					// continue after a short backoff - an unexpected fault in one iteration
 					// cannot kill the host.
-					_logger.LogCritical(ex, "{Worker} loop iteration faulted — continuing", nameof(EventProcessorWorker));
+					_logger.LogCritical(ex, "{Worker} loop iteration faulted - continuing", nameof(EventProcessorWorker));
 
 					await _opLog.ErrorAsync(
 						"EventProcessor",
@@ -345,16 +308,16 @@ public sealed class EventProcessorWorker : BackgroundService
 
 	/// <summary>
 	/// Drains the lock-free ring buffer up to <c>Monitoring.BatchSize</c> items or until the
-	/// batch timeout elapses. Always returns a non-null <see cref="List{T}"/> — an empty one
+	/// batch timeout elapses. Always returns a non-null <see cref="List{T}"/> - an empty one
 	/// (the shared <see cref="EmptyBatch"/> instance) when nothing arrived before the timeout or
 	/// cancellation was requested.
 	/// <para>
-	/// v2.3.0 (iter17): the idle path now awaits <see cref="IEventPipe.WaitToReadAsync"/> — a
-	/// semaphore-backed level-triggered signal — under a shrinking timeout budget instead of a
+	/// v2.3.0 (iter17): the idle path now awaits <see cref="IEventPipe.WaitToReadAsync"/> - a
+	/// semaphore-backed level-triggered signal - under a shrinking timeout budget instead of a
 	/// SpinWait busy-loop with cooperative yields. Producer TryWrite calls (event collector,
 	/// backfill workers) release the semaphore, so the consumer wakes within microseconds of a
 	/// new event landing. The synchronous <see cref="IEventPipe.TryRead"/> fast-path stays as the
-	/// first thing tried on every iteration — a burst that fully saturates the ring will still be
+	/// first thing tried on every iteration - a burst that fully saturates the ring will still be
 	/// drained without ever hitting the wait. Kept as <see cref="Task{TResult}"/> rather than
 	/// <see cref="ValueTask{TResult}"/> because <c>EventProcessorWorkerRingBufferTests</c> invokes
 	/// this method via reflection and hard-casts the result to
@@ -403,7 +366,7 @@ public sealed class EventProcessorWorker : BackgroundService
 			// wakes on the next producer write with microsecond latency, without CPU spin. A false
 			// return means the remaining timeout elapsed with an empty ring; we surface the empty
 			// batch so the outer loop can decide its next move (idle logging, options refresh, etc.).
-			// A true return is a hint — the follow-up TryRead at the top of the loop may still race
+			// A true return is a hint - the follow-up TryRead at the top of the loop may still race
 			// and lose, which is why we do NOT assume a DTO is available afterwards.
 			bool ready = await _pipe.WaitToReadAsync(remaining, stoppingToken).ConfigureAwait(false);
 			if (!ready)
@@ -438,6 +401,26 @@ public sealed class EventProcessorWorker : BackgroundService
 		}
 
 		return true;
+	}
+
+	/// <summary>
+	/// Highest ingestion sequence among <paramref name="dtos"/>. Sequences are stamped by
+	/// <see cref="RawEventSerializer.Serialize"/> at <see cref="IEventPipe.TryWrite"/> time, so
+	/// this value is available before any database work begins and is used both as the ledger
+	/// watermark candidate and as the deterministic dedup key.
+	/// </summary>
+	private static long ComputeMaxIngestionSequence(List<RawEventDto> dtos)
+	{
+		long max = 0;
+		for (int i = 0; i < dtos.Count; i++)
+		{
+			if (dtos[i].IngestionSequence > max)
+			{
+				max = dtos[i].IngestionSequence;
+			}
+		}
+
+		return max;
 	}
 
 	private async Task PersistBatchAsync(List<RawEventDto> dtos, CancellationToken ct)
@@ -506,13 +489,41 @@ public sealed class EventProcessorWorker : BackgroundService
 				dtos.Count, entities.Count, normalizeFailures, connectionFactEligible, authFactEligible);
 		}
 
+		// ── Unified-Commit Cache Preparation ─────────────────────────────────────
+		// D1 contract (BookmarkStore.SaveInSameTransactionAsync remarks):
+		// UpdateCache BEFORE the enclosing BeginTransaction, RollbackCache AFTER Rollback,
+		// MarkCommitted AFTER Commit. Preparing here, before any transaction is opened, keeps
+		// concurrent readers ahead-of-disk only for the in-flight single batch and guarantees
+		// the cache is restored on every rollback path. The previous values are retained so the
+		// rollback restoration is exact even when several channels advanced in one batch.
+		long committedThroughSequence = ComputeMaxIngestionSequence(dtos);
+		Dictionary<string, string>? committable = null;
+		Dictionary<string, string?>? previousBookmarkXml = null;
+		if (_bookmarks is not null && _checkpoints is not null && committedThroughSequence > 0)
+		{
+			Dictionary<string, string> collected = new(StringComparer.OrdinalIgnoreCase);
+			if (_checkpoints.CollectCommittable(committedThroughSequence, collected) > 0)
+			{
+				committable = collected;
+				previousBookmarkXml = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
+				foreach (KeyValuePair<string, string> entry in committable)
+				{
+					previousBookmarkXml[entry.Key] = _bookmarks.UpdateCache(entry.Key, entry.Value);
+				}
+			}
+		}
+
 		await using AuditDbContext db = await _factory.CreateDbContextAsync(ct).ConfigureAwait(false);
 		await using var tx = await db.Database.BeginTransactionAsync(ct).ConfigureAwait(false);
 		DateTime now = DateTime.UtcNow;
+		int addressesUpserted = 0;
+		AuthAttemptFactBatchResult authResult = new(0, 0, default, []);
+		int bookmarksWritten = 0;
 
+		// ── Pre-commit durability boundary ───────────────────────────────────────
 		try
 		{
-			int addressesUpserted = await UpsertAddressesAsync(db, entities, now, ct).ConfigureAwait(false);
+			addressesUpserted = await UpsertAddressesAsync(db, entities, now, ct).ConfigureAwait(false);
 			IngestionSequence sequence = await db.IngestionSequences
 				.SingleAsync(item => item.Id == 1, ct)
 				.ConfigureAwait(false);
@@ -542,7 +553,7 @@ public sealed class EventProcessorWorker : BackgroundService
 			// reference EvidenceRawEventId.
 			await db.SaveChangesAsync(ct).ConfigureAwait(false);
 
-			AuthAttemptFactBatchResult authResult = await _authAttemptFactUpserter
+			authResult = await _authAttemptFactUpserter
 				.ApplyAsync(db, entities, ct)
 				.ConfigureAwait(false);
 
@@ -563,63 +574,61 @@ public sealed class EventProcessorWorker : BackgroundService
 			}
 
 			// Unified durability boundary: the bookmark advance rides the SAME commit as the events
-			// it would otherwise skip past. Written last so it covers everything above it, and
-			// before CommitAsync so a failure here rolls the whole batch back together.
-			long committedThroughSequence = 0;
-			foreach (RawEventDto dto in dtos)
+			// it would otherwise skip past. The cache was already updated (before BeginTransaction),
+			// so only the UPSERT remains here. Borrowing EF's own connection and transaction rather
+			// than opening a second one: a separate connection would deadlock against the writer
+			// lock this transaction already holds under SQLite WAL, and would defeat the atomicity
+			// the unified commit exists to provide.
+			if (_bookmarks is not null && committable is { Count: > 0 })
 			{
-				if (dto.IngestionSequence > committedThroughSequence)
+				if (db.Database.GetDbConnection() is not SqliteConnection conn ||
+					tx.GetDbTransaction() is not SqliteTransaction sqliteTx)
 				{
-					committedThroughSequence = dto.IngestionSequence;
+					_logger.LogWarning(
+						"Unified bookmark commit skipped: provider is not SQLite for {ChannelCount} channels",
+						committable.Count);
+				}
+				else
+				{
+					await _bookmarks
+						.SaveBatchInSameTransactionAsync(conn, sqliteTx, committable, ct)
+						.ConfigureAwait(false);
+					bookmarksWritten = committable.Count;
 				}
 			}
 
-			int bookmarksWritten = await WriteBookmarksInTransactionAsync(
-				db, tx, committedThroughSequence, ct).ConfigureAwait(false);
-
-			await tx.CommitAsync(ct).ConfigureAwait(false);
-
 			// RawEvents is the system of record; shards are derived forensic artifacts. Appending before
 			// the database commit lets the writer retain its batch state without publishing a header.
-			// A crash after SQLite commits but before this independent transaction can leave metadata
-			// stale, which is recoverable on the next touched shard from the real file header. Shard
-			// failures must never undo already committed audit evidence.
-			if (_shardSink is not null && db.Database.GetDbConnection() is SqliteConnection shardConnection)
-			{
-				await CommitShardsAfterDatabaseCommitAsync(shardConnection, ct).ConfigureAwait(false);
-			}
+			await tx.CommitAsync(ct).ConfigureAwait(false);
 
-			// Only now is the position durable, so only now may the ledger forget the checkpoints
-			// and let the collector's fallback flush publish them.
-			if (bookmarksWritten > 0)
+			// D1 contract: MarkCommitted AFTER Commit. A no-op today, reserved as the hook that
+			// lets future observability distinguish committed bookmarks from optimistically cached
+			// ones without changing the cache-update contract.
+			if (_bookmarks is not null && committable is { Count: > 0 })
 			{
-				_checkpoints!.Prune(committedThroughSequence);
-
-				_logger.LogDebug(
-					"Unified commit advanced {BookmarkCount} bookmark(s) through sequence {Sequence}",
-					bookmarksWritten,
-					committedThroughSequence);
-			}
-
-			if (authResult.FailedCreated > 0 || authResult.SucceededCreated > 0)
-			{
-				_metrics.RecordAuthAttemptFacts(
-					authResult.FailedCreated,
-					authResult.SucceededCreated,
-					authResult.LastFactUtc == default ? now : authResult.LastFactUtc);
-			}
-
-			if (debugEnabled)
-			{
-				_logger.LogDebug(
-					"EventProcessorWorker BATCH COMMIT: entities={EntityCount} addressesUpserted={Addresses} authFactsFailed={AuthFailed} authFactsSucceeded={AuthSucceeded}",
-					entities.Count, addressesUpserted, authResult.FailedCreated, authResult.SucceededCreated);
+				foreach (string channel in committable.Keys)
+				{
+					_bookmarks.MarkCommitted(channel);
+				}
 			}
 		}
 		catch (Exception ex)
 		{
+			// Failure happened BEFORE the main RawEvents transaction committed: both durability
+			// boundaries roll back together. RawEvents are not committed, so discarding the staged
+			// shard records is correct.
 			await tx.RollbackAsync(ct).ConfigureAwait(false);
 			_shardSink?.DiscardPending();
+
+			// D1 contract: RollbackCache AFTER Rollback - restore the previously committed cache
+			// values so no reader ever observes a bookmark advance that was never made durable.
+			if (_bookmarks is not null && previousBookmarkXml is not null)
+			{
+				foreach (KeyValuePair<string, string?> entry in previousBookmarkXml)
+				{
+					_bookmarks.RollbackCache(entry.Key, entry.Value);
+				}
+			}
 
 			if (debugEnabled)
 			{
@@ -629,30 +638,141 @@ public sealed class EventProcessorWorker : BackgroundService
 			throw;
 		}
 
+		// ── Post-commit durability boundary (independent from RawEvents) ─────────
+		// After the main commit, shard-phase failures must be logged and counted, never roll back
+		// RawEvents or discard the pending shard queue. CommitShardsAfterDatabaseCommitAsync is
+		// written to never throw, so this block cannot re-enter the rollback path above.
+		if (_shardSink is not null)
+		{
+			string? connectionString = (db.Database.GetDbConnection() as SqliteConnection)?.ConnectionString;
+			if (string.IsNullOrWhiteSpace(connectionString))
+			{
+				_logger.LogWarning("Forensic shard commit skipped: unable to resolve the SQLite connection string.");
+			}
+			else
+			{
+				await CommitShardsAfterDatabaseCommitAsync(connectionString, ct).ConfigureAwait(false);
+			}
+		}
+
+		// Only now is the position durable, so only now may the ledger forget the checkpoints
+		// and let the collector's fallback flush publish them. The watermark advances on EVERY
+		// committed batch - not only when bookmarks were written - because the events themselves
+		// are durable regardless of whether any channel's bookmark advanced in this batch. Gating
+		// on bookmarksWritten > 0 left the watermark frozen on batches with no bookmark advance,
+		// growing pending checkpoints without bound and letting the fallback flush publish stale
+		// positions. The null check preserves the legacy split-commit composition (both optional
+		// dependencies absent), where no ledger exists to prune.
+		if (_checkpoints is not null && committedThroughSequence > 0)
+		{
+			_checkpoints.Prune(committedThroughSequence);
+
+			if (bookmarksWritten > 0)
+			{
+				_logger.LogDebug(
+					"Unified commit advanced {BookmarkCount} bookmark(s) through sequence {Sequence}",
+					bookmarksWritten,
+					committedThroughSequence);
+			}
+		}
+
+		if (authResult.FailedCreated > 0 || authResult.SucceededCreated > 0)
+		{
+			_metrics.RecordAuthAttemptFacts(
+				authResult.FailedCreated,
+				authResult.SucceededCreated,
+				authResult.LastFactUtc == default ? now : authResult.LastFactUtc);
+		}
+
+		if (debugEnabled)
+		{
+			_logger.LogDebug(
+				"EventProcessorWorker BATCH COMMIT: entities={EntityCount} addressesUpserted={Addresses} authFactsFailed={AuthFailed} authFactsSucceeded={AuthSucceeded}",
+				entities.Count, addressesUpserted, authResult.FailedCreated, authResult.SucceededCreated);
+		}
+
 		// Feed the security-correlation watchdog after the transaction commits so the diagnostic
 		// is anchored to events that actually landed in the audit DB. Updates ServiceMetrics
-		// in place — no DB writes here.
+		// in place - no DB writes here.
 		_securityWatchdog.Apply(entities);
 	}
 
-	private async Task CommitShardsAfterDatabaseCommitAsync(SqliteConnection connection, CancellationToken ct)
+	private async Task CommitShardsAfterDatabaseCommitAsync(string connectionString, CancellationToken ct)
 	{
-		try
+		for (int attempt = 0; attempt < Backoffs.Length; attempt++)
 		{
-			await using SqliteTransaction transaction =
-				(SqliteTransaction)await connection.BeginTransactionAsync(ct).ConfigureAwait(false);
-			await _shardSink!.CommitAsync(connection, transaction, ct).ConfigureAwait(false);
-			await transaction.CommitAsync(ct).ConfigureAwait(false);
-		}
-		catch (Exception ex)
-		{
-			_logger.LogWarning(ex, "Forensic shard commit failed after database commit");
-			_metrics.IncrementShardWriteFailures();
+			try
+			{
+				await using SqliteConnection connection = new(connectionString);
+				await connection.OpenAsync(ct).ConfigureAwait(false);
 
-			// The sink may still hold staged writers if it never reached its own commit loop.
-			// Drop them so the next batch reopens from the durable header instead of inheriting
-			// entries that can no longer be published.
-			_shardSink!.DiscardPending();
+				// Keep the forensic side on the same durability profile as the main database:
+				// WAL for reader isolation and NORMAL synchronous for crash-tolerant throughput.
+				await using SqliteCommand journalCommand = connection.CreateCommand();
+				journalCommand.CommandText = "PRAGMA journal_mode = WAL;";
+				await journalCommand.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+
+				await using SqliteCommand syncCommand = connection.CreateCommand();
+				syncCommand.CommandText = "PRAGMA synchronous = NORMAL;";
+				await syncCommand.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+
+				await using SqliteTransaction transaction =
+					(SqliteTransaction)await connection.BeginTransactionAsync(ct).ConfigureAwait(false);
+
+				try
+				{
+					await _shardSink!.CommitAsync(connection, transaction, ct).ConfigureAwait(false);
+					await transaction.CommitAsync(ct).ConfigureAwait(false);
+					return;
+				}
+				catch
+				{
+					try { await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false); }
+					catch { /* best-effort rollback */ }
+					throw;
+				}
+			}
+			catch (SqliteException ex) when (ex.SqliteErrorCode is 5 or 6)
+			{
+				if (attempt == Backoffs.Length - 1)
+				{
+					_logger.LogWarning(ex, "Forensic shard commit failed after database commit");
+					_metrics.IncrementShardWriteFailures();
+					return;
+				}
+
+				_logger.LogWarning(
+					"Shard DB busy (attempt {Attempt}) - retrying in {DelayMs}ms",
+					attempt + 1,
+					Backoffs[attempt].TotalMilliseconds);
+
+				try
+				{
+					await Task.Delay(Backoffs[attempt], ct).ConfigureAwait(false);
+				}
+				catch (OperationCanceledException) when (ct.IsCancellationRequested)
+				{
+					// The service is stopping mid-backoff. Abort the best-effort flush quietly and
+					// retain the pending shard queue for the next batch or sink disposal.
+					return;
+				}
+			}
+			catch (OperationCanceledException) when (ct.IsCancellationRequested)
+			{
+				// Forensic flush is best-effort. After the main RawEvents transaction is
+				// committed, a shutdown request must not discard the pending shard queue.
+				return;
+			}
+			catch (Exception ex)
+			{
+				_logger.LogWarning(ex, "Forensic shard commit failed after database commit");
+				_metrics.IncrementShardWriteFailures();
+
+				// Deliberately do NOT discard the pending shard queue. The already committed RawEvents
+				// are the system of record and must stay intact; a failed shard flush is retried on the
+				// next successful shard commit instead of being lost.
+				return;
+			}
 		}
 	}
 
@@ -800,7 +920,7 @@ public sealed class EventProcessorWorker : BackgroundService
 				}
 
 				_logger.LogWarning(
-					"DB busy (attempt {Attempt}) — retrying in {Ms}ms",
+					"DB busy (attempt {Attempt}) - retrying in {Ms}ms",
 					i + 1,
 					Backoffs[i].TotalMilliseconds);
 

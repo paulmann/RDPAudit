@@ -109,12 +109,12 @@ public sealed class MaintenanceWorker : BackgroundService
 		int eventsDeleted = 0;
 
 		int alertsDeleted = await PruneBatchedAsync(
-			db => db.Alerts.Where(a => a.TimeUtc < alertCutoff),
+			db => db.Alerts.Where(a => a.TimeUtc < alertCutoff).OrderBy(a => a.TimeUtc).ThenBy(a => a.Id),
 			batch,
 			ct).ConfigureAwait(false);
 
 		int abuseReportsDeleted = await PruneBatchedAsync(
-			db => db.AbuseReports.Where(a => a.ReportedUtc < abuseCutoff),
+			db => db.AbuseReports.Where(a => a.ReportedUtc < abuseCutoff).OrderBy(a => a.ReportedUtc).ThenBy(a => a.Id),
 			batch,
 			ct).ConfigureAwait(false);
 
@@ -123,24 +123,27 @@ public sealed class MaintenanceWorker : BackgroundService
 		// Active and Pending rows are NEVER deleted by retention — the expiration worker is the
 		// authoritative path for tearing them down.
 		int activeBlocksDeleted = await PruneBatchedAsync(
-			db => db.ActiveBlocks.Where(b =>
-				b.Status == ActiveBlockStatus.Removed
-				|| (b.ExpiresUtc != null && b.ExpiresUtc < activeBlockCutoff)),
+			db => db.ActiveBlocks
+				.Where(b =>
+					(b.Status == ActiveBlockStatus.Removed
+						|| (b.ExpiresUtc != null && b.ExpiresUtc < activeBlockCutoff)))
+				.OrderBy(b => b.CreatedUtc)
+				.ThenBy(b => b.Id),
 			batch,
 			ct).ConfigureAwait(false);
 
 		int attackStatsDeleted = await PruneBatchedAsync(
-			db => db.AttackStats.Where(s => s.LastSeenUtc < attackStatCutoff),
+			db => db.AttackStats.Where(s => s.LastSeenUtc < attackStatCutoff).OrderBy(s => s.LastSeenUtc).ThenBy(s => s.Ip),
 			batch,
 			ct).ConfigureAwait(false);
 
 		int correlationsDeleted = await PruneBatchedAsync(
-			db => db.SessionIpCorrelations.Where(c => c.LastSeenUtc < correlationCutoff),
+			db => db.SessionIpCorrelations.Where(c => c.LastSeenUtc < correlationCutoff).OrderBy(c => c.LastSeenUtc).ThenBy(c => c.Id),
 			batch,
 			ct).ConfigureAwait(false);
 
 		int connectionFactsDeleted = await PruneBatchedAsync(
-			db => db.RdpConnectionFacts.Where(f => f.LastSeenUtc < connectionFactCutoff),
+			db => db.RdpConnectionFacts.Where(f => f.LastSeenUtc < connectionFactCutoff).OrderBy(f => f.LastSeenUtc).ThenBy(f => f.Id),
 			batch,
 			ct).ConfigureAwait(false);
 
@@ -149,7 +152,7 @@ public sealed class MaintenanceWorker : BackgroundService
 		// Logs tab and the table never grows without bound on a long-lived host.
 		DateTime operationLogCutoff = utcNow.AddDays(-logs.ResolveRetentionDays());
 		int operationLogsDeleted = await PruneBatchedAsync(
-			db => db.OperationLogs.Where(o => o.TimeUtc < operationLogCutoff),
+			db => db.OperationLogs.Where(o => o.TimeUtc < operationLogCutoff).OrderBy(o => o.TimeUtc).ThenBy(o => o.Id),
 			batch,
 			ct).ConfigureAwait(false);
 
@@ -259,6 +262,9 @@ public sealed class MaintenanceWorker : BackgroundService
 		while (!ct.IsCancellationRequested)
 		{
 			await using AuditDbContext db = await _factory.CreateDbContextAsync(ct).ConfigureAwait(false);
+			// All callers already pass a filter with a deterministic OrderBy+ThenBy order,
+			// so Take(batchSize) below does not trigger RowLimitingOperationWithoutOrderByWarning
+			// and each batch stays bounded, releasing the SQLite writer lock between batches.
 			int deleted = await WithBusyRetryAsync(
 				token => filter(db).Take(batchSize).ExecuteDeleteAsync(token),
 				ct).ConfigureAwait(false);
@@ -324,7 +330,10 @@ public sealed class MaintenanceWorker : BackgroundService
 			}
 
 			DateTime cutoff = DateTime.UtcNow.AddDays(-Math.Max(7, storage.LogRetentionDays));
-			foreach (string file in Directory.EnumerateFiles(logDir, "service-*.log"))
+			// Log-file name pattern resolved from the same single source of truth (D2) that
+		// Program.ConfigureSerilog uses when composing the day-rolling Serilog file name.
+		string serviceLogPattern = RdpAuditPaths.ServiceLogFilePrefix + "*" + RdpAuditPaths.ServiceLogExtension;
+		foreach (string file in Directory.EnumerateFiles(logDir, serviceLogPattern))
 			{
 				FileInfo info = new(file);
 				if (info.LastWriteTimeUtc < cutoff)

@@ -17,6 +17,7 @@ using System.Reflection;
 using System.Threading;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
+using RdpAudit.Core.Util;
 
 namespace RdpAudit.Core.Data;
 
@@ -293,13 +294,12 @@ public sealed class AuditDbInitializer : IDisposable
 			// Ignore — fall through to default.
 		}
 
-		return Path.Combine(GetProgramDataDirectory(), "rdpaudit.db");
+		return RdpAuditPaths.Default.DatabasePath;
 	}
 
 	private static string GetProgramDataDirectory()
 	{
-		string root = Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData);
-		return Path.Combine(root, "RdpAudit");
+		return RdpAuditPaths.Default.ProgramDataDirectory;
 	}
 
 	private static string? ResolveServiceVersion()

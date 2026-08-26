@@ -300,7 +300,14 @@ public sealed class EventLogWatcherEventSource : IEventSource, IDisposable
 				}
 				catch (Exception ex)
 				{
-					_logger.LogDebug(ex, "Bookmark capture failed for {Channel}", _channel);
+					// D1: a failed bookmark capture is no longer a silent Debug event. Every event
+					// this happens to is one more event that would be re-read (or lost) after the
+					// next restart, so surface it at Warning with the channel and event id intact.
+					_logger.LogWarning(
+						ex,
+						"Bookmark capture failed for {Channel} EventID {EventId}; resume position will not advance for this event",
+						_channel,
+						record.Id);
 				}
 
 				return true;

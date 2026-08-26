@@ -63,6 +63,7 @@ public sealed class LocalSessionEnrichmentProvider
 			List<SessionIpCorrelation> correlations = await handle.Db.SessionIpCorrelations
 				.AsNoTracking()
 				.OrderByDescending(c => c.LastSeenUtc)
+				.ThenByDescending(c => c.Id)
 				.Take(MaxRowsPerTable)
 				.ToListAsync(ct)
 				.ConfigureAwait(false);
@@ -70,6 +71,7 @@ public sealed class LocalSessionEnrichmentProvider
 			List<RdpConnectionFact> facts = await handle.Db.RdpConnectionFacts
 				.AsNoTracking()
 				.OrderByDescending(f => f.LastSeenUtc)
+				.ThenByDescending(f => f.Id)
 				.Take(MaxRowsPerTable)
 				.ToListAsync(ct)
 				.ConfigureAwait(false);

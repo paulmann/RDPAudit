@@ -23,6 +23,12 @@ public static class IpcConstants
 	/// <summary>Default round-trip deadline for cheap, read-only commands (status, list queries).</summary>
 	public const int OperationTimeoutMs = 5_000;
 
+	public const int AntiSpinInstantIterationThreshold = 100;
+
+	public const int AntiSpinInstantIterationMaxElapsedMs = 1;
+
+	public const int AntiSpinPauseMilliseconds = 1_000;
+
 	/// <summary>Round-trip deadline for long-running commands that shell out to several netsh /
 	/// PowerShell processes (firewall repair / verify / reconcile, Tools Diag, temporary-rule probe).
 	/// Bounded so the UI never hangs indefinitely, but long enough that a multi-rule repair on a busy

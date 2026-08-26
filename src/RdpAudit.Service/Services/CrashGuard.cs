@@ -19,6 +19,7 @@ using Microsoft.Extensions.Logging;
 using RdpAudit.Core.Config;
 using RdpAudit.Core.Data;
 using RdpAudit.Core.Models;
+using RdpAudit.Core.Util;
 
 namespace RdpAudit.Service.Services;
 
@@ -30,14 +31,20 @@ public sealed class CrashGuard
 
 	private readonly IOperationLogWriter _opLog;
 	private readonly ILogger<CrashGuard> _logger;
-	private readonly string _fallbackDir;
+	private readonly string? _fallbackDir;
 
-	public CrashGuard(IOperationLogWriter opLog, ILogger<CrashGuard> logger)
+	public CrashGuard(
+		IOperationLogWriter opLog,
+		ILogger<CrashGuard> logger,
+		IRdpAuditPathsProvider? pathsProvider = null)
 	{
 		_opLog = opLog;
 		_logger = logger;
-		string programData = Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData);
-		_fallbackDir = Path.Combine(programData, "RdpAudit", "crash");
+		// D2: resolve the fallback crash directory only from a registered paths provider.
+		// Production DI registers DefaultRdpAuditPathsProvider (CrashGuard is resolved from the
+		// container); direct constructions without one (unit tests) get null, so the fallback
+		// sink silently no-ops instead of writing into the real %ProgramData% tree.
+		_fallbackDir = pathsProvider?.Paths.CrashDirectory;
 	}
 
 	/// <summary>Installs the global unhandled-exception and unobserved-task handlers exactly once.</summary>
@@ -149,10 +156,18 @@ public sealed class CrashGuard
 
 	private void WriteFallbackFile(string summary, Exception? ex)
 	{
+		// Guard (D2): without a paths provider the fallback directory is null, so this sink
+		// stays silent rather than inventing a machine-wide ProgramData location.
+		string? fallbackDir = _fallbackDir;
+		if (fallbackDir is null)
+		{
+			return;
+		}
+
 		try
 		{
-			Directory.CreateDirectory(_fallbackDir);
-			string path = Path.Combine(_fallbackDir, $"crash-{DateTime.UtcNow:yyyyMMdd-HHmmss-fff}.log");
+			Directory.CreateDirectory(fallbackDir);
+			string path = Path.Combine(fallbackDir, $"crash-{DateTime.UtcNow:yyyyMMdd-HHmmss-fff}.log");
 			string content = $"UTC: {DateTime.UtcNow:O}{Environment.NewLine}{summary}{Environment.NewLine}{Environment.NewLine}{ex}";
 			File.WriteAllText(path, content);
 		}

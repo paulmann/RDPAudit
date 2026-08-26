@@ -6,6 +6,7 @@
 // Depends: System.Threading, RdpAudit.Service.Workers
 // Extends: Add a paired read-only property and Interlocked mutation method for each new operational counter.
 
+using RdpAudit.Service.Firewall;
 using RdpAudit.Service.Workers;
 
 namespace RdpAudit.Service;
@@ -561,4 +562,47 @@ public sealed class ServiceMetrics
 	public void IncrementShardEvictions() => Interlocked.Increment(ref _shardEvictions);
 	public void IncrementShardWriteFailures() => Interlocked.Increment(ref _shardWriteFailures);
 	public void IncrementShardBudgetRefusals() => Interlocked.Increment(ref _shardBudgetRefusals);
+
+	// --- PowerShell firewall live-scan latch telemetry ---
+
+	private string? _firewallScanBackend;
+	private long _firewallScanSwitchCount;
+
+	/// <summary>Current firewall live-scan backend, or null until the first scan. Surfaced via IPC
+	/// GetStatus so the operator can see when the PowerShell scanner has latched onto netsh.</summary>
+	public string? FirewallScanBackend
+	{
+		get { lock (_diagGate) { return _firewallScanBackend; } }
+	}
+
+	/// <summary>Cumulative count of live-scan latch events: how many times the scanner switched onto
+	/// the netsh text fallback since service start. Recovery back to PowerShell, and repeated netsh
+	/// scans while already latched, do not count.</summary>
+	public long FirewallScanSwitchCount => Interlocked.Read(ref _firewallScanSwitchCount);
+
+	/// <summary>Records the backend that produced the most recent live-scan result and counts a latch
+	/// event whenever the scanner moves onto the netsh fallback from any other state.</summary>
+	public void RecordFirewallScanBackend(FirewallScanBackend? backend)
+	{
+		string? name = backend?.ToString();
+		string? previous;
+		lock (_diagGate)
+		{
+			previous = _firewallScanBackend;
+			if (!string.Equals(previous, name, StringComparison.Ordinal))
+			{
+				_firewallScanBackend = name;
+			}
+		}
+
+		// Count only the fallback latch: the scanner switched TO netsh from a non-netsh state.
+		// The first fallback counts; subsequent netsh scans while latched, and recovery back to
+		// PowerShell, do not.
+		const string netshTextName = "NetshText";
+		if (string.Equals(name, netshTextName, StringComparison.Ordinal)
+			&& !string.Equals(previous, netshTextName, StringComparison.Ordinal))
+		{
+			Interlocked.Increment(ref _firewallScanSwitchCount);
+		}
+	}
 }

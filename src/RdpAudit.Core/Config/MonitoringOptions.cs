@@ -76,4 +76,14 @@ public sealed class MonitoringOptions
 
 	/// <summary>Fixed number of collision-tolerant flood-accounting buckets.</summary>
 	public int FloodGuardBucketCount { get; set; } = 4_096;
+
+	/// <summary>
+	/// First-read lookback used when a channel has NO persisted bookmark (default 24 hours).
+	/// Used in two places that would otherwise replay unbounded history: (1) the live
+	/// watcher's XPath gains a TimeCreated floor this far back instead of replaying the full
+	/// matching channel history; (2) the Security backfill worker's wide first pass reads back
+	/// this far to hydrate/rebuild recent auth context. Set to 0 to disable the wide
+	/// first-read behavior in both places (regular per-tick lookback only).
+	/// </summary>
+	public int FirstReadLookbackHours { get; set; } = 24;
 }
