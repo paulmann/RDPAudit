@@ -14,6 +14,13 @@ RdpAudit is a Windows RDP security monitoring solution targeting `net8.0-windows
 - `Service` and `Configurator` depend on `Core` only.
 - All times in the database are UTC. The Configurator displays local time only at the UI boundary.
 
+## Event collection documentation
+
+- [Event collection architecture diagnosis](82-event-collection-architecture-diagnosis.md)
+- [Event collection implementation map](83-event-collection-implementation.md)
+- [Event collection operator behavior](84-event-collection-operator-behavior.md)
+- [Event collection residual risks](85-event-collection-residual-risks.md)
+
 ## File header convention
 
 Every C# file in this repository begins with a structured header:

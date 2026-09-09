@@ -458,6 +458,17 @@ public sealed class ServicePage : TabPage
 				ipcResponseReceived: ipcResult.ResponseReceived)).ConfigureAwait(true);
 
 			string configuratorVersion = ResolveConfiguratorVersion();
+			ServiceDiagnosticsIpcCounters ipcCounters = new(
+				ServiceStartedUtc: ipcStatus?.StartedUtc is DateTime startedUtc && startedUtc != default ? startedUtc : null,
+				ServiceUptime: ipcStatus?.Uptime,
+				EventsCaptured: ipcStatus?.EventsCaptured,
+				EventsDropped: ipcStatus?.EventsDropped,
+				AlertsRaised: ipcStatus?.AlertsRaised,
+				ActiveSessions: ipcStatus?.ActiveSessions,
+				Security4624Count: ipcStatus?.Security4624Count,
+				Security4625Count: ipcStatus?.Security4625Count,
+				Security4648Count: ipcStatus?.Security4648Count);
+
 			ServiceDiagnosticsInput input = new(
 				ConfiguratorVersion: configuratorVersion,
 				Layout: layout,
@@ -467,7 +478,8 @@ public sealed class ServicePage : TabPage
 				Running: running,
 				IpcRuntimeVersion: ipcStatus?.Version,
 				IpcConnected: ipcStatus is not null,
-				Extras: extras);
+				Extras: extras,
+				IpcCounters: ipcCounters);
 
 			ServiceDiagnosticsReport report = ServiceDiagnosticsReportBuilder.Build(input);
 			try

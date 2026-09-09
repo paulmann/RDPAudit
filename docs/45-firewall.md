@@ -165,6 +165,22 @@ netsh advfirewall firewall delete rule name=RdpAudit-Block-203.0.113.10
 The same prefix-based show/delete commands work for IPv6 addresses; the rule name uses the
 canonical text form returned by `IPAddress.ToString()` (lower-case, no scope id).
 
+## Live-scan backend (PowerShell vs netsh)
+
+Enforcement reconciliation enumerates the real firewall store through
+`PowerShellFirewallRuleScanner`: the preferred backend is the locale-independent
+`Get-NetFirewallRule | ConvertTo-Json` probe, with the legacy `netsh` text parse retained
+as fallback (see `docs/40-options.md` for the related configuration keys).
+
+To prevent a broken PowerShell host from being spawned on every reconciliation tick,
+the scanner latches onto the netsh fallback after the first timeout or failure:
+
+- `Firewall.PowerShellScanTimeoutSeconds` (default `30`) bounds each PowerShell probe.
+- While latched, every scan is served by netsh and PowerShell is re-probed at most once
+  per `Firewall.PowerShellRetryProbeIntervalMinutes` (default `15`) interval.
+- The current backend ("PowerShellJson" / "NetshText") and the number of latch switch-overs
+  are exposed via the IPC `GetStatus` payload (`FirewallScanBackend`, `FirewallScanSwitchCount`).
+
 ## Configuration reference
 
 See `docs/40-options.md` for the full `Firewall` block. New Stage 3 fields:

@@ -39,6 +39,7 @@ public sealed class DbAlertContext : IAlertContext
 		return await db.RawEvents.AsNoTracking()
 			.Where(e => e.SourceIp == ip && e.TimeUtc >= cutoff)
 			.OrderByDescending(e => e.TimeUtc)
+			.ThenByDescending(e => e.Id)
 			.Take(count)
 			.ToListAsync(ct)
 			.ConfigureAwait(false);
@@ -55,6 +56,7 @@ public sealed class DbAlertContext : IAlertContext
 		return await db.RawEvents.AsNoTracking()
 			.Where(e => e.UserName == user && e.TimeUtc >= cutoff)
 			.OrderByDescending(e => e.TimeUtc)
+			.ThenByDescending(e => e.Id)
 			.Take(count)
 			.ToListAsync(ct)
 			.ConfigureAwait(false);
@@ -71,6 +73,7 @@ public sealed class DbAlertContext : IAlertContext
 		return await db.RawEvents.AsNoTracking()
 			.Where(e => e.SessionId == sessionId && e.TimeUtc >= cutoff)
 			.OrderByDescending(e => e.TimeUtc)
+			.ThenByDescending(e => e.Id)
 			.Take(count)
 			.ToListAsync(ct)
 			.ConfigureAwait(false);

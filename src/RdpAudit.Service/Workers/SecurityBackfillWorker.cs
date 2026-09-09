@@ -1,5 +1,9 @@
 // File:    src/RdpAudit.Service/Workers/SecurityBackfillWorker.cs
 // Module:  RdpAudit.Service.Workers
+// Version: 1.3.0 — iter16: writes now go through IEventPipe.TryWrite so the semaphore-backed
+//                 RingBufferEventPipe.WaitToReadAsync consumer is signalled on every backfill
+//                 write. Wire is unchanged: IEventPipe is a thin adapter over the same physical
+//                 ring buffer that IEventPipe exposes, so no duplication and no pipeline hop.
 // Purpose: Bounded, idempotent backfill for the Security authentication event set.
 //          The previous implementation issued ONE giant XPath OR-clause covering ~20 event
 //          IDs across the whole channel and a 3-minute lookback. On a host whose Security
@@ -26,6 +30,7 @@ using RdpAudit.Core.Config;
 using RdpAudit.Core.Data;
 using RdpAudit.Core.Diagnostics;
 using RdpAudit.Core.Events;
+using RdpAudit.Service.Infrastructure;
 using RdpAudit.Service.Services;
 
 namespace RdpAudit.Service.Workers;
@@ -79,46 +84,53 @@ public sealed class SecurityBackfillWorker : BackgroundService
 
 	private static readonly TimeSpan DefaultInterval = TimeSpan.FromMinutes(2);
 	private static readonly TimeSpan DefaultLookback = TimeSpan.FromMinutes(15);
-	private static readonly TimeSpan LatestBackfillLookback = TimeSpan.FromHours(24);
 	private static readonly TimeSpan StartupGrace = TimeSpan.FromSeconds(15);
 
-	private readonly EventChannel _channel;
+	private readonly IEventPipe _pipe;
 	private readonly ServiceMetrics _metrics;
 	private readonly ILogger<SecurityBackfillWorker> _logger;
 	private readonly IOptionsMonitor<RdpAuditOptions> _options;
 	private readonly BookmarkStore? _bookmarks;
 	private readonly IDbContextFactory<AuditDbContext>? _factory;
 	private readonly OverviewProgressState? _progress;
+	private readonly BookmarkCheckpointLedger? _checkpoints;
 	private readonly object _ringGate = new();
 	private readonly Queue<long> _seenOrder = new();
 	private readonly HashSet<long> _seen = new();
 	private bool _firstTickDone;
+	private bool _firstReadStrategyLogged;
 
 	public SecurityBackfillWorker(
-		EventChannel channel,
+		IEventPipe pipe,
 		ServiceMetrics metrics,
 		ILogger<SecurityBackfillWorker> logger,
 		IOptionsMonitor<RdpAuditOptions> options)
-		: this(channel, metrics, logger, options, bookmarks: null, factory: null)
+		: this(pipe, metrics, logger, options, bookmarks: null, factory: null)
 	{
 	}
 
 	public SecurityBackfillWorker(
-		EventChannel channel,
+		IEventPipe pipe,
 		ServiceMetrics metrics,
 		ILogger<SecurityBackfillWorker> logger,
 		IOptionsMonitor<RdpAuditOptions> options,
 		BookmarkStore? bookmarks,
 		IDbContextFactory<AuditDbContext>? factory,
-		OverviewProgressState? progress = null)
+		OverviewProgressState? progress = null,
+		BookmarkCheckpointLedger? checkpoints = null)
 	{
-		_channel = channel;
+		ArgumentNullException.ThrowIfNull(pipe);
+		ArgumentNullException.ThrowIfNull(metrics);
+		ArgumentNullException.ThrowIfNull(logger);
+		ArgumentNullException.ThrowIfNull(options);
+		_pipe = pipe;
 		_metrics = metrics;
 		_logger = logger;
 		_options = options;
 		_bookmarks = bookmarks;
 		_factory = factory;
 		_progress = progress;
+		_checkpoints = checkpoints;
 	}
 
 	protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -154,6 +166,8 @@ public sealed class SecurityBackfillWorker : BackgroundService
 			{
 				await TryDropStaleSecurityBookmarkAsync(stoppingToken).ConfigureAwait(false);
 			}
+
+			LogFirstReadStrategy(needLatestBackfill);
 
 			while (!stoppingToken.IsCancellationRequested)
 			{
@@ -205,7 +219,17 @@ public sealed class SecurityBackfillWorker : BackgroundService
 	internal async Task PollOnceAsync(CancellationToken ct, bool latestBackfill = false)
 	{
 		DateTime startedUtc = DateTime.UtcNow;
-		TimeSpan lookback = latestBackfill ? LatestBackfillLookback : DefaultLookback;
+		TimeSpan lookback;
+		if (latestBackfill)
+		{
+			int configuredHours = Math.Max(0, _options.CurrentValue.Monitoring.FirstReadLookbackHours);
+			lookback = configuredHours > 0 ? TimeSpan.FromHours(configuredHours) : DefaultLookback;
+		}
+		else
+		{
+			lookback = DefaultLookback;
+		}
+
 		int maxPerId = latestBackfill ? LatestBackfillMaxRowsPerEventId : MaxRowsPerEventId;
 		DateTime sinceUtc = startedUtc - lookback;
 
@@ -423,9 +447,11 @@ catch (EventLogException ex)
 					XmlPayload = xml,
 				};
 
-// v2.0.0: RingBufferEventChannel API migration
+// v2.1.0 (iter16): route through IEventPipe so the semaphore-backed WaitToReadAsync consumer
+// is signalled on every backfill write. The underlying transport is the same physical ring
+// buffer that IEventPipe exposes — no duplication, no dropped pipeline hop.
 // TryWrite returns false ONLY when DropOldest overflow occurs.
-bool writtenWithoutOverflow = _channel.Channel.TryWrite(dto);
+bool writtenWithoutOverflow = _pipe.TryWrite(dto);
 
 forwarded++;
 _metrics.IncrementCaptured();
@@ -634,6 +660,7 @@ internal static bool IsNoEventsMessage(string? message)
 			}
 
 			await _bookmarks.DeleteBookmarkAsync(EventCatalog.ChannelSecurity, ct).ConfigureAwait(false);
+			_checkpoints?.ForgetChannel(EventCatalog.ChannelSecurity);
 			_logger.LogInformation(
 				"Dropped stale Security bookmark — no AuthAttemptFacts have ever been observed, so the latest-backfill path will rebuild the bookmark from the actual tail of the channel.");
 		}
@@ -641,6 +668,35 @@ internal static bool IsNoEventsMessage(string? message)
 		{
 			_logger.LogDebug(ex, "Could not drop stale Security bookmark");
 		}
+	}
+
+	/// <summary>
+	/// Logs the effective first-read strategy exactly once per process so operators can see, at
+	/// startup, how the Security backfill will treat existing bookmarks and the first wide pass: the
+	/// configured lookback, the widest-per-id row ceiling, and whether a bookmark rebuild was
+	/// triggered by the no-fact detection. This closes the gap where the only observable signal
+	/// was a global "Loaded N bookmarks" line followed by silence.
+	/// </summary>
+	private void LogFirstReadStrategy(bool latestBackfill)
+	{
+		if (_firstReadStrategyLogged)
+		{
+			return;
+		}
+
+		_firstReadStrategyLogged = true;
+
+		int configuredHours = Math.Max(0, _options.CurrentValue.Monitoring.FirstReadLookbackHours);
+		TimeSpan effectiveLookback = configuredHours > 0
+			? TimeSpan.FromHours(configuredHours)
+			: DefaultLookback;
+
+		_logger.LogInformation(
+			"Security first-read strategy: LatestBackfill={LatestBackfill}, FirstReadLookbackHours={LookbackHours:g}, EffectiveLookback={EffectiveLookback}, MaxRowsPerEventId={MaxRowsPerEventId}.",
+			latestBackfill,
+			configuredHours,
+			effectiveLookback,
+			latestBackfill ? LatestBackfillMaxRowsPerEventId : MaxRowsPerEventId);
 	}
 
 	internal readonly record struct PerIdResult(

@@ -5,6 +5,8 @@
 // Author:  Mikhail Deynekin
 // Site:    https://Deynekin.com
 
+using RdpAudit.Core.Util;
+
 namespace RdpAudit.Core.Config;
 
 /// <summary>Database location, retention, and log retention settings.</summary>
@@ -57,8 +59,7 @@ public sealed class StorageOptions
 			return DatabasePath;
 		}
 
-		string programData = Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData);
-		return Path.Combine(programData, "RdpAudit", "rdpaudit.db");
+		return RdpAuditPaths.Default.DatabasePath;
 	}
 
 	/// <summary>Returns the configured log directory or a sensible default under ProgramData.</summary>
@@ -69,7 +70,6 @@ public sealed class StorageOptions
 			return LogDirectory;
 		}
 
-		string programData = Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData);
-		return Path.Combine(programData, "RdpAudit", "logs");
+		return RdpAuditPaths.Default.LogDirectory;
 	}
 }

@@ -12,7 +12,7 @@ Optional parameters:
 
 | Parameter        | Default   | Purpose                                                                 |
 |------------------|-----------|-------------------------------------------------------------------------|
-| `-Version`       | `1.0.0`   | Passed to `dotnet publish` as `-p:VersionPrefix`.                       |
+| `-Version`       | `2.0.2`   | Passed to `dotnet publish` as `-p:VersionPrefix`.                       |
 | `-Configuration` | `Release` | `dotnet publish -c` value.                                              |
 | `-Force`         | off       | Terminate RdpAudit processes that are running from the publish folder. |
 | `-Verbose`       | off       | Print per-step diagnostics (process inspection, retry attempts, …).    |
@@ -23,6 +23,8 @@ Optional parameters:
 Close `RdpAudit.Configurator` first. If the installed service is running, stop it (`sc.exe stop RdpAudit`) — its EXE under `publish\Service` is locked while running.
 
 If you forget, `publish.ps1` detects the lock and prints an actionable diagnostic. Pass `-Force` to terminate the blocking processes automatically; `-Force` only ever kills processes named `RdpAudit.Configurator` / `RdpAudit.Service` **whose executable path is inside the publish folder**. Anything outside that folder is reported and skipped, never killed.
+
+Pre-flight also cross-checks `-Version` against `Directory.Build.props` `VersionPrefix`: when they differ it warns that the `-p:VersionPrefix` override will win and the two should be synced. The parameter default above is kept equal to `VersionPrefix` so a bare `pwsh -NoProfile -File .\publish.ps1` publishes the current release stream.
 
 ## Diagnostics
 

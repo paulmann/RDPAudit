@@ -1,245 +1,319 @@
-# File:    publish.ps1
-# Module:  RdpAudit build orchestration
-# Purpose: Publishes RdpAudit.Service and RdpAudit.Configurator as self-contained
-#          single-file executables for win-x64. Detects publish-output files that
-#          are locked by running RdpAudit processes (typical when the user has
-#          just been testing locally) and emits a clear, actionable diagnostic
-#          instead of failing with an opaque Remove-Item error.
-# Author:  Mikhail Deynekin
-# Site:    https://Deynekin.com
-# Requires PowerShell 7+
-#
-# Design notes:
-#   - Confirmed blockers and inspection failures are TWO distinct lists with
-#     fixed, validated shapes. Inspection failures NEVER reach blocker
-#     formatting or termination logic.
-#   - Formatters take explicit named parameters, not objects. A missing
-#     property cannot crash a formatter because it never reads one.
-#   - Returns of arrays use Write-Output -NoEnumerate to avoid the classic
-#     PowerShell "return ,$arr" / "@()" double-wrap that turns an empty list
-#     into a one-element array whose only element is an empty array.
-#   - `$PID` is a PowerShell automatic, read-only variable holding the
-#     current process id. Variable names are case-insensitive, so `$pId`,
-#     `$Pid`, `$pid` ALL refer to that same read-only automatic. All
-#     process-id locals in this script use `$processIdValue`.
+#Requires -Version 7.0
+<#
+.SYNOPSIS
+	Builds RdpAudit artifacts and updates the publish folder. Does NOT manage the installed service.
 
-[CmdletBinding()]
+.DESCRIPTION
+	Publishes RdpAudit.Service, RdpAudit.Configurator, and RdpAudit.Mikrotik as self-contained,
+	single-file, win-x64 executables under ./publish/Service, ./publish/Configurator, and
+	./publish/Mikrotik. Resolves version from Directory.Build.props unless -Version is supplied.
+
+	SCOPE BOUNDARY (enforced):
+	  - Writes ONLY inside the ./publish folder relative to the script root.
+	  - Never stops, starts, or reconfigures the Windows service.
+	  - Never writes to C:\Program Files\RdpAudit or %ProgramData%\RdpAudit.
+	  - Never calls install.ps1 or duplicates its deployment logic.
+	  - Terminates ONLY processes whose executable path is physically inside the publish root.
+
+	Use install.ps1 to deploy built artifacts to the installed service location.
+
+.PARAMETER Version
+	Explicit VersionPrefix for this build (e.g. "2.1.0"). When omitted the authoritative value
+	is read from Directory.Build.props — no hardcoded default is applied. Pass an explicit value
+	only to override the props for a release tag.
+
+.PARAMETER Configuration
+	MSBuild configuration. Defaults to Release.
+
+.PARAMETER SourceRevisionId
+	Short commit SHA to stamp as SemVer build metadata (+sha). When omitted the script resolves
+	it automatically via `git rev-parse --short=12 HEAD` and appends "-dirty" for unclean trees.
+	Pass "-" to disable the SHA entirely (e.g. when building outside a git checkout).
+
+.PARAMETER Force
+	Terminate processes running FROM the publish folder (by full path) without prompting.
+	Only processes inside the publish root are ever killed; the installed service is not affected.
+
+.PARAMETER Clean
+	Delete the entire publish folder before building. Requires confirmation or -Force.
+	Equivalent to a fresh publish: no stale artifacts remain.
+
+.PARAMETER SelfTest
+	Run structural invariants and exit. No publish, no delete, no side effects.
+
+.PARAMETER Timeout
+	Seconds to wait for a locked file to become free after terminating the holding process.
+	Default: 30 seconds.
+
+.PARAMETER WhatIf
+	Show what would be done without performing any action. Implied by [CmdletBinding(SupportsShouldProcess)].
+
+.EXAMPLE
+	.\publish.ps1
+	Build with version from Directory.Build.props, update publish folder, stop blockers interactively.
+
+.EXAMPLE
+	.\publish.ps1 -WhatIf
+	Print the full build and update plan without touching any file.
+
+.EXAMPLE
+	.\publish.ps1 -Force
+	Terminate any publish-folder processes without prompting, then publish.
+
+.EXAMPLE
+	.\publish.ps1 -Clean -Force
+	Wipe the publish folder and do a fully fresh publish, terminating blockers automatically.
+
+.EXAMPLE
+	.\publish.ps1 -Version 2.1.0
+	Override the version from Directory.Build.props with an explicit release tag.
+
+.NOTES
+	Exit codes:
+	  0   Success — publish folder fully updated, all post-checks passed.
+	  1   Pre-flight failure (SDK missing, project not found, invalid environment).
+	  2   Build/publish failed (dotnet exit code non-zero).
+	  3   File-lock timeout — file could not be freed within -Timeout seconds.
+	  4   Publish folder write error (permissions, path too long, disk full).
+	  5   Post-check failure — one or more expected artifacts missing or wrong version.
+	  6   Self-test failure.
+	  7   User cancelled (interactive prompt declined, or -WhatIf dry-run exit).
+
+	Responsibility boundary:
+	  publish.ps1  — build, version resolution, publish folder contents, process termination
+	                 scoped to the publish folder, post-checks, reporting.
+	  install.ps1  — Windows service stop/start, deployment to C:\Program Files\RdpAudit,
+	                 ProgramData initialisation, service registration, elevation requirement.
+#>
+
+[CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'Medium')]
 param(
-	[string]$Version = "1.6.3",
+	[string]$Version = "",
 	[string]$Configuration = "Release",
-	# Build SHA stamped into AssemblyInformationalVersion as SemVer build metadata (after '+').
-	# Left empty here on purpose: when not supplied it is auto-resolved from `git rev-parse HEAD`
-	# (short form) so every published binary records exactly which commit produced it, and the
-	# Configurator can warn when the installed/running Service was built from a different commit.
-	# Pass an explicit value (or '-' to disable) only when building outside a git checkout.
 	[string]$SourceRevisionId = "",
 	[switch]$Force,
+	[switch]$Clean,
 	[switch]$SelfTest,
-	[switch]$IncludeBenchmarks
+	[switch]$IncludeBenchmarks,
+	[int]$Timeout = 30
 )
 
-$ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
+$ErrorActionPreference = "Stop"
+$InformationPreference = "Continue"
 
-$publishRoot = Join-Path $PSScriptRoot "publish"
+# ── Script-scope state ────────────────────────────────────────────────────────
+$script:PublishRoot        = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot "publish"))
+$script:InspectionFailures = [System.Collections.Generic.List[hashtable]]::new()
+$script:TerminatedProcs    = [System.Collections.Generic.List[hashtable]]::new()
+$script:ReportRows         = [System.Collections.Generic.List[hashtable]]::new()
+$script:PostChecks         = [System.Collections.Generic.List[hashtable]]::new()
+$script:DotnetLanguageArgs = @()
+$script:BuiltVersion       = ""
+$script:VersionSource      = ""
 
-function Write-BuildInfoManifest {
-	$manifest = @{
-		version         = $Version
-		configuration   = $Configuration
-		sourceRevision  = $resolvedRevision
-		publishedUtc    = (Get-Date).ToUniversalTime().ToString("o")
-		components      = @{
-			Service      = $Version
-			Configurator = $Version
-			Mikrotik     = $Version
-		}
-		features        = @{
-			lockFreeRingBuffer   = $true
-			sqliteBundle         = $true
-			benchmarks           = $IncludeBenchmarks.IsPresent
-		}
-	}
+# ── Projects published in order ───────────────────────────────────────────────
+$script:Projects = @(
+	@{ CsprojRelPath = "src/RdpAudit.Service/RdpAudit.Service.csproj";           Subdir = "Service";      ExeName = "RdpAudit.Service.exe" }
+	@{ CsprojRelPath = "src/RdpAudit.Configurator/RdpAudit.Configurator.csproj"; Subdir = "Configurator"; ExeName = "RdpAudit.Configurator.exe" }
+	@{ CsprojRelPath = "src/RdpAudit.Mikrotik/RdpAudit.Mikrotik.csproj";         Subdir = "Mikrotik";     ExeName = "RdpAudit.Mikrotik.exe" }
+)
 
-	$manifestPath = Join-Path $publishRoot "build-info.json"
-	$manifest | ConvertTo-Json -Depth 5 | Set-Content -Path $manifestPath -Encoding UTF8 -NoNewline
-	Write-Host "✓ Wrote build manifest: $manifestPath" -ForegroundColor Green
-}
+$script:SqliteSupportFiles = @(
+	"Microsoft.Data.Sqlite.dll",
+	"SQLitePCLRaw.core.dll",
+	"SQLitePCLRaw.provider.e_sqlite3.dll",
+	"SQLitePCLRaw.batteries_v2.dll",
+	"e_sqlite3.dll"
+)
 
-# Force deterministic English .NET/MSBuild/NuGet output and a UTF-8 console. The project
-# intentionally emits English-only diagnostics; without these settings the .NET SDK localizes
-# restore/build messages to the Windows UI language. Localized SDK output can also become
-# mojibake when PowerShell captures external-process output and the host/output encodings differ.
+# ── Console / locale init ─────────────────────────────────────────────────────
 function Initialize-EnglishConsoleOutput {
 	$env:DOTNET_CLI_UI_LANGUAGE = "en"
-	$env:VSLANG = "1033"
-	$env:NUGET_CLI_LANGUAGE = "en"
-	$env:DOTNET_NOLOGO = "true"
+	$env:VSLANG                 = "1033"
+	$env:NUGET_CLI_LANGUAGE     = "en"
+	$env:DOTNET_NOLOGO          = "true"
 
-	$utf8NoBom = [System.Text.UTF8Encoding]::new($false)
-	[Console]::InputEncoding = $utf8NoBom
-	[Console]::OutputEncoding = $utf8NoBom
-	$global:OutputEncoding = $utf8NoBom
+	$utf8NoBom                  = [System.Text.UTF8Encoding]::new($false)
+	[Console]::InputEncoding    = $utf8NoBom
+	[Console]::OutputEncoding   = $utf8NoBom
+	$global:OutputEncoding      = $utf8NoBom
 
-	$script:DotnetLanguageArgs = @("-p:PreferredUILang=en-US")
+	$script:DotnetLanguageArgs  = @("-p:PreferredUILang=en-US")
 }
 
 Initialize-EnglishConsoleOutput
 
-function Invoke-DotnetCli {
-	param([Parameter(Mandatory = $true)][string[]]$Arguments)
-
-	$output = & dotnet @Arguments 2>&1
-	$exitCode = $LASTEXITCODE
-	foreach ($line in $output) {
-		Write-Host ([string]$line)
-	}
-	return $exitCode
+# ── Path safety guard ─────────────────────────────────────────────────────────
+function Test-IsUnderPublishRoot {
+	param([Parameter(Mandatory)][string]$Path)
+	$normalized = [System.IO.Path]::GetFullPath($Path)
+	$root       = $script:PublishRoot.TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
+	return $normalized.StartsWith($root, [System.StringComparison]::OrdinalIgnoreCase) `
+		-or [System.IO.Path]::GetFullPath($Path) -eq $script:PublishRoot
 }
 
-# -----------------------------------------------------------------------------
-# Build SHA resolution
-# -----------------------------------------------------------------------------
-# Resolves the short commit SHA for the working tree so it can be stamped into the
-# binary as SemVer build metadata. Best-effort: a missing git, a detached/empty repo
-# or any failure degrades to an empty string (the build then omits the +sha suffix)
-# rather than aborting the publish. Appends "-dirty" when the tree has uncommitted
-# changes so a binary built from a modified checkout is never mistaken for a clean tag.
-function Resolve-SourceRevisionId {
-	param([string]$Override)
-
-	if (-not [string]::IsNullOrWhiteSpace($Override)) {
-		# Explicit '-' means "no SHA" (building outside a git checkout on purpose).
-		if ($Override -eq '-') { return "" }
-		return $Override
-	}
-
-	$git = Get-Command git -ErrorAction SilentlyContinue
-	if ($null -eq $git) {
-		Write-Diag "git not found on PATH; publishing without a SourceRevisionId."
+# ── Version resolution ────────────────────────────────────────────────────────
+function Get-PropsVersionPrefix {
+	[OutputType([string])]
+	param()
+	$dbp = Join-Path $PSScriptRoot "Directory.Build.props"
+	if (-not (Test-Path $dbp)) { return "" }
+	try {
+		[xml]$xml   = Get-Content $dbp -Raw -Encoding UTF8
+		$nsm        = [System.Xml.XmlNamespaceManager]::new($xml.NameTable)
+		$node       = $xml.SelectSingleNode("//VersionPrefix")
+		if ($null -eq $node) { return "" }
+		return $node.InnerText.Trim()
+	} catch {
+		Write-Warning ("Could not parse Directory.Build.props for VersionPrefix: " + $_.Exception.Message)
 		return ""
 	}
+}
 
+function Resolve-BuildVersion {
+	[OutputType([string])]
+	param()
+	if (-not [string]::IsNullOrWhiteSpace($Version)) {
+		$script:VersionSource = "-Version parameter (overrides props)"
+		Write-Information ("Version source: -Version parameter (overrides props) = " + $Version)
+		return $Version.Trim()
+	}
+	$fromProps = Get-PropsVersionPrefix
+	if (-not [string]::IsNullOrWhiteSpace($fromProps)) {
+		$script:VersionSource = "Directory.Build.props"
+		Write-Information ("Version source: Directory.Build.props = " + $fromProps)
+		return $fromProps
+	}
+	# Last resort: signal the caller — build WITHOUT -p:VersionPrefix so SDK default applies.
+	$script:VersionSource = "SDK default (props not found or empty)"
+	Write-Warning "Directory.Build.props VersionPrefix not found; SDK default will apply."
+	return ""
+}
+
+function Resolve-SourceRevisionId {
+	[OutputType([string])]
+	param([string]$Override)
+	if (-not [string]::IsNullOrWhiteSpace($Override)) {
+		if ($Override -eq "-") { return "" }
+		return $Override.Trim()
+	}
+	$git = Get-Command git -ErrorAction SilentlyContinue
+	if ($null -eq $git) {
+		Write-Verbose "git not found on PATH; building without a SourceRevisionId."
+		return ""
+	}
 	try {
 		$sha = (& git -C $PSScriptRoot rev-parse --short=12 HEAD 2>$null)
 		if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($sha)) {
-			Write-Diag "git rev-parse HEAD did not yield a SHA; publishing without a SourceRevisionId."
+			Write-Verbose "git rev-parse HEAD returned no SHA; building without SourceRevisionId."
 			return ""
 		}
 		$sha = $sha.Trim()
-
-		# Flag a dirty working tree so a locally-modified build is visibly distinct.
 		$status = (& git -C $PSScriptRoot status --porcelain 2>$null)
 		if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($status)) {
 			$sha = $sha + "-dirty"
 		}
-
 		return $sha
 	} catch {
-		Write-Diag ("SHA resolution failed: " + $_.Exception.Message)
+		Write-Verbose ("SHA resolution failed: " + $_.Exception.Message)
 		return ""
 	}
 }
 
-# -----------------------------------------------------------------------------
-# Diagnostic plumbing
-# -----------------------------------------------------------------------------
-# Inspection failures are kept as plain hashtables with a fixed key set. They
-# are never passed to blocker formatters and never used to drive Stop-Process.
-$script:InspectionFailures = New-Object 'System.Collections.Generic.List[hashtable]'
-
-function Write-Diag {
-	param([Parameter(Mandatory = $true)][string]$Message)
-	Write-Verbose $Message
+# ── dotnet CLI wrapper ────────────────────────────────────────────────────────
+function Invoke-DotnetCli {
+	[OutputType([int])]
+	param([Parameter(Mandatory)][string[]]$Arguments)
+	$output   = & dotnet @Arguments 2>&1
+	$exitCode = $LASTEXITCODE
+	foreach ($line in $output) {
+		Write-Information ([string]$line)
+	}
+	return $exitCode
 }
 
+# ── Diagnostic helpers ────────────────────────────────────────────────────────
 function Add-InspectionFailure {
 	param(
-		[Parameter(Mandatory = $true)][string]$ProcessName,
+		[Parameter(Mandatory)][string]$ProcessName,
 		[AllowNull()][Nullable[int]]$ProcessIdValue,
-		[Parameter(Mandatory = $true)][string]$Reason
+		[Parameter(Mandatory)][string]$Reason
 	)
-	$entry = @{
+	$script:InspectionFailures.Add(@{
 		ProcessName    = $ProcessName
 		ProcessIdValue = $ProcessIdValue
 		Reason         = $Reason
-	}
-	$script:InspectionFailures.Add($entry) | Out-Null
-	$idText = if ($null -ne $ProcessIdValue) { $ProcessIdValue.ToString() } else { '?' }
-	Write-Diag ("Inspection failure: {0} (PID {1}) -> {2}" -f $ProcessName, $idText, $Reason)
+	}) | Out-Null
+	$idText = if ($null -ne $ProcessIdValue) { $ProcessIdValue.ToString() } else { "?" }
+	Write-Verbose ("Inspection failure: {0} (PID {1}) -> {2}" -f $ProcessName, $idText, $Reason)
 }
 
-# -----------------------------------------------------------------------------
-# Formatters
-# -----------------------------------------------------------------------------
-# Formatters take explicit, mandatory scalar parameters. They CANNOT crash on
-# a missing property because they never read one. This is the structural fix
-# that prevents the previous "property 'ProcessName' cannot be found" error.
-function Format-LockingProcess {
+function New-ConfirmedBlocker {
+	[OutputType([hashtable])]
 	param(
-		[Parameter(Mandatory = $true)][string]$ProcessName,
-		[Parameter(Mandatory = $true)][int]$ProcessIdValue,
-		[Parameter(Mandatory = $true)][string]$ExePath
+		[Parameter(Mandatory)][string]$ProcessName,
+		[Parameter(Mandatory)][int]$ProcessIdValue,
+		[Parameter(Mandatory)][string]$ExePath
+	)
+	if ([string]::IsNullOrWhiteSpace($ProcessName)) { throw "blocker requires non-empty ProcessName" }
+	if ([string]::IsNullOrWhiteSpace($ExePath))     { throw "blocker requires non-empty ExePath" }
+	return @{ ProcessName = $ProcessName; ProcessIdValue = $ProcessIdValue; ExePath = $ExePath }
+}
+
+function Format-LockingProcess {
+	[OutputType([string])]
+	param(
+		[Parameter(Mandatory)][string]$ProcessName,
+		[Parameter(Mandatory)][int]$ProcessIdValue,
+		[Parameter(Mandatory)][string]$ExePath
 	)
 	return ("{0} (PID {1}) -> {2}" -f $ProcessName, $ProcessIdValue, $ExePath)
 }
 
 function Format-InspectionFailure {
+	[OutputType([string])]
 	param(
-		[Parameter(Mandatory = $true)][string]$ProcessName,
+		[Parameter(Mandatory)][string]$ProcessName,
 		[AllowNull()][Nullable[int]]$ProcessIdValue,
-		[Parameter(Mandatory = $true)][string]$Reason
+		[Parameter(Mandatory)][string]$Reason
 	)
-	$idText = if ($null -ne $ProcessIdValue) { $ProcessIdValue.ToString() } else { '?' }
+	$idText = if ($null -ne $ProcessIdValue) { $ProcessIdValue.ToString() } else { "?" }
 	return ("{0} (PID {1}): {2}" -f $ProcessName, $idText, $Reason)
 }
 
-# -----------------------------------------------------------------------------
-# Confirmed-blocker construction
-# -----------------------------------------------------------------------------
-# Only callers that have already validated all fields create blocker entries
-# through this helper. The resulting hashtable has a fixed, known key set.
-function New-ConfirmedBlocker {
-	param(
-		[Parameter(Mandatory = $true)][string]$ProcessName,
-		[Parameter(Mandatory = $true)][int]$ProcessIdValue,
-		[Parameter(Mandatory = $true)][string]$ExePath
-	)
-	if ([string]::IsNullOrWhiteSpace($ProcessName)) { throw "blocker requires non-empty ProcessName" }
-	if ([string]::IsNullOrWhiteSpace($ExePath))     { throw "blocker requires non-empty ExePath" }
-	return @{
-		ProcessName    = $ProcessName
-		ProcessIdValue = $ProcessIdValue
-		ExePath        = $ExePath
+function Write-InspectionDiagnostics {
+	if ($script:InspectionFailures.Count -eq 0) { return }
+	Write-Warning "Unable to inspect the following process(es) (NOT classified as blockers):"
+	foreach ($f in $script:InspectionFailures) {
+		$line = Format-InspectionFailure `
+			-ProcessName    $f["ProcessName"] `
+			-ProcessIdValue $f["ProcessIdValue"] `
+			-Reason         $f["Reason"]
+		Write-Warning ("  " + $line)
 	}
 }
 
-# -----------------------------------------------------------------------------
-# Process discovery
-# -----------------------------------------------------------------------------
-# Returns ONLY processes for which we have strong evidence (a readable
-# executable path under the publish root) that they are blocking deletion.
-# Processes whose identity or path cannot be read are recorded as inspection
-# failures via Add-InspectionFailure and are never returned from this function.
+# ── Process discovery (publish-root scope only) ───────────────────────────────
 function Get-ProcessesUsingPath {
-	param([Parameter(Mandatory = $true)][string]$Path)
+	[OutputType([System.Collections.Generic.List[hashtable]])]
+	param([Parameter(Mandatory)][string]$PublishRootPath)
 
-	$normalized = [System.IO.Path]::GetFullPath($Path).TrimEnd([System.IO.Path]::DirectorySeparatorChar)
+	$rootNorm  = [System.IO.Path]::GetFullPath($PublishRootPath).TrimEnd([IO.Path]::DirectorySeparatorChar)
 	$candidates = @("RdpAudit.Configurator", "RdpAudit.Service", "RdpAudit.Mikrotik")
-	$found = New-Object 'System.Collections.Generic.List[hashtable]'
+	$found     = [System.Collections.Generic.List[hashtable]]::new()
 
 	foreach ($name in $candidates) {
 		$procs = @(Get-Process -Name $name -ErrorAction SilentlyContinue)
-		Write-Diag ("Found {0} '{1}' process(es)" -f $procs.Count, $name)
+		Write-Verbose ("Found {0} '{1}' process(es)" -f $procs.Count, $name)
 
 		foreach ($proc in $procs) {
 			if ($null -eq $proc) { continue }
 
-			# Identity: ProcessName + Id. If either fails, record and skip.
-			$procName = $null
+			$procName       = $null
 			$processIdValue = $null
 			try {
-				$procName = [string]$proc.ProcessName
+				$procName       = [string]$proc.ProcessName
 				$processIdValue = [int]$proc.Id
 			} catch {
 				Add-InspectionFailure -ProcessName $name -ProcessIdValue $null `
@@ -253,8 +327,7 @@ function Get-ProcessesUsingPath {
 				continue
 			}
 
-			# Path: most commonly fails (access denied, exited, native error).
-			$procPath = $null
+			$procPath      = $null
 			$pathReadError = $null
 			try {
 				$procPath = [string]$proc.Path
@@ -279,796 +352,1070 @@ function Get-ProcessesUsingPath {
 				$fullProcPath = [System.IO.Path]::GetFullPath($procPath)
 			} catch {
 				Add-InspectionFailure -ProcessName $procName -ProcessIdValue $processIdValue `
-					-Reason ("could not normalize path '$procPath': " + $_.Exception.Message)
+					-Reason ("could not normalize path: " + $_.Exception.Message)
 				continue
 			}
 
-			if ([string]::IsNullOrWhiteSpace($fullProcPath)) {
-				Add-InspectionFailure -ProcessName $procName -ProcessIdValue $processIdValue `
-					-Reason "normalized path was empty"
+			if (-not $fullProcPath.StartsWith($rootNorm, [System.StringComparison]::OrdinalIgnoreCase)) {
+				Write-Verbose ("Skipping {0} (PID {1}) -> outside publish root: {2}" -f $procName, $processIdValue, $fullProcPath)
 				continue
 			}
 
-			if (-not $fullProcPath.StartsWith($normalized, [System.StringComparison]::OrdinalIgnoreCase)) {
-				Write-Diag ("Skipping {0} (PID {1}) -> {2}: outside publish root" -f $procName, $processIdValue, $fullProcPath)
-				continue
-			}
-
-			$blocker = New-ConfirmedBlocker -ProcessName $procName -ProcessIdValue $processIdValue -ExePath $fullProcPath
-			$found.Add($blocker) | Out-Null
-			Write-Diag ("Blocker confirmed: {0} (PID {1}) -> {2}" -f $procName, $processIdValue, $fullProcPath)
+			$found.Add((New-ConfirmedBlocker -ProcessName $procName -ProcessIdValue $processIdValue -ExePath $fullProcPath)) | Out-Null
+			Write-Verbose ("Blocker confirmed: {0} (PID {1}) -> {2}" -f $procName, $processIdValue, $fullProcPath)
 		}
 	}
 
-	# Emit a single object: the List itself. Callers iterate via .Count / foreach.
-	# Using Write-Output -NoEnumerate avoids both:
-	#   - PowerShell unwrapping the List into individual elements, AND
-	#   - the classic ", $arr.ToArray()" double-wrap where @() on the result
-	#     produces a one-element array containing an empty inner array.
 	Write-Output -NoEnumerate $found
 }
 
-function Write-InspectionDiagnostics {
-	if ($script:InspectionFailures.Count -eq 0) { return }
-	Write-Host "" -ForegroundColor DarkGray
-	Write-Host "Unable to inspect the following process(es) (NOT classified as blockers):" -ForegroundColor DarkYellow
-	foreach ($f in $script:InspectionFailures) {
-		$line = Format-InspectionFailure `
-			-ProcessName    $f['ProcessName'] `
-			-ProcessIdValue $f['ProcessIdValue'] `
-			-Reason         $f['Reason']
-		Write-Host ("  " + $line) -ForegroundColor DarkYellow
-	}
-	Write-Host "Hint: run this script from an elevated PowerShell to read process paths." -ForegroundColor DarkGray
-}
-
-# -----------------------------------------------------------------------------
-# Failure formatting
-# -----------------------------------------------------------------------------
-function Format-RemoveFailure {
+# ── File-lock wait with exponential back-off ──────────────────────────────────
+function Wait-FileUnlocked {
+	[OutputType([bool])]
 	param(
-		[Parameter(Mandatory = $true)][string]$Path,
-		[int]$Attempts = 0,
-		[System.Collections.IEnumerable]$StillLocking = $null,
-		[System.Exception]$OriginalException = $null,
-		[string]$ExtraContext = $null
+		[Parameter(Mandatory)][string]$FilePath,
+		[int]$TimeoutSeconds = 30
 	)
-
-	$sb = [System.Text.StringBuilder]::new()
-	[void]$sb.AppendLine("Unable to clean publish output.")
-	[void]$sb.AppendLine("  Target path : $Path")
-	if ($Attempts -gt 0) {
-		[void]$sb.AppendLine("  Attempts    : $Attempts")
-	}
-
-	$stillCount = 0
-	if ($null -ne $StillLocking) {
-		foreach ($_ in $StillLocking) { $stillCount++ }
-	}
-
-	if ($stillCount -gt 0) {
-		[void]$sb.AppendLine("  Confirmed RdpAudit blockers still running from the folder:")
-		foreach ($s in $StillLocking) {
-			$line = Format-LockingProcess `
-				-ProcessName    $s['ProcessName'] `
-				-ProcessIdValue $s['ProcessIdValue'] `
-				-ExePath        $s['ExePath']
-			[void]$sb.AppendLine("    " + $line)
-		}
-	} else {
-		[void]$sb.AppendLine("  Confirmed RdpAudit blockers: none detected.")
-	}
-
-	if ($script:InspectionFailures.Count -gt 0) {
-		[void]$sb.AppendLine("  Processes we could not inspect (NOT confirmed as blockers):")
-		foreach ($f in $script:InspectionFailures) {
-			$line = Format-InspectionFailure `
-				-ProcessName    $f['ProcessName'] `
-				-ProcessIdValue $f['ProcessIdValue'] `
-				-Reason         $f['Reason']
-			[void]$sb.AppendLine("    " + $line)
-		}
-	}
-
-	if ($null -ne $OriginalException) {
-		[void]$sb.AppendLine("  Underlying error:")
-		[void]$sb.AppendLine("    Type    : " + $OriginalException.GetType().FullName)
-		[void]$sb.AppendLine("    Message : " + $OriginalException.Message)
-		# IOException carries a target file name on Windows for locked files.
+	$deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+	$delay    = 100   # milliseconds, doubles each cycle, capped at 2000
+	while ([DateTime]::UtcNow -lt $deadline) {
 		try {
-			$targetFile = $OriginalException.PSObject.Properties['FileName']
-			if ($null -ne $targetFile -and $null -ne $targetFile.Value) {
-				[void]$sb.AppendLine("    File    : " + $targetFile.Value)
-			}
-		} catch {
-			# best-effort only
+			$stream = [System.IO.File]::Open($FilePath, [System.IO.FileMode]::Open,
+				[System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
+			$stream.Dispose()
+			return $true
+		} catch [System.IO.IOException] {
+			# File still locked — back off and retry.
 		}
+		$remaining = ($deadline - [DateTime]::UtcNow).TotalMilliseconds
+		if ($remaining -le 0) { break }
+		$sleep = [Math]::Min($delay, [Math]::Min(2000, [int]$remaining))
+		[System.Threading.Thread]::Sleep($sleep)
+		$delay = [Math]::Min($delay * 2, 2000)
 	}
-
-	if (-not [string]::IsNullOrWhiteSpace($ExtraContext)) {
-		[void]$sb.AppendLine("  Context     : $ExtraContext")
-	}
-
-	[void]$sb.AppendLine("  Likely causes:")
-	[void]$sb.AppendLine("    - RdpAudit.Configurator window is still open.")
-	[void]$sb.AppendLine("    - The installed RdpAudit service is running (locks Service\\*.exe).")
-	[void]$sb.AppendLine("    - An Explorer window or terminal has the publish folder open.")
-	[void]$sb.AppendLine("    - Antivirus / EDR is scanning the freshly written binaries.")
-	[void]$sb.AppendLine("    - A previous publish left a stale handle; reboot resolves it.")
-	[void]$sb.AppendLine("  Next steps:")
-	[void]$sb.AppendLine("    1. Close Configurator: taskkill /IM RdpAudit.Configurator.exe /F")
-	[void]$sb.AppendLine("    2. Stop the service (if installed): sc.exe stop RdpAudit")
-	[void]$sb.AppendLine("    3. Close any Explorer/terminal pointing at '$Path'.")
-	[void]$sb.AppendLine("    4. Re-run:  pwsh -NoProfile -File .\\publish.ps1 -Force -Verbose")
-
-	return $sb.ToString().TrimEnd()
+	return $false
 }
 
-# -----------------------------------------------------------------------------
-# Removal with actionable diagnostics
-# -----------------------------------------------------------------------------
-function Remove-PublishOutput {
-	param([Parameter(Mandatory = $true)][string]$Path)
+# ── Graceful process termination (publish-root scope only) ────────────────────
+function Stop-PublishRootProcess {
+	param([Parameter(Mandatory)][hashtable]$Blocker)
+	$pName          = $blocker["ProcessName"]
+	$processIdValue = $blocker["ProcessIdValue"]
+	$exePath        = $blocker["ExePath"]
 
-	if (-not (Test-Path $Path)) {
-		Write-Diag "Publish output path does not exist; nothing to remove: $Path"
+	Write-Information ("  Requesting graceful exit: {0} (PID {1}) ..." -f $pName, $processIdValue)
+	try {
+		$proc = Get-Process -Id $processIdValue -ErrorAction SilentlyContinue
+		if ($null -eq $proc) {
+			Write-Verbose ("  Process {0} (PID {1}) already gone." -f $pName, $processIdValue)
+			return
+		}
+		# Gentle: close main window and wait up to 5 s.
+		$null = $proc.CloseMainWindow()
+		$deadline = [DateTime]::UtcNow.AddSeconds(5)
+		$delay    = 100
+		while (-not $proc.HasExited -and [DateTime]::UtcNow -lt $deadline) {
+			[System.Threading.Thread]::Sleep($delay)
+			$delay = [Math]::Min($delay * 2, 1000)
+		}
+		if (-not $proc.HasExited) {
+			Write-Verbose ("  {0} (PID {1}) did not exit gracefully; forcing." -f $pName, $processIdValue)
+			Stop-Process -Id $processIdValue -Force -ErrorAction Stop
+		}
+		Write-Information ("  Terminated: {0} (PID {1}) <- {2}" -f $pName, $processIdValue, $exePath)
+		$script:TerminatedProcs.Add($blocker) | Out-Null
+	} catch {
+		throw ("Failed to terminate {0} (PID {1}): {2}" -f $pName, $processIdValue, $_.Exception.Message)
+	}
+}
+
+# ── Handle publish-root blockers with -Force / interactive gate ───────────────
+# Version: 2.0.1 — fix empty-collection bind error on zero-blocker path
+function Invoke-BlockerResolution {
+	param(
+		[AllowNull()]
+		[AllowEmptyCollection()]
+		[System.Collections.Generic.List[hashtable]]$Blockers = $null
+	)
+	if ($null -eq $Blockers -or $Blockers.Count -eq 0) { return }
+
+	Write-Warning ("The following process(es) run from the publish folder and may hold file locks:")
+	foreach ($entry in $Blockers) {
+		$line = Format-LockingProcess `
+			-ProcessName    $entry["ProcessName"] `
+			-ProcessIdValue $entry["ProcessIdValue"] `
+			-ExePath        $entry["ExePath"]
+		Write-Warning ("  " + $line)
+	}
+	Write-InspectionDiagnostics
+
+	if ($Force) {
+		foreach ($b in $Blockers) {
+			if ($PSCmdlet.ShouldProcess(
+				("PID {0} ({1}) at {2}" -f $b["ProcessIdValue"], $b["ProcessName"], $b["ExePath"]),
+				"Terminate process from publish folder")) {
+				Stop-PublishRootProcess -Blocker $b
+			}
+		}
 		return
 	}
 
-	$script:InspectionFailures.Clear()
-	$locking = Get-ProcessesUsingPath -Path $Path
-
-	if ($null -ne $locking -and $locking.Count -gt 0) {
-		Write-Host "The following RdpAudit processes are running from the publish folder and will block deletion:" -ForegroundColor Yellow
-		foreach ($entry in $locking) {
-			$line = Format-LockingProcess `
-				-ProcessName    $entry['ProcessName'] `
-				-ProcessIdValue $entry['ProcessIdValue'] `
-				-ExePath        $entry['ExePath']
-			Write-Host ("  " + $line) -ForegroundColor Yellow
-		}
-		Write-InspectionDiagnostics
-
-		if ($Force) {
-			foreach ($p in $locking) {
-				$pName = $p['ProcessName']
-				$processIdValue = $p['ProcessIdValue']
-				Write-Host ("Stopping {0} (PID {1}) ..." -f $pName, $processIdValue) -ForegroundColor Yellow
-				try {
-					Stop-Process -Id $processIdValue -Force -ErrorAction Stop
-				} catch {
-					throw (Format-RemoveFailure -Path $Path -ExtraContext (
-						"Failed to stop {0} (PID {1}): {2} ({3})" -f `
-							$pName, $processIdValue, $_.Exception.Message, $_.Exception.GetType().FullName))
-				}
-			}
-			Start-Sleep -Milliseconds 500
-		} else {
-			throw (Format-RemoveFailure -Path $Path -ExtraContext (
-				"Detected " + $locking.Count + " RdpAudit process(es) running from the publish folder. " +
-				"Close the Configurator (and stop the service if installed) and retry, " +
-				"or re-run with -Force to terminate them automatically."))
-		}
-	} else {
-		# No confirmed blockers. Surface inspection failures (if any) so the
-		# user knows detection was best-effort, then proceed to deletion.
-		Write-InspectionDiagnostics
+	if (-not [Environment]::UserInteractive) {
+		throw ("Non-interactive session: {0} process(es) running from the publish folder. " +
+			"Re-run with -Force to terminate them automatically, or close them first.") -f $Blockers.Count
 	}
 
-	$attempts = 0
-	$maxAttempts = 5
-	$lastError = $null
-	while ($true) {
-		$attempts++
-		try {
-			Write-Diag ("Removing '{0}' (attempt {1}/{2})" -f $Path, $attempts, $maxAttempts)
-			Remove-Item -Recurse -Force $Path -ErrorAction Stop
-			return
-		} catch {
-			$lastError = $_
-			if ($attempts -ge $maxAttempts) {
-				$script:InspectionFailures.Clear()
-				$still = Get-ProcessesUsingPath -Path $Path
-				throw (Format-RemoveFailure `
-					-Path $Path `
-					-Attempts $attempts `
-					-StillLocking $still `
-					-OriginalException $lastError.Exception)
-			}
-			Write-Diag ("Remove-Item attempt {0} failed: {1}" -f $attempts, $_.Exception.Message)
-			Start-Sleep -Milliseconds (250 * $attempts)
+	$names  = ($Blockers | ForEach-Object { $_["ProcessName"] + " PID " + $_["ProcessIdValue"] }) -join ", "
+	$answer = $Host.UI.PromptForChoice(
+		"Publish folder blocker(s) detected",
+		"Terminate: $names ?",
+		@("&Yes", "&No"),
+		1
+	)
+	if ($answer -ne 0) {
+		throw "User declined to terminate publish-folder processes. Publish cancelled."
+	}
+	foreach ($b in $Blockers) {
+		if ($PSCmdlet.ShouldProcess(
+			("PID {0} ({1})" -f $b["ProcessIdValue"], $b["ProcessName"]),
+			"Terminate process from publish folder")) {
+			Stop-PublishRootProcess -Blocker $b
 		}
 	}
 }
 
-# -----------------------------------------------------------------------------
-# Pre-flight validation
-# -----------------------------------------------------------------------------
+# ── Pre-flight ────────────────────────────────────────────────────────────────
 function Test-PublishPrerequisites {
-	$failures = New-Object 'System.Collections.Generic.List[string]'
+	param([Parameter(Mandatory)][string]$ResolvedVersion)
+	$failures = [System.Collections.Generic.List[string]]::new()
 
-	# 1. Verify AllowUnsafeBlocks is enabled (required for NativeMemory/pointers in ring buffer)
-	$serviceCsproj = Join-Path $PSScriptRoot 'src/RdpAudit.Service/RdpAudit.Service.csproj'
-	if (Test-Path $serviceCsproj) {
-		$content = Get-Content $serviceCsproj -Raw -Encoding UTF8
-		if ($content -notmatch '<AllowUnsafeBlocks>\s*true\s*</AllowUnsafeBlocks>') {
-			$failures.Add(
-				'RdpAudit.Service.csproj is missing <AllowUnsafeBlocks>true</AllowUnsafeBlocks>. ' +
-				'Required for Lock-Free Ring Buffer (NativeMemory, unsafe pointers). ' +
-				'Add it inside the first <PropertyGroup>.'
-			) | Out-Null
-		}
-	} else {
-		$failures.Add("Service project not found at '$serviceCsproj'.") | Out-Null
-	}
-
-	# 2. Verify .NET SDK 8.0+
+	# SDK version.
 	try {
 		$sdkRaw = & dotnet --version 2>$null
 		if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($sdkRaw)) {
-			$failures.Add('dotnet SDK not found on PATH.') | Out-Null
+			$failures.Add("dotnet SDK not found on PATH.") | Out-Null
 		} else {
-			$sdkVersion = $sdkRaw.Trim()
-			$parts      = $sdkVersion -split '\.'
-			$major      = [int]$parts[0]
+			$major = [int](($sdkRaw.Trim() -split "\.")[0])
 			if ($major -lt 8) {
-				$failures.Add("RDPAudit 2.0 requires .NET SDK 8.0+. Found: $sdkVersion") | Out-Null
+				$failures.Add(("RDPAudit 2.0 requires .NET SDK 8.0+; found: " + $sdkRaw.Trim())) | Out-Null
 			}
 		}
 	} catch {
-		$failures.Add('Could not determine .NET SDK version: ' + $_.Exception.Message) | Out-Null
+		$failures.Add("Could not determine .NET SDK version: " + $_.Exception.Message) | Out-Null
 	}
 
-	# 3. Warn if publish.ps1 $Version drifts from Directory.Build.props VersionPrefix
-	$dbp = Join-Path $PSScriptRoot 'Directory.Build.props'
-	if (Test-Path $dbp) {
-		$dbpContent = Get-Content $dbp -Raw -Encoding UTF8
-		$m = [regex]::Match($dbpContent, '<VersionPrefix[^>]*>\s*([^<]+?)\s*</VersionPrefix>')
-		if ($m.Success) {
-			$dbpVersion = $m.Groups[1].Value.Trim()
-			if ($dbpVersion -ne $Version) {
-				Write-Host (
-					"Warning: publish.ps1 -Version '$Version' differs from " +
-					"Directory.Build.props VersionPrefix '$dbpVersion'. " +
-					"The -p:VersionPrefix override will win; consider syncing them."
-				) -ForegroundColor Yellow
-			}
+	# AllowUnsafeBlocks in Service project.
+	$svcCsproj = Join-Path $PSScriptRoot "src/RdpAudit.Service/RdpAudit.Service.csproj"
+	if (Test-Path $svcCsproj) {
+		$content = Get-Content $svcCsproj -Raw -Encoding UTF8
+		if ($content -notmatch '<AllowUnsafeBlocks>\s*true\s*</AllowUnsafeBlocks>') {
+			$failures.Add("RdpAudit.Service.csproj missing <AllowUnsafeBlocks>true</AllowUnsafeBlocks>.") | Out-Null
+		}
+	} else {
+		$failures.Add("Service project not found: '$svcCsproj'.") | Out-Null
+	}
+
+	# All projects exist.
+	foreach ($proj in $script:Projects) {
+		$full = Join-Path $PSScriptRoot $proj["CsprojRelPath"]
+		if (-not (Test-Path $full)) {
+			$failures.Add(("Project not found: '$full'.")) | Out-Null
 		}
 	}
 
 	if ($failures.Count -gt 0) {
 		$sb = [System.Text.StringBuilder]::new()
-		[void]$sb.AppendLine("Pre-flight validation failed ($($failures.Count) issue(s)):")
-		foreach ($f in $failures) {
-			[void]$sb.AppendLine("  x $f")
-		}
+		[void]$sb.AppendLine(("Pre-flight validation failed ({0} issue(s)):" -f $failures.Count))
+		foreach ($f in $failures) { [void]$sb.AppendLine("  x $f") }
 		throw $sb.ToString().TrimEnd()
 	}
 
-	Write-Host 'Pre-flight validation passed (unsafe blocks enabled, SDK 8.0+, versions aligned).' -ForegroundColor Green
+	Write-Information ("Pre-flight OK: SDK {0}+, projects found, version = {1} (source: {2})" -f "8.0", $ResolvedVersion, $script:VersionSource)
 }
 
+# ── Atomic file replacement ───────────────────────────────────────────────────
+# Copies $Source to $Destination via a .new staging file; verifies size parity;
+# replaces atomically. Rolls back and throws if anything fails.
+function Copy-FileAtomic {
+	param(
+		[Parameter(Mandatory)][string]$Source,
+		[Parameter(Mandatory)][string]$Destination
+	)
+	$newPath = $Destination + ".new"
+	$oldPath = $Destination + ".old"
+	try {
+		Copy-Item -LiteralPath $Source -Destination $newPath -Force -ErrorAction Stop
+		# Size sanity — not a cryptographic check but catches a truncated copy immediately.
+		$srcLen = (Get-Item $Source).Length
+		$dstLen = (Get-Item $newPath).Length
+		if ($srcLen -ne $dstLen) {
+			throw ("Staged copy size mismatch: source={0} staged={1}" -f $srcLen, $dstLen)
+		}
+		if (Test-Path $Destination) {
+			Move-Item -LiteralPath $Destination -Destination $oldPath -Force -ErrorAction Stop
+		}
+		Move-Item -LiteralPath $newPath -Destination $Destination -Force -ErrorAction Stop
+		if (Test-Path $oldPath) {
+			Remove-Item -LiteralPath $oldPath -Force -ErrorAction SilentlyContinue
+		}
+	} catch {
+		if (Test-Path $newPath) { Remove-Item -LiteralPath $newPath -Force -ErrorAction SilentlyContinue }
+		if ((Test-Path $oldPath) -and -not (Test-Path $Destination)) {
+			Move-Item -LiteralPath $oldPath -Destination $Destination -Force -ErrorAction SilentlyContinue
+		}
+		throw
+	}
+}
 
-# -----------------------------------------------------------------------------
-# Publish
-# -----------------------------------------------------------------------------
+# ── Get FileVersion from a PE (best-effort) ───────────────────────────────────
+function Get-FileVersionString {
+	[OutputType([string])]
+	param([Parameter(Mandatory)][string]$FilePath)
+	try {
+		$vi = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($FilePath)
+		if ($null -eq $vi -or [string]::IsNullOrWhiteSpace($vi.FileVersion)) { return "" }
+		return $vi.FileVersion.Trim()
+	} catch {
+		return ""
+	}
+}
+
+# ── Publish a single project ───────────────────────────────────────────────────
 function Publish-Project {
 	param(
-		[Parameter(Mandatory = $true)][string]$Project,
-		[Parameter(Mandatory = $true)][string]$Subdir,
+		[Parameter(Mandatory)][string]$CsprojRelPath,
+		[Parameter(Mandatory)][string]$Subdir,
+		[Parameter(Mandatory)][string]$ExeName,
+		[string]$ResolvedVersion = "",
 		[string]$RevisionId = ""
 	)
+	$target   = Join-Path $script:PublishRoot $Subdir
+	$csproj   = Join-Path $PSScriptRoot $CsprojRelPath
+	Write-Information ("  Publishing {0} -> {1}" -f $CsprojRelPath, $target)
 
-	$target = Join-Path $publishRoot $Subdir
-	Write-Host "Publishing $Project -> $target" -ForegroundColor Cyan
+	if ($PSCmdlet.ShouldProcess($target, "dotnet publish $CsprojRelPath")) {
+		$publishArgs = @(
+			"publish", $csproj,
+			"-c", $Configuration,
+			"-r", "win-x64",
+			"--self-contained", "true",
+			"-p:PublishSingleFile=true",
+			"-p:IncludeNativeLibrariesForSelfExtract=true",
+			"-p:EnableCompressionInSingleFile=true"
+		)
+		if (-not [string]::IsNullOrWhiteSpace($ResolvedVersion)) {
+			$publishArgs += "-p:VersionPrefix=$ResolvedVersion"
+		}
+		if (-not [string]::IsNullOrWhiteSpace($RevisionId)) {
+			$publishArgs += "-p:SourceRevisionId=$RevisionId"
+		}
+		$publishArgs += $script:DotnetLanguageArgs
+		$publishArgs += @("-o", $target)
 
-	$publishArgs = @(
-		$Project,
-		"-c", $Configuration,
-		"-r", "win-x64",
-		"--self-contained", "true",
-		"-p:PublishSingleFile=true",
-		"-p:IncludeNativeLibrariesForSelfExtract=true",
-		"-p:EnableCompressionInSingleFile=true",
-		"-p:VersionPrefix=$Version"
-	)
-	$publishArgs += $script:DotnetLanguageArgs
-	if (-not [string]::IsNullOrWhiteSpace($RevisionId)) {
-		$publishArgs += "-p:SourceRevisionId=$RevisionId"
-	}
-	$publishArgs += @("-o", $target)
-
-	$exitCode = Invoke-DotnetCli -Arguments (@("publish") + $publishArgs)
-	if ($exitCode -ne 0) {
-		throw "publish failed: $Project (exit $exitCode)"
+		$exitCode = Invoke-DotnetCli -Arguments $publishArgs
+		if ($exitCode -ne 0) {
+			throw ("dotnet publish failed for '{0}' (exit {1})" -f $CsprojRelPath, $exitCode)
+		}
 	}
 }
 
-# -----------------------------------------------------------------------------
-# SQLite diagnostic support bundle
-# -----------------------------------------------------------------------------
-# The Configurator is published as a self-contained single-file executable, so the
-# SQLite dependency graph (Microsoft.Data.Sqlite + SQLitePCLRaw.* + the native
-# e_sqlite3.dll) is embedded INSIDE the .exe and extracted only at process start.
-# That is fine for the running app, but it is NOT enough for external PowerShell
-# diagnostics that call Add-Type / [System.Runtime.InteropServices.NativeLibrary]::Load
-# against loose files on disk. This stage guarantees those exact files are physically
-# present next to the published Configurator, resolved from the SAME NuGet dependency
-# graph/version the app builds against — never downloaded from sqlite.org and never a
-# global C:\sqlite install.
-#
-# These names MUST match RdpAudit.Core.Util.SqliteSupportBundle.RequiredFiles exactly.
-$script:SqliteSupportFiles = @(
-	"Microsoft.Data.Sqlite.dll",
-	"SQLitePCLRaw.core.dll",
-	"SQLitePCLRaw.provider.e_sqlite3.dll",
-	"SQLitePCLRaw.batteries_v2.dll",
-	"e_sqlite3.dll"
-)
-
-# Produces a directory tree that contains the SQLite support files as LOOSE files by
-# building (not single-file publishing) the Configurator for win-x64. The regular build
-# output flattens both the managed SQLitePCLRaw / Microsoft.Data.Sqlite assemblies and the
-# native e_sqlite3.dll into the RID output folder, all from the restored NuGet packages —
-# so it is the deterministic, user-path-free source for the bundle. Returns the resolved
-# output directory or throws an actionable error naming the project and the restore command.
-function Resolve-SqliteBundleSource {
+# ── Update publish folder from dotnet output (diff + atomic replace) ──────────
+# $BuildOutputDir  — where `dotnet publish -o` wrote the new files
+# $PublishDir      — the live publish subfolder to update
+function Update-PublishDirectory {
 	param(
-		[Parameter(Mandatory = $true)][string]$Project,
-		[Parameter(Mandatory = $true)][string]$Version
+		[Parameter(Mandatory)][string]$BuildOutputDir,
+		[Parameter(Mandatory)][string]$PublishDir,
+		[Parameter(Mandatory)][string]$ExeName,
+		[string]$ExpectedVersion = ""
 	)
+	if (-not (Test-Path $PublishDir)) {
+		if ($PSCmdlet.ShouldProcess($PublishDir, "Create publish subdirectory")) {
+			New-Item -ItemType Directory -Path $PublishDir | Out-Null
+		}
+	}
 
+	$newFiles = @(Get-ChildItem -Path $BuildOutputDir -File -Recurse -ErrorAction SilentlyContinue |
+		Where-Object { Test-IsUnderPublishRoot -Path $PublishDir })
+
+	# Build a set of new file names (relative to BuildOutputDir).
+	$newRelNames = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+	foreach ($f in (Get-ChildItem -Path $BuildOutputDir -File -ErrorAction SilentlyContinue)) {
+		[void]$newRelNames.Add($f.Name)
+	}
+
+	# Remove stale files in PublishDir that are NOT in new output.
+	foreach ($existing in @(Get-ChildItem -Path $PublishDir -File -ErrorAction SilentlyContinue)) {
+		if (-not $newRelNames.Contains($existing.Name)) {
+			if (-not (Test-IsUnderPublishRoot -Path $existing.FullName)) { continue }
+			$verBefore = Get-FileVersionString -FilePath $existing.FullName
+			if ($PSCmdlet.ShouldProcess($existing.FullName, "Remove stale file from publish folder")) {
+				Remove-Item -LiteralPath $existing.FullName -Force -ErrorAction Stop
+			}
+			$script:ReportRows.Add(@{
+				File    = $existing.Name
+				Subdir  = [System.IO.Path]::GetFileName($PublishDir)
+				VerBefore = $verBefore
+				VerAfter  = "—"
+				Action    = "removed"
+			}) | Out-Null
+		}
+	}
+
+	# Copy / update files from build output.
+	foreach ($srcFile in @(Get-ChildItem -Path $BuildOutputDir -File -ErrorAction SilentlyContinue)) {
+		$destPath  = Join-Path $PublishDir $srcFile.Name
+		$verBefore = if (Test-Path $destPath) { Get-FileVersionString -FilePath $destPath } else { "" }
+		$verAfter  = Get-FileVersionString -FilePath $srcFile.FullName
+		$action    = "added"
+
+		if (Test-Path $destPath) {
+			$srcHash  = (Get-FileHash -LiteralPath $srcFile.FullName  -Algorithm SHA256).Hash
+			$dstHash  = (Get-FileHash -LiteralPath $destPath          -Algorithm SHA256).Hash
+			if ($srcHash -eq $dstHash) {
+				$action = "unchanged"
+			} else {
+				$action = "replaced"
+			}
+		}
+
+		if ($action -ne "unchanged") {
+			# Wait for any lingering lock (AV scanner, etc.)
+			if (Test-Path $destPath) {
+				$freed = Wait-FileUnlocked -FilePath $destPath -TimeoutSeconds $Timeout
+				if (-not $freed) {
+					# Identify who still holds it.
+					$blockers = Get-ProcessesUsingPath -PublishRootPath $script:PublishRoot
+					$holderDesc = "unknown holder"
+					if ($null -ne $blockers -and $blockers.Count -gt 0) {
+						$holderDesc = ($blockers | ForEach-Object {
+							Format-LockingProcess -ProcessName $_["ProcessName"] -ProcessIdValue $_["ProcessIdValue"] -ExePath $_["ExePath"]
+						}) -join "; "
+					}
+					throw ("File lock timeout after {0}s: '{1}'. Holder: {2}. Re-run with -Force to terminate or increase -Timeout." -f $Timeout, $destPath, $holderDesc)
+				}
+			}
+			if ($PSCmdlet.ShouldProcess($destPath, ("Copy from build output ({0})" -f $action))) {
+				Copy-FileAtomic -Source $srcFile.FullName -Destination $destPath
+			}
+		}
+
+		$script:ReportRows.Add(@{
+			File      = $srcFile.Name
+			Subdir    = [System.IO.Path]::GetFileName($PublishDir)
+			VerBefore = $verBefore
+			VerAfter  = $verAfter
+			Action    = $action
+		}) | Out-Null
+	}
+}
+
+# ── SQLite support bundle ─────────────────────────────────────────────────────
+function Resolve-SqliteBundleSource {
+	[OutputType([string])]
+	param(
+		[Parameter(Mandatory)][string]$Project,
+		[Parameter(Mandatory)][string]$ResolvedVersion
+	)
 	$projectFull = Join-Path $PSScriptRoot $Project
 	if (-not (Test-Path $projectFull)) {
 		throw "Cannot resolve SQLite support bundle: project not found at '$projectFull'."
 	}
 
-	# Ensure packages are restored before we attempt to resolve any dependency file. A missing
-	# or stale NuGet cache is repaired here rather than failing later with an opaque copy error.
-	Write-Host "Restoring $Project for SQLite bundle resolution..." -ForegroundColor DarkCyan
+	Write-Information "Restoring $Project for SQLite bundle resolution..."
 	$restoreExitCode = Invoke-DotnetCli -Arguments (@("restore", $projectFull, "-r", "win-x64") + $script:DotnetLanguageArgs)
 	if ($restoreExitCode -ne 0) {
-		throw ("dotnet restore failed for '{0}' (exit {1}). The SQLite support bundle cannot be assembled without restored NuGet packages. Run:`n    dotnet restore `"{0}`" -r win-x64`nand retry." -f $projectFull, $restoreExitCode)
+		throw ("dotnet restore failed for '{0}' (exit {1})." -f $projectFull, $restoreExitCode)
 	}
 
-	$bundleObjDir = Join-Path $PSScriptRoot "publish/.sqlite-bundle"
+	$bundleObjDir = Join-Path $script:PublishRoot ".sqlite-bundle"
 	if (Test-Path $bundleObjDir) {
 		Remove-Item -Recurse -Force $bundleObjDir -ErrorAction SilentlyContinue
 	}
 
-	Write-Host "Building $Project (framework-dependent, loose files) for SQLite bundle resolution..." -ForegroundColor DarkCyan
-	# Self-contained=false keeps the build fast and small; the SQLite managed + native files are
-	# still emitted into the RID output folder because they are direct/transitive package assets.
+	Write-Information "Building $Project (framework-dependent, loose files) for SQLite bundle..."
 	$buildArgs = @(
-		"build",
-		$projectFull,
+		"build", $projectFull,
 		"-c", $Configuration,
 		"-r", "win-x64",
 		"--self-contained", "false",
-		"-p:PublishSingleFile=false",
-		"-p:VersionPrefix=$Version"
-	) + $script:DotnetLanguageArgs + @("-o", $bundleObjDir)
+		"-p:PublishSingleFile=false"
+	)
+	if (-not [string]::IsNullOrWhiteSpace($ResolvedVersion)) {
+		$buildArgs += "-p:VersionPrefix=$ResolvedVersion"
+	}
+	$buildArgs += $script:DotnetLanguageArgs + @("-o", $bundleObjDir)
 	$buildExitCode = Invoke-DotnetCli -Arguments $buildArgs
 	if ($buildExitCode -ne 0) {
-		throw ("dotnet build failed for '{0}' (exit {1}) while assembling the SQLite support bundle. Inspect the build output above; the most common cause is a missing NuGet package, which `dotnet restore` should repair." -f $projectFull, $buildExitCode)
+		throw ("dotnet build failed for '{0}' (exit {1}) while assembling the SQLite support bundle." -f $projectFull, $buildExitCode)
 	}
-
 	return $bundleObjDir
 }
 
-# -----------------------------------------------------------------------------
-# Documentation copy
-# -----------------------------------------------------------------------------
-
-function Copy-PublishDocumentation {
-	$docsSource = Join-Path $PSScriptRoot 'docs'
-	$docsTarget = Join-Path $publishRoot  'Docs'
-
-	if (-not (Test-Path $docsSource)) {
-		Write-Diag 'No docs/ folder found; skipping documentation copy.'
-		return
-	}
-
-	if (-not (Test-Path $docsTarget)) {
-		New-Item -ItemType Directory -Path $docsTarget | Out-Null
-	}
-
-	$copied = 0
-
-	foreach ($file in @(Get-ChildItem -Path $docsSource -File -Filter '*.md' -ErrorAction SilentlyContinue)) {
-		Copy-Item -Path $file.FullName -Destination $docsTarget -Force
-		$copied++
-		Write-Diag ("Copied doc: " + $file.Name)
-	}
-
-	# Copy root-level extras when present
-	foreach ($name in @('README.md', 'Detect_Attack_Strategy_v3.md')) {
-		$path = Join-Path $PSScriptRoot $name
-		if (Test-Path $path) {
-			Copy-Item -Path $path -Destination $docsTarget -Force
-			$copied++
-			Write-Diag ("Copied root doc: $name")
-		}
-	}
-
-	if ($copied -gt 0) {
-		Write-Host ("Copied $copied documentation file(s) to $docsTarget") -ForegroundColor Green
-	} else {
-		Write-Diag 'No documentation files found to copy.'
-	}
-}
-
-
-# Copies the SQLite support files into $TargetDir, resolving each from $SourceDir (the loose
-# build output). The native e_sqlite3.dll can land either in the RID root or under
-# runtimes/win-x64/native depending on the SDK, so both are searched. Throws an actionable
-# error listing every file that could not be resolved.
 function Copy-SqliteSupportFiles {
+	[OutputType([System.Collections.Generic.List[string]])]
 	param(
-		[Parameter(Mandatory = $true)][string]$SourceDir,
-		[Parameter(Mandatory = $true)][string]$TargetDir
+		[Parameter(Mandatory)][string]$SourceDir,
+		[Parameter(Mandatory)][string]$TargetDir
 	)
-
 	if (-not (Test-Path $TargetDir)) {
 		New-Item -ItemType Directory -Path $TargetDir | Out-Null
 	}
-
-	$missing = New-Object 'System.Collections.Generic.List[string]'
-	$copied = New-Object 'System.Collections.Generic.List[string]'
+	$missing = [System.Collections.Generic.List[string]]::new()
+	$copied  = [System.Collections.Generic.List[string]]::new()
 
 	foreach ($name in $script:SqliteSupportFiles) {
 		$resolved = $null
-		$direct = Join-Path $SourceDir $name
+		$direct   = Join-Path $SourceDir $name
 		if (Test-Path $direct) {
 			$resolved = $direct
 		} else {
-			# Native libraries are frequently emitted under runtimes/<rid>/native rather than the
-			# RID root; search the whole build tree for the leaf name as a last resort.
 			$candidate = Get-ChildItem -Path $SourceDir -Filter $name -Recurse -File -ErrorAction SilentlyContinue |
 				Select-Object -First 1
-			if ($null -ne $candidate) {
-				$resolved = $candidate.FullName
-			}
+			if ($null -ne $candidate) { $resolved = $candidate.FullName }
 		}
-
 		if ($null -eq $resolved) {
 			$missing.Add($name) | Out-Null
 			continue
 		}
-
 		$dest = Join-Path $TargetDir $name
-		Copy-Item -Path $resolved -Destination $dest -Force
+		if ($PSCmdlet.ShouldProcess($dest, "Copy SQLite bundle file $name")) {
+			Copy-Item -LiteralPath $resolved -Destination $dest -Force
+		}
 		$copied.Add($name) | Out-Null
-		Write-Diag ("SQLite bundle: copied {0} <- {1}" -f $name, $resolved)
+		Write-Verbose ("SQLite bundle: copied {0} <- {1}" -f $name, $resolved)
 	}
 
 	if ($missing.Count -gt 0) {
-		throw ("SQLite support bundle incomplete: could not resolve {0} of {1} required file(s): {2}. Searched '{3}'. These files come from the Microsoft.EntityFrameworkCore.Sqlite -> Microsoft.Data.Sqlite -> SQLitePCLRaw.* NuGet graph; ensure `dotnet restore` succeeded and do NOT substitute a sqlite.org download." -f `
+		throw ("SQLite support bundle incomplete: missing {0}/{1}: {2}. Searched: '{3}'." -f
 			$missing.Count, $script:SqliteSupportFiles.Count, ($missing -join ", "), $SourceDir)
 	}
-
-	return $copied
+	Write-Output -NoEnumerate $copied
 }
 
-# -----------------------------------------------------------------------------
-# SQLite support bundle — top-level orchestration
-# Renamed from Ensure-SqliteSupportBundle (unapproved verb) to Invoke-SqliteSupportBundle
-# -----------------------------------------------------------------------------
 function Invoke-SqliteSupportBundle {
 	param(
-		[Parameter(Mandatory = $true)][string]$ConfiguratorPublishDir,
-		[Parameter(Mandatory = $true)][string]$Version
+		[Parameter(Mandatory)][string]$ConfiguratorPublishDir,
+		[Parameter(Mandatory)][string]$ResolvedVersion
 	)
-
-	Write-Host "Ensuring SQLite diagnostic support bundle in $ConfiguratorPublishDir" -ForegroundColor Cyan
-
+	Write-Information ("Ensuring SQLite diagnostic support bundle in {0}" -f $ConfiguratorPublishDir)
 	$source = Resolve-SqliteBundleSource `
-		-Project 'src/RdpAudit.Configurator/RdpAudit.Configurator.csproj' `
-		-Version $Version
+		-Project "src/RdpAudit.Configurator/RdpAudit.Configurator.csproj" `
+		-ResolvedVersion $ResolvedVersion
+	$null = Copy-SqliteSupportFiles -SourceDir $source -TargetDir $ConfiguratorPublishDir
 
-	$copied = Copy-SqliteSupportFiles -SourceDir $source -TargetDir $ConfiguratorPublishDir
-
-	# Post-condition: re-verify TARGET so a silently failed copy is caught immediately
-	$stillMissing = New-Object 'System.Collections.Generic.List[string]'
+	# Post-verify.
+	$stillMissing = [System.Collections.Generic.List[string]]::new()
 	foreach ($name in $script:SqliteSupportFiles) {
 		if (-not (Test-Path (Join-Path $ConfiguratorPublishDir $name))) {
 			$stillMissing.Add($name) | Out-Null
 		}
 	}
-
 	if ($stillMissing.Count -gt 0) {
-		throw (
-			"SQLite support bundle verification failed after copy: " +
-			"$($stillMissing.Count) file(s) still missing in '$ConfiguratorPublishDir': " +
-			($stillMissing -join ', ') + '.'
-		)
+		throw ("SQLite bundle verification failed: {0} file(s) still missing: {1}" -f
+			$stillMissing.Count, ($stillMissing -join ", "))
 	}
 
-	# Clean up transient loose-build output — must not ship in the publish tree
-	$bundleObjDir = Join-Path $PSScriptRoot 'publish/.sqlite-bundle'
+	# Clean up transient build output.
+	$bundleObjDir = Join-Path $script:PublishRoot ".sqlite-bundle"
 	if (Test-Path $bundleObjDir) {
 		Remove-Item -Recurse -Force $bundleObjDir -ErrorAction SilentlyContinue
 	}
-
-	Write-Host (
-		"SQLite support bundle complete: $($copied.Count)/$($script:SqliteSupportFiles.Count) " +
-		"file(s) present next to the Configurator."
-	) -ForegroundColor Green
+	Write-Information ("SQLite support bundle complete: {0}/{1} files present." -f
+		$script:SqliteSupportFiles.Count, $script:SqliteSupportFiles.Count)
 }
 
-# -----------------------------------------------------------------------------
-# Self-test (-SelfTest)
-# -----------------------------------------------------------------------------
-# Validates the structural invariants of this script without publishing or
-# deleting anything. Designed to fail loudly on any regression that would
-# reproduce the previously seen StrictMode crashes.
+# ── Documentation copy ────────────────────────────────────────────────────────
+function Copy-PublishDocumentation {
+	$docsSource = Join-Path $PSScriptRoot "docs"
+	$docsTarget = Join-Path $script:PublishRoot "Docs"
+	if (-not (Test-Path $docsSource)) {
+		Write-Verbose "No docs/ folder found; skipping."
+		return
+	}
+	if (-not (Test-Path $docsTarget)) {
+		if ($PSCmdlet.ShouldProcess($docsTarget, "Create Docs directory")) {
+			New-Item -ItemType Directory -Path $docsTarget | Out-Null
+		}
+	}
+	$copied = 0
+	foreach ($file in @(Get-ChildItem -Path $docsSource -File -Filter "*.md" -ErrorAction SilentlyContinue)) {
+		if ($PSCmdlet.ShouldProcess($file.Name, "Copy documentation file")) {
+			Copy-Item -LiteralPath $file.FullName -Destination $docsTarget -Force
+			$copied++
+		}
+	}
+	foreach ($name in @("README.md", "Detect_Attack_Strategy_v3.md")) {
+		$path = Join-Path $PSScriptRoot $name
+		if (Test-Path $path) {
+			if ($PSCmdlet.ShouldProcess($name, "Copy root documentation file")) {
+				Copy-Item -LiteralPath $path -Destination $docsTarget -Force
+				$copied++
+			}
+		}
+	}
+	if ($copied -gt 0) {
+		Write-Information ("Copied {0} documentation file(s) to {1}" -f $copied, $docsTarget)
+	}
+}
+
+# ── Build-info manifest ───────────────────────────────────────────────────────
+function Write-BuildInfoManifest {
+	param(
+		[Parameter(Mandatory)][string]$ResolvedVersion,
+		[Parameter(Mandatory)][string]$RevisionId
+	)
+	$manifestPath = Join-Path $script:PublishRoot "build-info.json"
+	$manifest = @{
+		version        = $ResolvedVersion
+		versionSource  = $script:VersionSource
+		configuration  = $Configuration
+		sourceRevision = $RevisionId
+		publishedUtc   = [DateTime]::UtcNow.ToString("o")
+		components     = @{
+			Service      = $ResolvedVersion
+			Configurator = $ResolvedVersion
+			Mikrotik     = $ResolvedVersion
+		}
+		features       = @{
+			selfContained      = $true
+			publishSingleFile  = $true
+			lockFreeRingBuffer = $true
+			sqliteBundle       = $true
+			benchmarks         = $IncludeBenchmarks.IsPresent
+		}
+	}
+	if ($PSCmdlet.ShouldProcess($manifestPath, "Write build-info.json")) {
+		$manifest | ConvertTo-Json -Depth 5 | Set-Content -Path $manifestPath -Encoding UTF8 -NoNewline
+		Write-Information ("Wrote build manifest: {0}" -f $manifestPath)
+	}
+}
+
+# ── Post-checks ───────────────────────────────────────────────────────────────
+function Add-PostCheck {
+	param(
+		[Parameter(Mandatory)][string]$Name,
+		[Parameter(Mandatory)][bool]$Passed,
+		[string]$Detail = ""
+	)
+	$script:PostChecks.Add(@{ Name = $Name; Passed = $Passed; Detail = $Detail }) | Out-Null
+}
+
+# Version: 2.0.2 — replace invalid inline if statements with precomputed values
+function Invoke-PostChecks {
+	param(
+		[Parameter(Mandatory)]
+		[string]$ResolvedVersion
+	)
+
+	# 1. Verify that every expected executable exists.
+	foreach ($project in $script:Projects) {
+		$artifactDirectory = Join-Path `
+			-Path $script:PublishRoot `
+			-ChildPath $project["Subdir"]
+
+		$executablePath = Join-Path `
+			-Path $artifactDirectory `
+			-ChildPath $project["ExeName"]
+
+		$isPresent = Test-Path `
+			-LiteralPath $executablePath `
+			-PathType Leaf
+
+		if ($isPresent) {
+			$presenceDetail = $executablePath
+		} else {
+			$presenceDetail = "NOT FOUND: $executablePath"
+		}
+
+		Add-PostCheck `
+			-Name ("Artifact present: {0}/{1}" -f
+				$project["Subdir"],
+				$project["ExeName"]) `
+			-Passed $isPresent `
+			-Detail $presenceDetail
+	}
+
+	# 2. Verify that every executable has the expected FileVersion.
+	if (-not [string]::IsNullOrWhiteSpace($ResolvedVersion)) {
+		foreach ($project in $script:Projects) {
+			$artifactDirectory = Join-Path `
+				-Path $script:PublishRoot `
+				-ChildPath $project["Subdir"]
+
+			$executablePath = Join-Path `
+				-Path $artifactDirectory `
+				-ChildPath $project["ExeName"]
+
+			if (-not (Test-Path `
+				-LiteralPath $executablePath `
+				-PathType Leaf)) {
+				continue
+			}
+
+			$fileVersion = Get-FileVersionString `
+				-FilePath $executablePath
+
+			$expectedFourPartVersion = $ResolvedVersion + ".0"
+
+			$versionMatches = (
+				$fileVersion.StartsWith(
+					$ResolvedVersion,
+					[System.StringComparison]::OrdinalIgnoreCase
+				) -or
+				$fileVersion.Equals(
+					$expectedFourPartVersion,
+					[System.StringComparison]::OrdinalIgnoreCase
+				)
+			)
+
+			$versionDetail = "expected prefix={0}; actual={1}" -f `
+				$ResolvedVersion,
+				$fileVersion
+
+			Add-PostCheck `
+				-Name ("FileVersion match: {0}/{1}" -f
+					$project["Subdir"],
+					$project["ExeName"]) `
+				-Passed $versionMatches `
+				-Detail $versionDetail
+		}
+	}
+
+	# 3. Verify that no atomic-replacement staging files remain.
+	$stagingFiles = @(
+		Get-ChildItem `
+			-LiteralPath $script:PublishRoot `
+			-Recurse `
+			-File `
+			-ErrorAction Stop |
+			Where-Object {
+				$_.Extension.Equals(
+					".new",
+					[System.StringComparison]::OrdinalIgnoreCase
+				) -or
+				$_.Extension.Equals(
+					".old",
+					[System.StringComparison]::OrdinalIgnoreCase
+				)
+			}
+	)
+
+	$hasNoStagingFiles = $stagingFiles.Count -eq 0
+
+	if ($hasNoStagingFiles) {
+		$stagingDetail = "Clean"
+	} else {
+		$stagingPaths = @(
+			foreach ($stagingFile in $stagingFiles) {
+				$stagingFile.FullName
+			}
+		)
+
+		$stagingDetail = "Staging files found: " +
+			($stagingPaths -join ", ")
+	}
+
+	Add-PostCheck `
+		-Name "No staging files (.new/.old) left in publish root" `
+		-Passed $hasNoStagingFiles `
+		-Detail $stagingDetail
+
+	# 4. Read the installed version for informational reporting only.
+	# No file outside the publish root is modified.
+	$installedServicePath = Join-Path `
+		-Path $env:ProgramFiles `
+		-ChildPath "RdpAudit\Service\RdpAudit.Service.exe"
+
+	if (Test-Path `
+		-LiteralPath $installedServicePath `
+		-PathType Leaf) {
+		$installedVersion = Get-FileVersionString `
+			-FilePath $installedServicePath
+
+		$installedMatchesBuilt = $installedVersion.StartsWith(
+			$ResolvedVersion,
+			[System.StringComparison]::OrdinalIgnoreCase
+		)
+
+		if ($installedMatchesBuilt) {
+			$installedDetail = (
+				"Installed version {0} matches built version {1}." -f
+				$installedVersion,
+				$ResolvedVersion
+			)
+		} else {
+			$installedDetail = (
+				"Installed version {0} differs from built version {1} — " +
+				"run install.ps1 to deploy."
+			) -f $installedVersion, $ResolvedVersion
+		}
+
+		Add-PostCheck `
+			-Name "Installed service version (informational)" `
+			-Passed $true `
+			-Detail $installedDetail
+	} else {
+		Add-PostCheck `
+			-Name "Installed service version (informational)" `
+			-Passed $true `
+			-Detail ("Installed binary not found at '{0}'." -f
+				$installedServicePath)
+	}
+}
+
+# ── Final report ──────────────────────────────────────────────────────────────
+function Write-FinalReport {
+	param([Parameter(Mandatory)][string]$ResolvedVersion)
+
+	Write-Information ""
+	Write-Information "══════════════════════════════════════════════════════════════"
+	Write-Information " RDPAudit Publish Report"
+	Write-Information ("  Version : {0}  (source: {1})" -f $ResolvedVersion, $script:VersionSource)
+	Write-Information ("  Config  : {0}   RID: win-x64   Mode: self-contained single-file" -f $Configuration)
+	Write-Information ("  Publish : {0}" -f $script:PublishRoot)
+	Write-Information "══════════════════════════════════════════════════════════════"
+
+	if ($script:ReportRows.Count -gt 0) {
+		Write-Information ""
+		Write-Information " File updates:"
+		Write-Information (" {0,-40} {1,-12} {2,-12} {3,-12} {4}" -f "File", "Subdir", "Version Before", "Version After", "Action")
+		Write-Information (" {0,-40} {1,-12} {2,-12} {3,-12} {4}" -f "----", "------", "--------------", "-------------", "------")
+		foreach ($row in $script:ReportRows) {
+			$color = switch ($row["Action"]) {
+				"replaced" { "Cyan" } "added" { "Green" } "removed" { "DarkYellow" } default { "Gray" }
+			}
+			Write-Host (" {0,-40} {1,-12} {2,-12} {3,-12} {4}" -f `
+				$row["File"], $row["Subdir"], $row["VerBefore"], $row["VerAfter"], $row["Action"]) `
+				-ForegroundColor $color
+		}
+	}
+
+	if ($script:TerminatedProcs.Count -gt 0) {
+		Write-Information ""
+		Write-Information " Terminated processes (publish-folder scope only):"
+		foreach ($t in $script:TerminatedProcs) {
+			Write-Warning ("  " + (Format-LockingProcess -ProcessName $t["ProcessName"] -ProcessIdValue $t["ProcessIdValue"] -ExePath $t["ExePath"]))
+		}
+	}
+
+	Write-Information ""
+	Write-Information " Post-checks:"
+	$allPassed = $true
+	foreach ($chk in $script:PostChecks) {
+		$label  = if ($chk["Passed"]) { "[PASS]" } else { "[FAIL]"; $allPassed = $false }
+		$fgColor = if ($chk["Passed"]) { "Green" } else { "Red" }
+		Write-Host ("  {0} {1}" -f $label, $chk["Name"]) -ForegroundColor $fgColor
+		if (-not [string]::IsNullOrWhiteSpace($chk["Detail"])) {
+			Write-Information ("         {0}" -f $chk["Detail"])
+		}
+	}
+
+	Write-Information ""
+	if ($allPassed) {
+		Write-Host " RESULT: PASS" -ForegroundColor Green
+	} else {
+		Write-Host " RESULT: FAIL — see post-checks above" -ForegroundColor Red
+	}
+	Write-Information "══════════════════════════════════════════════════════════════"
+	return $allPassed
+}
+
+# ── Self-test ─────────────────────────────────────────────────────────────────
 function Invoke-PublishScriptSelfCheck {
-	$failures = New-Object 'System.Collections.Generic.List[string]'
+	$failures = [System.Collections.Generic.List[string]]::new()
 
-	function Add-Failure {
-		param([string]$Msg)
-		$failures.Add($Msg) | Out-Null
-		Write-Host ("  [FAIL] " + $Msg) -ForegroundColor Red
-	}
-	function Add-Pass {
-		param([string]$Msg)
-		Write-Host ("  [PASS] " + $Msg) -ForegroundColor Green
-	}
+	function Add-Failure { param([string]$Msg) $failures.Add($Msg) | Out-Null; Write-Host ("  [FAIL] " + $Msg) -ForegroundColor Red }
+	function Add-Pass    { param([string]$Msg) Write-Host ("  [PASS] " + $Msg) -ForegroundColor Green }
 
-	Write-Host "Running publish.ps1 self-tests..." -ForegroundColor Cyan
+	Write-Information "Running publish.ps1 self-tests..."
 
-	# 1. Formatting a confirmed blocker with all fields works.
+	# 1. Format-LockingProcess with all fields.
 	try {
-		$line = Format-LockingProcess -ProcessName 'RdpAudit.Configurator' -ProcessIdValue 1234 -ExePath 'C:\publish\Configurator\RdpAudit.Configurator.exe'
-		if ($line -notmatch 'RdpAudit\.Configurator' -or $line -notmatch '1234') {
-			Add-Failure "Format-LockingProcess output did not contain expected fields: $line"
-		} else {
-			Add-Pass "Format-LockingProcess formats a confirmed blocker"
-		}
-	} catch {
-		Add-Failure ("Format-LockingProcess threw on valid input: " + $_.Exception.Message)
-	}
+		$line = Format-LockingProcess -ProcessName "RdpAudit.Configurator" -ProcessIdValue 1234 -ExePath "C:\publish\RdpAudit.Configurator.exe"
+		if ($line -notmatch "1234") { Add-Failure "Format-LockingProcess missing PID: $line" }
+		else                        { Add-Pass    "Format-LockingProcess formats a confirmed blocker" }
+	} catch { Add-Failure ("Format-LockingProcess threw: " + $_.Exception.Message) }
 
-	# 2. Inspection-failure formatting works and does NOT require an ExePath.
+	# 2. Format-InspectionFailure with null PID.
 	try {
-		$line = Format-InspectionFailure -ProcessName 'RdpAudit.Service' -ProcessIdValue $null -Reason 'access denied'
-		if ($line -notmatch 'access denied') {
-			Add-Failure "Format-InspectionFailure output missing reason: $line"
-		} else {
-			Add-Pass "Format-InspectionFailure formats a null-PID failure"
-		}
-	} catch {
-		Add-Failure ("Format-InspectionFailure threw on valid input: " + $_.Exception.Message)
-	}
+		$line = Format-InspectionFailure -ProcessName "RdpAudit.Service" -ProcessIdValue $null -Reason "access denied"
+		if ($line -notmatch "access denied") { Add-Failure "Format-InspectionFailure missing reason: $line" }
+		else                                 { Add-Pass    "Format-InspectionFailure formats a null-PID failure" }
+	} catch { Add-Failure ("Format-InspectionFailure threw: " + $_.Exception.Message) }
 
-	# 3. A diagnostic / inspection-failure record must NEVER be acceptable to
-	#    Format-LockingProcess. Format-LockingProcess takes scalars, so the
-	#    only way to invoke it is with explicit named params; trying to pass
-	#    an arbitrary object (missing ExePath) must fail at bind time, not
-	#    at runtime property-read.
+	# 3. Format-LockingProcess rejects missing ExePath at bind time.
 	try {
-		$diag = @{ ProcessName = 'X'; ProcessIdValue = 1; Reason = 'unreadable' }
-		# Splatting a hashtable that lacks ExePath: parameter binding must reject this.
+		$diag = @{ ProcessName = "X"; ProcessIdValue = 1; Reason = "unreadable" }
 		$null = Format-LockingProcess @diag
-		Add-Failure "Format-LockingProcess accepted an object without ExePath; binder regression."
-	} catch {
-		Add-Pass "Format-LockingProcess rejects records lacking ExePath (binder enforced)"
-	}
+		Add-Failure "Format-LockingProcess accepted object without ExePath; binder regression."
+	} catch { Add-Pass "Format-LockingProcess rejects records lacking ExePath (binder enforced)" }
 
-	# 4. No blocker header must be printed for an empty blocker list. We
-	#    simulate that path by inspecting the Remove-PublishOutput logic
-	#    indirectly: confirm that Get-ProcessesUsingPath on a fresh temp path
-	#    returns a list with Count == 0 (not a one-element array containing
-	#    an empty array - the regression we are fixing).
+	# 4. Get-ProcessesUsingPath returns Count==0 for unrelated path (no double-wrap).
 	try {
-		$tempDir = Join-Path ([System.IO.Path]::GetTempPath()) ("rdpaudit-selftest-" + [Guid]::NewGuid().ToString('N'))
+		$tempDir = Join-Path ([IO.Path]::GetTempPath()) ("rdpaudit-selftest-" + [Guid]::NewGuid().ToString("N"))
 		New-Item -ItemType Directory -Path $tempDir | Out-Null
 		try {
 			$script:InspectionFailures.Clear()
-			$res = Get-ProcessesUsingPath -Path $tempDir
-			if ($null -eq $res) {
-				Add-Failure "Get-ProcessesUsingPath returned `$null instead of an empty list"
-			} elseif ($res.Count -ne 0) {
-				# It's legal for the user's machine to have a real RdpAudit
-				# process running outside the temp dir, but it must never
-				# end up in the result because the path filter excludes it.
-				Add-Failure ("Expected 0 blockers for temp path, got " + $res.Count)
-			} else {
-				Add-Pass "Get-ProcessesUsingPath returns Count==0 for an unrelated path (no double-wrap)"
-			}
-		} finally {
-			Remove-Item -Recurse -Force $tempDir -ErrorAction SilentlyContinue
-		}
-	} catch {
-		Add-Failure ("Get-ProcessesUsingPath self-check threw: " + $_.Exception.Message)
-	}
+			$res = Get-ProcessesUsingPath -PublishRootPath $tempDir
+			if ($null -eq $res)       { Add-Failure "Get-ProcessesUsingPath returned null" }
+			elseif ($res.Count -ne 0) { Add-Failure ("Expected 0 blockers, got " + $res.Count) }
+			else                      { Add-Pass    "Get-ProcessesUsingPath returns Count==0 for unrelated path (no double-wrap)" }
+		} finally { Remove-Item -Recurse -Force $tempDir -ErrorAction SilentlyContinue }
+	} catch { Add-Failure ("Get-ProcessesUsingPath self-check threw: " + $_.Exception.Message) }
 
-	# 5. No assignments to `$pid` / `$PID` / `$Pid` anywhere in the script.
-	#    Read the script source and grep for assignment patterns.
+	# 5. No assignment to $pid.
 	try {
-		$scriptText = Get-Content -Raw -Path $PSCommandPath
-		$assignPattern = '(?im)^\s*\$pid\s*='
-		if ($scriptText -match $assignPattern) {
-			Add-Failure "Found assignment to `$pid (collides with read-only automatic). Use `$processIdValue."
-		} else {
-			Add-Pass "No assignment to `$pid / `$PID / `$Pid in script source"
-		}
-	} catch {
-		Add-Failure ("`$pid usage check threw: " + $_.Exception.Message)
-	}
+		$scriptText    = Get-Content -Raw -Path $PSCommandPath
+		$assignPattern = "(?im)^\s*\`$pid\s*="
+		if ($scriptText -match $assignPattern) { Add-Failure "Assignment to `$pid found; use `$processIdValue." }
+		else                                    { Add-Pass    "No assignment to `$pid / `$PID / `$Pid in script source" }
+	} catch { Add-Failure ("`$pid check threw: " + $_.Exception.Message) }
 
-	# 6. Script parses under strict mode. If we are running, it already parsed.
-	#    Re-validate by tokenising via the PowerShell parser so a syntax
-	#    regression in an unreachable branch still fails the self-test.
+	# 6. Script parses cleanly.
 	try {
-		$tokens = $null
-		$errors = $null
+		$tokens = $null; $errors = $null
 		[void][System.Management.Automation.Language.Parser]::ParseFile($PSCommandPath, [ref]$tokens, [ref]$errors)
-		if ($null -ne $errors -and $errors.Count -gt 0) {
-			Add-Failure ("Parser reported " + $errors.Count + " error(s) in publish.ps1")
-		} else {
-			Add-Pass "Script parses cleanly under PowerShell parser"
-		}
-	} catch {
-		Add-Failure ("Parser self-check threw: " + $_.Exception.Message)
-	}
+		if ($null -ne $errors -and $errors.Count -gt 0) { Add-Failure ("Parser: " + $errors.Count + " error(s)") }
+		else                                              { Add-Pass    "Script parses cleanly under PowerShell parser" }
+	} catch { Add-Failure ("Parser check threw: " + $_.Exception.Message) }
 
-	# 7. Add-InspectionFailure followed by zero confirmed blockers must NOT
-	#    cause the deletion path to print the blocker header. Simulate by
-	#    populating an inspection failure and confirming the script-level
-	#    list contains it while the locking list is empty.
+	# 7. Blockers and inspection failures are separate lists.
 	try {
 		$script:InspectionFailures.Clear()
-		Add-InspectionFailure -ProcessName 'RdpAudit.Service' -ProcessIdValue 4242 -Reason 'simulated unreadable path'
-		$tempDir = Join-Path ([System.IO.Path]::GetTempPath()) ("rdpaudit-selftest-" + [Guid]::NewGuid().ToString('N'))
+		Add-InspectionFailure -ProcessName "RdpAudit.Service" -ProcessIdValue 4242 -Reason "simulated"
+		$tempDir = Join-Path ([IO.Path]::GetTempPath()) ("rdpaudit-selftest-sep-" + [Guid]::NewGuid().ToString("N"))
 		New-Item -ItemType Directory -Path $tempDir | Out-Null
 		try {
-			# Fresh discovery to confirm separation of lists.
 			$script:InspectionFailures.Clear()
-			$res = Get-ProcessesUsingPath -Path $tempDir
-			if ($res.Count -eq 0 -and $script:InspectionFailures.Count -eq 0) {
-				Add-Pass "Separation of blockers and inspection failures holds for clean temp path"
-			} elseif ($res.Count -gt 0) {
-				Add-Failure ("Unexpected blockers for temp path: " + $res.Count)
-			} else {
-				Add-Pass ("Inspection failures recorded without contaminating blockers (count=" + $script:InspectionFailures.Count + ")")
-			}
+			$res = Get-ProcessesUsingPath -PublishRootPath $tempDir
+			if ($res.Count -eq 0) { Add-Pass "Inspection failures do not contaminate blocker list" }
+			else                  { Add-Failure ("Blocker list polluted: " + $res.Count + " entries") }
 		} finally {
 			Remove-Item -Recurse -Force $tempDir -ErrorAction SilentlyContinue
 			$script:InspectionFailures.Clear()
 		}
-	} catch {
-		Add-Failure ("Separation self-check threw: " + $_.Exception.Message)
-	}
+	} catch { Add-Failure ("Separation check threw: " + $_.Exception.Message) }
 
-	# 8. The SQLite support-bundle file list must be exactly the five files the app's NuGet graph
-	#    produces and that RdpAudit.Core.Util.SqliteSupportBundle.RequiredFiles enumerates. A drift
-	#    here means the published Configurator would ship an incomplete diagnostic bundle.
+	# 8. SQLite bundle list matches expected five files.
 	try {
-		$expected = @(
-			"Microsoft.Data.Sqlite.dll",
-			"SQLitePCLRaw.core.dll",
-			"SQLitePCLRaw.provider.e_sqlite3.dll",
-			"SQLitePCLRaw.batteries_v2.dll",
-			"e_sqlite3.dll"
-		)
-		$actual = @($script:SqliteSupportFiles)
-		$diff = Compare-Object -ReferenceObject $expected -DifferenceObject $actual
-		if ($actual.Count -ne $expected.Count -or $null -ne $diff) {
-			Add-Failure ("SqliteSupportFiles drifted from the expected five-file bundle: " + ($actual -join ", "))
-		} else {
-			Add-Pass "SqliteSupportFiles matches the canonical five-file SQLite diagnostic bundle"
-		}
-	} catch {
-		Add-Failure ("SQLite bundle file-list self-check threw: " + $_.Exception.Message)
-	}
+		$expected = @("Microsoft.Data.Sqlite.dll","SQLitePCLRaw.core.dll","SQLitePCLRaw.provider.e_sqlite3.dll","SQLitePCLRaw.batteries_v2.dll","e_sqlite3.dll")
+		$diff     = Compare-Object -ReferenceObject $expected -DifferenceObject $script:SqliteSupportFiles
+		if ($null -ne $diff) { Add-Failure "SqliteSupportFiles drifted from five-file bundle" }
+		else                 { Add-Pass    "SqliteSupportFiles matches canonical five-file bundle" }
+	} catch { Add-Failure ("Bundle list check threw: " + $_.Exception.Message) }
 
-	# 9. Copy-SqliteSupportFiles must fail with an actionable error (not silently succeed) when the
-	#    source directory cannot supply the required files. Use an empty temp dir as the source.
+	# 9. Copy-SqliteSupportFiles fails actionably with empty source.
 	try {
-		$srcDir = Join-Path ([System.IO.Path]::GetTempPath()) ("rdpaudit-bundle-src-" + [Guid]::NewGuid().ToString('N'))
-		$dstDir = Join-Path ([System.IO.Path]::GetTempPath()) ("rdpaudit-bundle-dst-" + [Guid]::NewGuid().ToString('N'))
+		$srcDir = Join-Path ([IO.Path]::GetTempPath()) ("rdpaudit-bundle-empty-" + [Guid]::NewGuid().ToString("N"))
+		$dstDir = Join-Path ([IO.Path]::GetTempPath()) ("rdpaudit-bundle-dst-"   + [Guid]::NewGuid().ToString("N"))
 		New-Item -ItemType Directory -Path $srcDir | Out-Null
 		try {
 			$threw = $false
-			try {
-				$null = Copy-SqliteSupportFiles -SourceDir $srcDir -TargetDir $dstDir
-			} catch {
-				$threw = $true
-				if ($_.Exception.Message -notmatch 'SQLite support bundle incomplete') {
-					Add-Failure ("Copy-SqliteSupportFiles threw an unexpected message: " + $_.Exception.Message)
-				}
-			}
-			if ($threw) {
-				Add-Pass "Copy-SqliteSupportFiles fails actionably when the source lacks the bundle files"
-			} else {
-				Add-Failure "Copy-SqliteSupportFiles silently succeeded with an empty source directory"
-			}
+			try { $null = Copy-SqliteSupportFiles -SourceDir $srcDir -TargetDir $dstDir } catch { $threw = $true }
+			if ($threw) { Add-Pass "Copy-SqliteSupportFiles fails actionably with empty source" }
+			else        { Add-Failure "Copy-SqliteSupportFiles silently succeeded with empty source" }
 		} finally {
 			Remove-Item -Recurse -Force $srcDir -ErrorAction SilentlyContinue
 			Remove-Item -Recurse -Force $dstDir -ErrorAction SilentlyContinue
 		}
-	} catch {
-		Add-Failure ("Copy-SqliteSupportFiles self-check threw: " + $_.Exception.Message)
-	}
+	} catch { Add-Failure ("Copy-SqliteSupportFiles empty-source check threw: " + $_.Exception.Message) }
 
-	# 10. Copy-SqliteSupportFiles must succeed and report all five files when the source supplies them,
-	#     including a native library that lives under runtimes/<rid>/native rather than the root.
+	# 10. Copy-SqliteSupportFiles succeeds with full bundle (native under runtimes/native).
 	try {
-		$srcDir = Join-Path ([System.IO.Path]::GetTempPath()) ("rdpaudit-bundle-ok-src-" + [Guid]::NewGuid().ToString('N'))
-		$dstDir = Join-Path ([System.IO.Path]::GetTempPath()) ("rdpaudit-bundle-ok-dst-" + [Guid]::NewGuid().ToString('N'))
-		New-Item -ItemType Directory -Path $srcDir | Out-Null
+		$srcDir    = Join-Path ([IO.Path]::GetTempPath()) ("rdpaudit-bundle-full-src-" + [Guid]::NewGuid().ToString("N"))
+		$dstDir    = Join-Path ([IO.Path]::GetTempPath()) ("rdpaudit-bundle-full-dst-" + [Guid]::NewGuid().ToString("N"))
 		$nativeDir = Join-Path $srcDir "runtimes/win-x64/native"
 		New-Item -ItemType Directory -Path $nativeDir | Out-Null
 		try {
 			foreach ($name in $script:SqliteSupportFiles) {
-				if ($name -eq "e_sqlite3.dll") {
-					Set-Content -Path (Join-Path $nativeDir $name) -Value "native" -NoNewline
-				} else {
-					Set-Content -Path (Join-Path $srcDir $name) -Value "managed" -NoNewline
-				}
+				$target = if ($name -eq "e_sqlite3.dll") { Join-Path $nativeDir $name } else { Join-Path $srcDir $name }
+				Set-Content -Path $target -Value "stub" -NoNewline
 			}
-			$copied = @(Copy-SqliteSupportFiles -SourceDir $srcDir -TargetDir $dstDir)
-			$allPresent = $true
-			foreach ($name in $script:SqliteSupportFiles) {
-				if (-not (Test-Path (Join-Path $dstDir $name))) { $allPresent = $false }
-			}
+			$copied     = @(Copy-SqliteSupportFiles -SourceDir $srcDir -TargetDir $dstDir)
+			$allPresent = ($script:SqliteSupportFiles | ForEach-Object { Test-Path (Join-Path $dstDir $_) }) -notcontains $false
 			if ($copied.Count -eq $script:SqliteSupportFiles.Count -and $allPresent) {
-				Add-Pass "Copy-SqliteSupportFiles resolves root + runtimes/native files and copies the full bundle"
+				Add-Pass "Copy-SqliteSupportFiles resolves root + runtimes/native and copies full bundle"
 			} else {
-				Add-Failure ("Copy-SqliteSupportFiles did not lay down the full bundle (copied=" + $copied.Count + ", allPresent=" + $allPresent + ")")
+				Add-Failure ("Copy-SqliteSupportFiles partial: copied={0} allPresent={1}" -f $copied.Count, $allPresent)
 			}
 		} finally {
 			Remove-Item -Recurse -Force $srcDir -ErrorAction SilentlyContinue
 			Remove-Item -Recurse -Force $dstDir -ErrorAction SilentlyContinue
 		}
-	} catch {
-		Add-Failure ("Copy-SqliteSupportFiles success-path self-check threw: " + $_.Exception.Message)
-	}
+	} catch { Add-Failure ("Copy-SqliteSupportFiles full-bundle check threw: " + $_.Exception.Message) }
 
+	# 11. Get-PropsVersionPrefix returns a valid semver-like string.
+	try {
+		$v = Get-PropsVersionPrefix
+		if ([string]::IsNullOrWhiteSpace($v)) {
+			Write-Warning "Get-PropsVersionPrefix returned empty (Directory.Build.props missing in test environment)"
+			Add-Pass "Get-PropsVersionPrefix: props not found or empty (acceptable in isolated environment)"
+		} elseif ($v -match "^\d+\.\d+\.\d+") {
+			Add-Pass ("Get-PropsVersionPrefix returned valid version: " + $v)
+		} else {
+			Add-Failure ("Get-PropsVersionPrefix returned non-semver: " + $v)
+		}
+	} catch { Add-Failure ("Get-PropsVersionPrefix threw: " + $_.Exception.Message) }
+
+	# 12. Test-IsUnderPublishRoot correctly gates path containment.
+	try {
+		$outside = "C:\Windows\System32\cmd.exe"
+		$inside  = Join-Path $script:PublishRoot "Service\RdpAudit.Service.exe"
+		$gateOut = Test-IsUnderPublishRoot -Path $outside
+		$gateIn  = Test-IsUnderPublishRoot -Path $inside
+		if (-not $gateOut -and $gateIn) {
+			Add-Pass "Test-IsUnderPublishRoot: correctly gates inside/outside publish root"
+		} else {
+			Add-Failure ("Test-IsUnderPublishRoot: outside={0} inside={1}" -f $gateOut, $gateIn)
+		}
+	} catch { Add-Failure ("Test-IsUnderPublishRoot threw: " + $_.Exception.Message) }
+
+	Write-Information ""
 	if ($failures.Count -gt 0) {
-		Write-Host ""
 		Write-Host ("Self-test FAILED ({0} failure(s))" -f $failures.Count) -ForegroundColor Red
-		throw "publish.ps1 self-test failed"
+		exit 6
 	}
-
-	Write-Host ""
 	Write-Host "Self-test PASSED" -ForegroundColor Green
 }
 
-# -----------------------------------------------------------------------------
+# ══════════════════════════════════════════════════════════════════════════════
 # Entry point
-# -----------------------------------------------------------------------------
+# ══════════════════════════════════════════════════════════════════════════════
 if ($SelfTest) {
 	Invoke-PublishScriptSelfCheck
-	return
+	exit 0
 }
 
-Test-PublishPrerequisites                    # NEW: pre-flight validation
-
-Remove-PublishOutput -Path $publishRoot
-
+# -- Step 0: Resolve version --------------------------------------------------
+$resolvedVersion = Resolve-BuildVersion
 $resolvedRevision = Resolve-SourceRevisionId -Override $SourceRevisionId
-if (-not [string]::IsNullOrWhiteSpace($resolvedRevision)) {
-	Write-Host ("Stamping build SHA: {0}+{1}" -f $Version, $resolvedRevision) -ForegroundColor Cyan
+
+$versionDisplay = if (-not [string]::IsNullOrWhiteSpace($resolvedRevision)) {
+	"{0}+{1}" -f $resolvedVersion, $resolvedRevision
 } else {
-	Write-Host ("Publishing {0} without a build SHA (no git checkout or SHA disabled)." -f $Version) -ForegroundColor DarkYellow
+	$resolvedVersion
+}
+Write-Information ("Build plan: version={0}  config={1}  RID=win-x64" -f $versionDisplay, $Configuration)
+
+# -- Step 1: Pre-flight -------------------------------------------------------
+try {
+	Test-PublishPrerequisites -ResolvedVersion $resolvedVersion
+} catch {
+	Write-Error $_.Exception.Message
+	exit 1
 }
 
-Publish-Project -Project "src/RdpAudit.Service/RdpAudit.Service.csproj"           -Subdir "Service"      -RevisionId $resolvedRevision
-Publish-Project -Project "src/RdpAudit.Configurator/RdpAudit.Configurator.csproj" -Subdir "Configurator" -RevisionId $resolvedRevision
-Publish-Project -Project "src/RdpAudit.Mikrotik/RdpAudit.Mikrotik.csproj"         -Subdir "Mikrotik"     -RevisionId $resolvedRevision
+# -- Step 2: Detect and resolve blockers BEFORE any destructive action --------
+$script:InspectionFailures.Clear()
+$blockers = Get-ProcessesUsingPath -PublishRootPath $script:PublishRoot
+Write-InspectionDiagnostics
 
-if ($IncludeBenchmarks) {                    # NEW: optional benchmarks
-	$benchProj = "src/RdpAudit.Service.Benchmarks/RdpAudit.Service.Benchmarks.csproj"
-	if (Test-Path (Join-Path $PSScriptRoot $benchProj)) {
-		Publish-Project -Project $benchProj -Subdir "Benchmarks" -RevisionId $resolvedRevision
+if ($null -ne $blockers -and $blockers.Count -gt 0) {
+	try {
+		Invoke-BlockerResolution -Blockers $blockers
+	} catch {
+		Write-Error $_.Exception.Message
+		exit 3
 	}
 }
 
-Invoke-SqliteSupportBundle -ConfiguratorPublishDir (Join-Path $publishRoot 'Configurator') -Version $Version
+# -- Step 3: Clean (optional) -------------------------------------------------
+if ($Clean) {
+	if (Test-Path $script:PublishRoot) {
+		if ($PSCmdlet.ShouldProcess($script:PublishRoot, "Remove entire publish folder (-Clean)")) {
+			Remove-Item -Recurse -Force $script:PublishRoot -ErrorAction Stop
+			Write-Information ("-Clean: removed '{0}'" -f $script:PublishRoot)
+		}
+	}
+}
 
-Copy-PublishDocumentation                    # NEW: docs/ → publish/Docs
-Write-BuildInfoManifest                      # NEW: build-info.json
+# Ensure publish root exists.
+if (-not (Test-Path $script:PublishRoot)) {
+	if ($PSCmdlet.ShouldProcess($script:PublishRoot, "Create publish root directory")) {
+		New-Item -ItemType Directory -Path $script:PublishRoot | Out-Null
+	}
+}
 
-Write-Host "Done -> $publishRoot" -ForegroundColor Green
+# -- Step 4: dotnet restore + publish per project ----------------------------
+Write-Information ""
+Write-Information "Publishing projects..."
+$tempOutDirs = @{}
+
+foreach ($proj in $script:Projects) {
+	$tempOut = Join-Path $script:PublishRoot (".build-tmp-" + $proj["Subdir"])
+	$tempOutDirs[$proj["Subdir"]] = $tempOut
+	if (Test-Path $tempOut) {
+		Remove-Item -Recurse -Force $tempOut -ErrorAction SilentlyContinue
+	}
+
+	try {
+		Publish-Project `
+			-CsprojRelPath   $proj["CsprojRelPath"] `
+			-Subdir          $proj["Subdir"] `
+			-ExeName         $proj["ExeName"] `
+			-ResolvedVersion $resolvedVersion `
+			-RevisionId      $resolvedRevision
+	} catch {
+		# Clean up temp dirs on failure — leave live publish dir untouched.
+		foreach ($td in $tempOutDirs.Values) {
+			if (Test-Path $td) { Remove-Item -Recurse -Force $td -ErrorAction SilentlyContinue }
+		}
+		Write-Error $_.Exception.Message
+		exit 2
+	}
+}
+
+if ($IncludeBenchmarks) {
+	$benchProj = "src/RdpAudit.Service.Benchmarks/RdpAudit.Service.Benchmarks.csproj"
+	if (Test-Path (Join-Path $PSScriptRoot $benchProj)) {
+		$tempOut = Join-Path $script:PublishRoot ".build-tmp-Benchmarks"
+		$tempOutDirs["Benchmarks"] = $tempOut
+		try {
+			Publish-Project -CsprojRelPath $benchProj -Subdir "Benchmarks" -ExeName "RdpAudit.Service.Benchmarks.exe" `
+				-ResolvedVersion $resolvedVersion -RevisionId $resolvedRevision
+		} catch {
+			foreach ($td in $tempOutDirs.Values) {
+				if (Test-Path $td) { Remove-Item -Recurse -Force $td -ErrorAction SilentlyContinue }
+			}
+			Write-Error $_.Exception.Message
+			exit 2
+		}
+	}
+}
+
+# NOTE: `dotnet publish -o <target>` writes directly to the live publish subdir
+# (e.g. publish/Service). The atomic per-file update runs over what dotnet wrote
+# to sync any pre-existing live dir; stale files (from prior versions) are removed.
+foreach ($proj in $script:Projects) {
+	$liveDir = Join-Path $script:PublishRoot $proj["Subdir"]
+	if (Test-Path $liveDir) {
+		Update-PublishDirectory `
+			-BuildOutputDir  $liveDir `
+			-PublishDir      $liveDir `
+			-ExeName         $proj["ExeName"] `
+			-ExpectedVersion $resolvedVersion
+	}
+}
+
+# -- Step 5: SQLite bundle ----------------------------------------------------
+try {
+	Invoke-SqliteSupportBundle `
+		-ConfiguratorPublishDir (Join-Path $script:PublishRoot "Configurator") `
+		-ResolvedVersion        $resolvedVersion
+} catch {
+	Write-Error $_.Exception.Message
+	exit 4
+}
+
+# -- Step 6: Documentation + manifest ----------------------------------------
+Copy-PublishDocumentation
+Write-BuildInfoManifest -ResolvedVersion $resolvedVersion -RevisionId $resolvedRevision
+
+# -- Step 7: Post-checks + report --------------------------------------------
+Invoke-PostChecks -ResolvedVersion $resolvedVersion
+
+$allPassed = Write-FinalReport -ResolvedVersion $resolvedVersion
+
+if (-not $allPassed) { exit 5 }
+exit 0

@@ -1,11 +1,10 @@
-// File:    src/RdpAudit.Configurator/Services/DefaultAppSettings.cs
-// Module:  RdpAudit.Configurator.Services
-// Purpose: Renders the default appsettings.json content used by the first-run installer.
-//          Kept in the Configurator project to preserve Configurator -> Core dependency
-//          (Configurator cannot reference the Service project).
-// Extends: System.Object
-// Author:  Mikhail Deynekin
-// Site:    https://Deynekin.com
+/* Project: RDPAudit 2.0 | Author: Mikhail Deynekin | Site: Deynekin.com | Email: Mikhail@Deynekin.com */
+// Version: 2.0.1
+// File   : DefaultAppSettings.cs
+// Project: RdpAudit.Configurator (RdpAudit.Configurator.Services)
+// Purpose: Renders the first-run default appsettings.json without taking a Configurator-to-Service dependency.
+// Depends: JsonEncodedText, RdpAuditOptions, MonitoringOptions
+// Extends: Keep this template aligned with Service defaults for implemented and bound option keys only.
 
 using System.Text.Json;
 
@@ -44,7 +43,14 @@ internal static class DefaultAppSettings
 				"TrackObjectAccess": true,
 				"BatchSize": 100,
 				"BatchTimeoutMilliseconds": 500,
-				"ChannelCapacity": 50000
+				"ChannelCapacity": 50000,
+				"FloodGuardEnabled": true,
+				"FloodGuardWindowSeconds": 10,
+				"FloodGuardSoftThreshold": 1000,
+				"FloodGuardHardThreshold": 10000,
+				"FloodGuardSampleEveryN": 32,
+				"FloodGuardBucketCount": 4096,
+				"FirstReadLookbackHours": 24
 			},
 			"Alerts": {
 				"EnableBruteForceDetection": true,
@@ -59,12 +65,22 @@ internal static class DefaultAppSettings
 				"BusinessHoursEnd": "20:00:00",
 				"KerberosExpectedEncryptionType": "0x12",
 				"WhitelistIps": [],
-				"WhitelistUsers": []
+				"WhitelistUsers": [],
+				"EnablePrivilegedLoginDetection": true,
+				"PrivilegedLoginSuppressionWindowMinutes": 5,
+				"PrivilegedLoginRateLimitPerMinute": 20,
+				"AlertEventMaxAgeMinutes": 5
 			},
 			"Firewall": {
 				"AutoBlockBruteForce": false,
 				"AutoBlockThreshold": 50,
-				"BlockRuleName": "RdpAudit-Block"
+				"BlockRuleName": "RdpAudit-Block",
+			"DefaultBlockDurationMinutes": 4320,
+			"MaxActiveBlocks": 10000,
+			"RefusePrivateAddressBlock": true,
+			"AutoBlockDebounceSeconds": 60,
+			"PowerShellScanTimeoutSeconds": 30,
+			"PowerShellRetryProbeIntervalMinutes": 15
 			},
 			"Storage": {
 				"DatabasePath": "__RDPAUDIT_DB_PATH__",
@@ -72,7 +88,14 @@ internal static class DefaultAppSettings
 				"LogRetentionDays": 90,
 				"AlertRetentionDays": 730
 			},
-			"Diagnostics": {
+			"Sharding": {
+			"Enabled": false,
+			"ActionsRoot": "",
+			"ShardCapacityRecords": 1024,
+			"MaxOpenWriters": 128,
+			"MaxShardFiles": 4096
+		},
+		"Diagnostics": {
 				"DebugMode": false,
 				"LogEventXmlAtDebug": false,
 				"LogChannelDrops": true,

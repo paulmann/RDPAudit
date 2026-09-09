@@ -33,14 +33,7 @@ public sealed class SettingsManager
 		_overridePath = overridePath;
 	}
 
-	public static string ConfigPath
-	{
-		get
-		{
-			string programData = Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData);
-			return Path.Combine(programData, "RdpAudit", "appsettings.json");
-		}
-	}
+	public static string ConfigPath => RdpAuditPaths.Default.AppSettingsPath;
 
 	/// <summary>The actual path this instance writes to; may differ from the default for tests.</summary>
 	public string EffectiveConfigPath => _overridePath ?? ConfigPath;

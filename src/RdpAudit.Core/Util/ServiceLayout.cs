@@ -41,8 +41,8 @@ public static class ServiceLayout
 		bool distExists = Directory.Exists(distribution);
 		bool exeExists = File.Exists(expectedExe);
 
-		string programData = Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData);
-		string programDataRdp = Path.Combine(programData, "RdpAudit");
+		RdpAuditPaths paths = RdpAuditPaths.Default;
+		string programDataRdp = paths.ProgramDataDirectory;
 		string installDir = ResolveInstallDirectory();
 
 		return new ServiceLayoutInfo(
@@ -53,8 +53,8 @@ public static class ServiceLayout
 			ServiceExecutableExists: exeExists,
 			InstallDirectory: installDir,
 			ProgramDataDirectory: programDataRdp,
-			AppSettingsPath: Path.Combine(programDataRdp, "appsettings.json"),
-			DefaultDatabasePath: Path.Combine(programDataRdp, "rdpaudit.db"));
+			AppSettingsPath: paths.AppSettingsPath,
+			DefaultDatabasePath: paths.DatabasePath);
 	}
 
 	/// <summary>Resolves the sibling 'Service' distribution folder for the Configurator.

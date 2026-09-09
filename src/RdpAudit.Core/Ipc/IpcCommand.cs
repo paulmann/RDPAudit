@@ -1,9 +1,10 @@
-// File:    src/RdpAudit.Core/Ipc/IpcCommand.cs
-// Module:  RdpAudit.Core.Ipc
-// Purpose: Enumeration of IPC commands sent from Configurator to Service.
-// Extends: System.Enum
-// Author:  Mikhail Deynekin
-// Site:    https://Deynekin.com
+/* Project: RDPAudit 2.0 | Author: Mikhail Deynekin | Site: Deynekin.com | Email: Mikhail@Deynekin.com */
+// Version: 2.0.0
+// File   : IpcCommand.cs
+// Project: RdpAudit.Core (RdpAudit.Core.Ipc)
+// Purpose: Defines the append-only IPC command ABI shared by the Configurator and Service.
+// Depends: System.Enum
+// Extends: Append new commands at the end without changing any existing ordinal.
 
 namespace RdpAudit.Core.Ipc;
 
@@ -237,4 +238,12 @@ public enum IpcCommand
 	/// the RDP Activity tab's "Export Auth Success (per login)" context action; the report is summary
 	/// only — one row per account, never one row per attempt.</summary>
 	GetAuthSuccessSummaryForIp = 63,
+
+	// --- Stage 9 Event Collection additions (append-only). ---
+
+	/// <summary>Returns the catalog-backed effective event collection and per-event retention settings.</summary>
+	GetEventCollectionSettings = 64,
+
+	/// <summary>Saves explicit Event Collection settings or applies a named catalog preset server-side.</summary>
+	SaveEventCollectionSettings = 65,
 }

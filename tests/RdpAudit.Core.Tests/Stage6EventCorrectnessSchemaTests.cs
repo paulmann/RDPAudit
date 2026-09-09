@@ -110,17 +110,16 @@ public class Stage6EventCorrectnessSchemaTests
 			migrator.Migrate(Stage5Migration);
 		}
 
-		using (AuditDbContext db = new(options))
+		// Seed via raw SQL so we insert only Stage5-era columns — the EF-tracked entity would try to
+		// write columns from later migrations (SourceIpBinary, etc.) that do not exist yet.
+		using (SqliteCommand seed = connection.CreateCommand())
 		{
-			db.RawEvents.Add(new RawEvent
-			{
-				EventId = 4624,
-				Channel = "Security",
-				TimeUtc = DateTime.UtcNow,
-				UserName = "bob",
-				SourceIp = "203.0.113.10",
-			});
-			db.SaveChanges();
+			seed.CommandText = """
+INSERT INTO RawEvents (EventId, Channel, TimeUtc, UserName, SourceIp, Processed)
+VALUES (4624, 'Security', $ts, 'bob', '203.0.113.10', 0);
+""";
+			seed.Parameters.AddWithValue("$ts", DateTime.UtcNow.ToString("O"));
+			seed.ExecuteNonQuery();
 		}
 
 		using (AuditDbContext db = new(options))

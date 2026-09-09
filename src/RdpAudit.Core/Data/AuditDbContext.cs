@@ -1,10 +1,10 @@
-// File:    src/RdpAudit.Core/Data/AuditDbContext.cs
-// Module:  RdpAudit.Core.Data
-// Purpose: Primary EF Core DbContext for the RdpAudit SQLite database.
-// Extends: Microsoft.EntityFrameworkCore.DbContext
-// Author:  Mikhail Deynekin
-// Site:    https://Deynekin.com
-
+/* Project: RDPAudit 2.0 | Author: Mikhail Deynekin | Site: Deynekin.com | Email: Mikhail@Deynekin.com */
+// Version: 2.0.0
+// File   : AuditDbContext.cs
+// Project: RdpAudit.Core (RdpAudit.Core.Data)
+// Purpose: Defines the EF Core database surface for persisted RDPAudit entities.
+// Depends: DbContext, RdpAudit.Core.Models
+// Extends: Add each new persisted entity as a DbSet and a separate configuration.
 using Microsoft.EntityFrameworkCore;
 using RdpAudit.Core.Models;
 
@@ -50,6 +50,18 @@ public sealed class AuditDbContext : DbContext
 	public DbSet<AuthAttemptFact> AuthAttemptFacts => Set<AuthAttemptFact>();
 
 	public DbSet<OperationLog> OperationLogs => Set<OperationLog>();
+
+	public DbSet<IpEventSummary> IpEventSummaries => Set<IpEventSummary>();
+
+	public DbSet<IpEventTypeCounter> IpEventTypeCounters => Set<IpEventTypeCounter>();
+
+	public DbSet<IngestionSequence> IngestionSequences => Set<IngestionSequence>();
+
+	public DbSet<EventCollectionAudit> EventCollectionAudits => Set<EventCollectionAudit>();
+
+	public DbSet<EventRetention> EventRetentions => Set<EventRetention>();
+
+	public DbSet<EventEnablement> EventEnablements => Set<EventEnablement>();
 
 	protected override void OnModelCreating(ModelBuilder modelBuilder)
 	{

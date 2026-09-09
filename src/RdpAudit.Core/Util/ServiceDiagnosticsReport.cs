@@ -1,12 +1,19 @@
 // File:    src/RdpAudit.Core/Util/ServiceDiagnosticsReport.cs
 // Module:  RdpAudit.Core.Util
-// Purpose: Plain-text "Copy diagnostics" report assembled from the three independent inputs
-//          the Service tab already aggregates (SCM snapshot + installed/distribution binary
+// Purpose: Plain-text "Copy diagnostics" report assembled from the four independent inputs
+//          the Service tab aggregates (SCM snapshot + installed/distribution binary
 //          fingerprints + IPC runtime telemetry). Produces a single English block the
-//          operator can paste straight into a support ticket. The high-level verdict line —
+//          operator can paste straight into a support ticket. The high-level verdict line -
 //          OK / Publish not installed / Installed path missing / Running old binary /
-//          Service path mismatch / Hash mismatch / IPC connected to unexpected binary — is
+//          Service path mismatch / Hash mismatch / IPC connected to unexpected binary - is
 //          derived solely from the inputs so it never disagrees with the Service tab labels.
+//          D3: the report is deterministic for identical inputs. Build accepts an explicit
+//          GeneratedUtc (defaults to DateTime.UtcNow only for production callers that omit
+//          it) so every timestamp rendered inside the report is derived from the inputs;
+//          all timestamps are formatted with CultureInfo.InvariantCulture in UTC and the
+//          SCM section now carries ServiceStartUtc / Uptime / UptimeStatus, a dedicated
+//          [IPC counters] section, and a [Configuration values] section with the actual
+//          paths the report references.
 //          Pure formatting; no I/O. Caller passes pre-read fingerprints and SCM data.
 // Extends: System.Object
 // Author:  Mikhail Deynekin
@@ -23,7 +30,7 @@ public enum ServiceDiagnosticsVerdict
 	/// <summary>Distribution, installed binary, running binary, and IPC all agree.</summary>
 	Ok,
 
-	/// <summary>The publish folder is missing or empty — the Configurator has nothing to install.</summary>
+	/// <summary>The publish folder is missing or empty - the Configurator has nothing to install.</summary>
 	PublishNotInstalled,
 
 	/// <summary>SCM has the service registered but the on-disk binary at the ImagePath is gone.</summary>
@@ -33,19 +40,19 @@ public enum ServiceDiagnosticsVerdict
 	/// running the previous image.</summary>
 	RunningOldBinary,
 
-	/// <summary>SCM ImagePath does not point at the configured install directory — typically a
+	/// <summary>SCM ImagePath does not point at the configured install directory - typically a
 	/// stale registration from a previous install location.</summary>
 	ServicePathMismatch,
 
 	/// <summary>The installed binary's SHA-256 differs from the distribution binary even though
-	/// both files exist — the install directory is out of date.</summary>
+	/// both files exist - the install directory is out of date.</summary>
 	HashMismatch,
 
 	/// <summary>IPC reports a runtime version that is not consistent with either the installed
-	/// or distribution binary on disk — the talking process is not the one we shipped.</summary>
+	/// or distribution binary on disk - the talking process is not the one we shipped.</summary>
 	IpcConnectedToUnexpectedBinary,
 
-	/// <summary>The service is not installed at all — no SCM registration.</summary>
+	/// <summary>The service is not installed at all - no SCM registration.</summary>
 	NotInstalled,
 
 	/// <summary>Distribution binary is not present on disk for comparison.</summary>
@@ -59,6 +66,20 @@ public sealed record RunningProcessFingerprint(
 	BinaryFingerprint? MainModuleFingerprint,
 	DateTime? StartTimeUtc);
 
+/// <summary>D3 - subset of the IPC GetStatus telemetry surfaced in the report's dedicated
+/// [IPC counters] section. Every field is nullable so the report renders deterministically
+/// even when the IPC status command returned only a partial payload.</summary>
+public sealed record ServiceDiagnosticsIpcCounters(
+	DateTime? ServiceStartedUtc,
+	TimeSpan? ServiceUptime,
+	long? EventsCaptured,
+	long? EventsDropped,
+	long? AlertsRaised,
+	int? ActiveSessions,
+	long? Security4624Count,
+	long? Security4625Count,
+	long? Security4648Count);
+
 /// <summary>Aggregate diagnostic input for <see cref="ServiceDiagnosticsReportBuilder.Build"/>.</summary>
 public sealed record ServiceDiagnosticsInput(
 	string ConfiguratorVersion,
@@ -71,11 +92,18 @@ public sealed record ServiceDiagnosticsInput(
 	bool IpcConnected,
 	// Optional deep-diagnostics bundle (IPC round-trip detail, DebugMode-on-disk vs UI, log-file
 	// tails, crash folder listing). Null for callers that only need the legacy
-	// SCM/binary/IPC-connected summary (e.g. existing unit tests) — the report simply omits the
+	// SCM/binary/IPC-connected summary (e.g. existing unit tests) - the report simply omits the
 	// extra sections in that case. (XML <param> doc comments are not valid on individual positional
 	// record parameters in C#, hence plain // comments here; see the <summary> on
 	// ServiceDiagnosticsExtras below for the documented type.)
-	ServiceDiagnosticsExtras? Extras = null);
+	ServiceDiagnosticsExtras? Extras = null,
+	// D3 - optional IPC counters bundle from the GetStatus telemetry. Null means the report shows
+	// no [IPC counters] section (caller had no live telemetry).
+	ServiceDiagnosticsIpcCounters? IpcCounters = null,
+	// D3 - explicit report generation instant. Production callers may omit it (UtcNow is used);
+	// deterministic callers (unit tests) pass a fixed UTC value so the exact same inputs render
+	// the exact same text. All timestamps derived from this value are formatted as UTC.
+	DateTime GeneratedUtc = default);
 
 /// <summary>Deep-diagnostics bundle collected alongside the legacy <see cref="ServiceDiagnosticsInput"/>
 /// fields so a single "Copy diagnostics" click gives enough detail to root-cause "service not
@@ -100,10 +128,10 @@ public sealed record ServiceDiagnosticsInput(
 ///   IpcStartupLogTail     - Last lines of %ProgramData%\RdpAudit\logs\ipc-startup.log
 ///                           (IpcServerWorker startup / fatal breadcrumbs), oldest first. Empty
 ///                           when the file does not exist yet.
-///   DebugLogTail          - Last lines of %ProgramData%\RdpAudit\RDPAudit_DEBUG_Log.txt (root,
-///                           NOT logs\ -- matches Program.ConfigureSerilog). Empty when DEBUG mode
-///                           has never actually been persisted to disk (see DiskDebugModeEnabled)
-///                           or the service has not restarted since it was enabled.
+///   DebugLogTail          - Last lines of %ProgramData%\RdpAudit\logs\RDPAudit_DEBUG_Log.txt
+///                           (UTC with a trailing Z). Empty when DEBUG mode has never actually
+///                           been persisted to disk (see DiskDebugModeEnabled) or the service has
+///                           not restarted since it was enabled.
 ///   ServiceLogTail        - Last lines of the day-rolling structured Serilog file under
 ///                           %ProgramData%\RdpAudit\logs\service-*.log -- present even when DEBUG
 ///                           mode is off, so a worker-fault / unhandled-exception entry is visible
@@ -139,14 +167,22 @@ public sealed record ServiceDiagnosticsReport(
 /// <summary>Pure formatter for the Copy diagnostics block.</summary>
 public static class ServiceDiagnosticsReportBuilder
 {
-	/// <summary>Builds the diagnostics report from pre-read inputs.</summary>
+	/// <summary>Builds the diagnostics report from pre-read inputs. Uses
+	/// <paramref name="input"/>.<see cref="ServiceDiagnosticsInput.GeneratedUtc"/> when it is set;
+	/// otherwise falls back to <c>DateTime.UtcNow</c> for backward-compatible production callers
+	/// (the legacy path keeps working exactly as before). Every rendered timestamp flows through
+	/// <see cref="FormatUtc"/> so the output is invariant-culture UTC.</summary>
 	public static ServiceDiagnosticsReport Build(ServiceDiagnosticsInput input)
 	{
 		ArgumentNullException.ThrowIfNull(input);
 
+		DateTime generatedUtc = input.GeneratedUtc == default
+			? DateTime.UtcNow
+			: input.GeneratedUtc.ToUniversalTime();
+
 		ServiceDiagnosticsVerdict verdict = ResolveVerdict(input);
 		string verdictLabel = FormatVerdictLabel(verdict);
-		string text = FormatReport(input, verdict, verdictLabel);
+		string text = FormatReport(input, verdict, verdictLabel, generatedUtc);
 		return new ServiceDiagnosticsReport(verdict, verdictLabel, text);
 	}
 
@@ -202,7 +238,7 @@ public static class ServiceDiagnosticsReportBuilder
 			&& !VersionEquivalent(input.IpcRuntimeVersion!, input.Installed.FileVersion)
 			&& !VersionEquivalent(input.IpcRuntimeVersion!, input.Installed.ProductVersion))
 		{
-			// IPC reports a version that doesn't match the installed binary at all — talking to
+			// IPC reports a version that doesn't match the installed binary at all - talking to
 			// a different process than what's on disk.
 			if (string.IsNullOrWhiteSpace(input.Installed.FileVersion))
 			{
@@ -279,13 +315,40 @@ public static class ServiceDiagnosticsReportBuilder
 		_ => "Unknown",
 	};
 
+	/// <summary>Canonical UTC timestamp rendering used by every line of the report. Invariant
+	/// culture, "u" round-trip format, trailing Z. Determinism requirement D3: identical inputs
+	/// (including GeneratedUtc) must produce byte-identical timestamps on any host culture.</summary>
+	private static string FormatUtc(DateTime value) =>
+		value.ToUniversalTime().ToString("u", CultureInfo.InvariantCulture);
+
+	/// <summary>Canonical duration rendering: <c>0d 00:00:00</c>. Negative values (only possible
+	/// when the observed process/service start is newer than the report instant) collapse to zero
+	/// so the report never prints a negative uptime; the UptimeStatus line communicates the skew
+	/// explicitly instead.</summary>
+	private static string FormatUptime(TimeSpan value)
+	{
+		if (value < TimeSpan.Zero)
+		{
+			value = TimeSpan.Zero;
+		}
+
+		return string.Format(
+			CultureInfo.InvariantCulture,
+			"{0}d {1:00}:{2:00}:{3:00}",
+			(long)value.TotalDays,
+			value.Hours,
+			value.Minutes,
+			value.Seconds);
+	}
+
 	private static string FormatReport(
 		ServiceDiagnosticsInput input,
 		ServiceDiagnosticsVerdict verdict,
-		string verdictLabel)
+		string verdictLabel,
+		DateTime generatedUtc)
 	{
 		StringBuilder sb = new();
-		sb.Append("RdpAudit diagnostics — ").AppendLine(DateTime.UtcNow.ToString("u", CultureInfo.InvariantCulture));
+		sb.Append("RdpAudit diagnostics - ").AppendLine(FormatUtc(generatedUtc));
 		sb.Append("Verdict: ").AppendLine(verdictLabel);
 		if (verdict != ServiceDiagnosticsVerdict.Ok)
 		{
@@ -296,6 +359,15 @@ public static class ServiceDiagnosticsReportBuilder
 		sb.AppendLine("[Configurator]");
 		sb.Append("  Version: ").AppendLine(input.ConfiguratorVersion);
 		sb.Append("  Configurator dir: ").AppendLine(input.Layout.ConfiguratorDirectory);
+		sb.AppendLine();
+
+		sb.AppendLine("[Configuration values]");
+		sb.Append("  Install directory: ").AppendLine(input.Layout.InstallDirectory);
+		sb.Append("  ProgramData directory: ").AppendLine(input.Layout.ProgramDataDirectory);
+		sb.Append("  Database path: ").AppendLine(input.Layout.DefaultDatabasePath);
+		sb.Append("  appsettings.json: ").AppendLine(input.Layout.AppSettingsPath);
+		sb.Append("  Expected service executable: ").AppendLine(input.Layout.ExpectedServiceExecutable);
+		sb.Append("  Distribution dir: ").AppendLine(input.Layout.DistributionDirectory ?? "(none)");
 		sb.AppendLine();
 
 		sb.AppendLine("[Distribution]");
@@ -313,6 +385,7 @@ public static class ServiceDiagnosticsReportBuilder
 		sb.Append("  StartMode: ").AppendLine(input.Scm.StartMode ?? "(unknown)");
 		sb.Append("  ImagePath: ").AppendLine(input.Scm.ImagePath ?? "(none)");
 		sb.Append("  ProcessId: ").AppendLine(input.Scm.ProcessId?.ToString(CultureInfo.InvariantCulture) ?? "(none)");
+		AppendScmRunDetails(sb, input, generatedUtc);
 		sb.AppendLine();
 
 		sb.AppendLine("[Running process]");
@@ -325,13 +398,25 @@ public static class ServiceDiagnosticsReportBuilder
 			sb.Append("  Length: ").AppendLine(runningFp.Length.ToString(CultureInfo.InvariantCulture));
 		}
 
-		sb.Append("  StartTimeUtc: ").AppendLine(
-			input.Running.StartTimeUtc?.ToString("u", CultureInfo.InvariantCulture) ?? "(unknown)");
 		sb.AppendLine();
 
 		sb.AppendLine("[IPC]");
 		sb.Append("  Connected: ").AppendLine(input.IpcConnected ? "yes" : "no");
 		sb.Append("  RuntimeVersion: ").AppendLine(input.IpcRuntimeVersion ?? "(unreachable)");
+		if (input.IpcCounters is ServiceDiagnosticsIpcCounters counters)
+		{
+			if (counters.ServiceStartedUtc is DateTime started)
+			{
+				sb.Append("  ServiceStartedUtc: ").AppendLine(FormatUtc(started));
+			}
+
+			if (counters.ServiceUptime is TimeSpan uptime)
+			{
+				sb.Append("  ServiceUptime: ").AppendLine(FormatUptime(uptime));
+			}
+
+			AppendIpcCounters(sb, counters);
+		}
 
 		if (input.Extras is ServiceDiagnosticsExtras extras)
 		{
@@ -340,6 +425,72 @@ public static class ServiceDiagnosticsReportBuilder
 
 		return sb.ToString();
 	}
+
+	/// <summary>D3 - SCM ServiceStartUtc / Uptime / UptimeStatus block. The start instant is taken
+	/// from the running process observed through the SCM-reported PID (the OS-level process start
+	/// time is the strongest factual equivalent Win32_Service exposes); the IPC-reported
+	/// ServiceStartedUtc is used as the fallback source when the process snapshot is unavailable.
+	/// All three rows are always emitted so section shape stays deterministic.</summary>
+	private static void AppendScmRunDetails(StringBuilder sb, ServiceDiagnosticsInput input, DateTime generatedUtc)
+	{
+		(DateTime? start, string? source) = ResolveServiceStartUtc(input);
+		if (start is not DateTime startUtc)
+		{
+			sb.AppendLine("  ServiceStartUtc: (unknown)");
+			sb.AppendLine("  Uptime: (unknown)");
+			sb.AppendLine("  UptimeStatus: Unknown");
+			return;
+		}
+
+		string sourceNote = source switch
+		{
+			"process" => " (process start observed via SCM PID)",
+			"ipc" => " (reported by the service)",
+			_ => string.Empty,
+		};
+		sb.Append("  ServiceStartUtc: ").Append(FormatUtc(startUtc)).AppendLine(sourceNote);
+
+		TimeSpan uptime = generatedUtc - startUtc;
+		sb.Append("  Uptime: ").AppendLine(FormatUptime(uptime));
+		sb.Append("  UptimeStatus: ").AppendLine(uptime < TimeSpan.Zero ? "FutureStart (host clock skew)" : "OK");
+	}
+
+	private static (DateTime? Start, string? Source) ResolveServiceStartUtc(ServiceDiagnosticsInput input)
+	{
+		if (input.Running.StartTimeUtc is DateTime processStart)
+		{
+			return (processStart, "process");
+		}
+
+		if (input.IpcCounters?.ServiceStartedUtc is DateTime ipcStart)
+		{
+			return (ipcStart, "ipc");
+		}
+
+		return (null, null);
+	}
+
+	/// <summary>D3 - dedicated [IPC counters] section. Rendered only when the caller supplied live
+	/// GetStatus telemetry; every counter uses InvariantCulture so the report is deterministic.</summary>
+	private static void AppendIpcCounters(StringBuilder sb, ServiceDiagnosticsIpcCounters counters)
+	{
+		sb.AppendLine();
+		sb.AppendLine("[IPC counters]");
+		sb.Append("  EventsCaptured: ").AppendLine(Counter(counters.EventsCaptured));
+		sb.Append("  EventsDropped: ").AppendLine(Counter(counters.EventsDropped));
+		sb.Append("  AlertsRaised: ").AppendLine(Counter(counters.AlertsRaised));
+		sb.Append("  ActiveSessions: ").AppendLine(Counter(counters.ActiveSessions));
+		sb.Append("  Security4624Count: ").AppendLine(Counter(counters.Security4624Count));
+		sb.Append("  Security4625Count: ").AppendLine(Counter(counters.Security4625Count));
+		sb.Append("  Security4648Count: ").AppendLine(Counter(counters.Security4648Count));
+		sb.AppendLine();
+	}
+
+	private static string Counter(long? value) =>
+		value?.ToString(CultureInfo.InvariantCulture) ?? "(n/a)";
+
+	private static string Counter(int? value) =>
+		value?.ToString(CultureInfo.InvariantCulture) ?? "(n/a)";
 
 	/// <summary>Appends the deep-diagnostics sections (IPC failure detail, DebugMode disk/UI
 	/// consistency, log tails, crash folder) so a single Copy diagnostics click is enough to
@@ -372,7 +523,7 @@ public static class ServiceDiagnosticsReportBuilder
 		}
 
 		AppendLogTail(sb, "ipc-startup.log (logs\\ipc-startup.log)", extras.IpcStartupLogTail);
-		AppendLogTail(sb, "RDPAudit_DEBUG_Log.txt (RDPAudit_DEBUG_Log.txt, root)", extras.DebugLogTail);
+		AppendLogTail(sb, "RDPAudit_DEBUG_Log.txt (logs\\RDPAudit_DEBUG_Log.txt, UTC)", extras.DebugLogTail);
 		AppendLogTail(sb, "service-*.log (logs\\service-*.log, structured)", extras.ServiceLogTail);
 
 		sb.AppendLine();
@@ -426,7 +577,7 @@ public static class ServiceDiagnosticsReportBuilder
 		ServiceDiagnosticsVerdict.PublishNotInstalled =>
 			"The publish folder is missing or empty. Run publish.ps1 next to the Configurator and retry.",
 		ServiceDiagnosticsVerdict.InstalledPathMissing =>
-			"SCM has the service registered but the binary at ImagePath is gone — the service cannot start until Install / Update is re-run.",
+			"SCM has the service registered but the binary at ImagePath is gone - the service cannot start until Install / Update is re-run.",
 		ServiceDiagnosticsVerdict.RunningOldBinary =>
 			"The installed binary on disk has been updated but the hosting process is still running the previous image. Restart the service to load the new image.",
 		ServiceDiagnosticsVerdict.ServicePathMismatch =>
@@ -434,11 +585,11 @@ public static class ServiceDiagnosticsReportBuilder
 		ServiceDiagnosticsVerdict.HashMismatch =>
 			"Installed binary SHA-256 differs from the distribution. Use Update installed files to bring the install directory back in sync.",
 		ServiceDiagnosticsVerdict.IpcConnectedToUnexpectedBinary =>
-			"IPC reports a runtime version that does not match the installed binary on disk — the talking process is not the one we shipped.",
+			"IPC reports a runtime version that does not match the installed binary on disk - the talking process is not the one we shipped.",
 		ServiceDiagnosticsVerdict.NotInstalled =>
 			"The Windows service is not registered with SCM. Use Install service to register it.",
 		ServiceDiagnosticsVerdict.DistributionMissing =>
-			"The publish/Service distribution is missing — Update is not possible until publish.ps1 re-emits it.",
+			"The publish/Service distribution is missing - Update is not possible until publish.ps1 re-emits it.",
 		_ => string.Empty,
 	};
 }

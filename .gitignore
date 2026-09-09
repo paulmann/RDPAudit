@@ -1,8 +1,59 @@
+# Build outputs
 bin/
 obj/
 publish/
-*.user
+artifacts/
+TestResults/
+
+# Visual Studio / .NET
 .vs/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+project.lock.json
+*.dbmdl
+*.pidb
+*.cache
+*.trx
+TestResults.xml
+coverage*.xml
+coverage*.json
+*.coverage
+*.coveragexml
+
+# NuGet
+*.nupkg
+*.snupkg
+
+# Backup and temporary files
+*.bak
+*.backup
+*.old
+*.orig
+*.tmp
+*.temp
+*~
+*.log
+*.tlog
+
+# ReSharper
+_ReSharper*/
+*.ReSharper
+*.ReSharper.user
+
+# Editor / OS files
 .idea/
+.vscode/
 *.swp
 .DS_Store
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Publish settings / secrets
+*.publishsettings
+
+# DevAgent / SagaAI
+.dev_agent/

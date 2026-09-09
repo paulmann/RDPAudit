@@ -28,8 +28,27 @@
       other than the implicit 1.0.0.0 placeholder so the Service tab can distinguish
       runtime / installed / distribution binaries by version.
 
-      Pinned to 1.6.0 for the current release stream — see RdpAuditVersionMetadataTests
+      Pinned to 2.0.2 for the current release stream — see RdpAuditVersionMetadataTests
       for the gate.
+
+      ── 2.0.2 ─────────────────────────────────────────────────
+      Stage10IpShardsRetention migration now backfills RawEvents.IngestionSequence with ROWID
+      and creates the IX_RawEvents_IngestionSequence unique index as a partial index filtered
+      on IngestionSequence > 0. Fixes a hard startup crash on databases that already contain
+      RawEvents (SqliteException 19 UNIQUE constraint failed) because AddColumn assigned 0 to
+      every legacy row and the follow-up CREATE UNIQUE INDEX rejected the duplicate zeros. The
+      IngestionSequence sidecar is now seeded with COALESCE(MAX(IngestionSequence), 0) + 1 so
+      subsequent allocations never collide with the backfilled block. Stage10 designer +
+      Stage11 designer snapshots aligned to the partial-filter model.
+
+      ── 2.0.1 ─────────────────────────────────────────────────
+      RdpAudit 2.0 event-collection stream. EventCollectorHost gained a host-scoped
+      CancellationTokenSource so DisposeAsync cancels the fire-and-forget restart loop
+      (previously a channel in Cooldown could keep sc.exe stop waiting up to 2 minutes).
+      RingBufferEventPipe.Dispose now releases the internal SemaphoreSlim once before
+      disposing it so pending WaitToReadAsync callers unblock and observe _disposed.
+      Directory.Build.props default VersionPrefix raised from 1.6.3 to 2.0.1 so
+      installed binaries no longer show 1.6.3 on the Service tab.
 
       ── 1.6.3 ─────────────────────────────────────────────────────────
       IpcServerWorker: fixed the mis-indented back-off block introduced in 1.6.2 that could exit
@@ -260,7 +279,7 @@
       firewall Remove / Repair / diagnostics stabilization, and the 1.3.0 IPC
       reliability overhaul.
     -->
-    <VersionPrefix Condition="'$(VersionPrefix)' == ''">1.6.3</VersionPrefix>
+    <VersionPrefix Condition="'$(VersionPrefix)' == ''">2.0.2</VersionPrefix>
     <FileVersion>$(VersionPrefix).0</FileVersion>
     <AssemblyVersion>$(VersionPrefix).0</AssemblyVersion>
 

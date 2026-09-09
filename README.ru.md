@@ -1,6 +1,6 @@
 # RDPAudit — Windows RDP Security Monitoring & Auto-Block Platform
 
-[![Version](https://img.shields.io/badge/version-2.0.0-blue.svg)](https://github.com/paulmann/RDPAudit)
+[![Version](https://img.shields.io/badge/version-2.0.2-blue.svg)](https://github.com/paulmann/RDPAudit)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![.NET](https://img.shields.io/badge/dotnet-8.0--windows-blue.svg)](https://dotnet.microsoft.com/)
 [![Platform](https://img.shields.io/badge/platform-Windows%2010%2B%20%2F%20Server%202016%2B-blue.svg)](https://www.microsoft.com/windows/)
@@ -326,6 +326,20 @@ PRAGMA synchronous = NORMAL;
 | `DbProps` | Хранилище ключ-значение для метаданных БД |
 | `Bookmarks` | Закладки прогресса обработки событий (crash recovery) |
 | `LoginRules` | Правила ограничения входа по времени суток / дням |
+| `IpEventSummary` / `IpEventTypeCounter` | Агрегированные по IP итоговые счётчики событий, первое/последнее наблюдение и счётчики по типам событий |
+| `EventEnablement` / `EventRetention` / `EventCollectionAudit` | Переопределения сбора/хранения событий и журнал их изменений |
+| `IngestionSequence` | Долговременный монотонный счётчик последовательности для транзакционной записи |
+
+**Forensic per-IP shards:** события дополнительно стейджатся в ограниченные по размеру
+per-IP forensic shard-файлы в `%ProgramData%\RdpAudit\actions\`
+(`appsettings.json` -> `Sharding.ActionsRoot`). `ShardIngestionSink.CommitAsync()`
+- настоящая граница durability для каждой shard-партии: pending-очередь очищается
+и пул writer'ов ужимается только после успеха всей партии, поэтому сбой внутри
+sink'а сохраняет очередь, а следующий успешный flush восстанавливает её. Shard-записи
+выполняются на выделенном live SQLite-подключении (никогда на EF-транзакционном
+соединении) с ограниченными ретраями `SQLITE_BUSY` / `SQLITE_LOCKED`.
+`IpEventSummary` хранит правдивые shard-метаданные (`ShardRelativePath`,
+`ShardRecordCount`, `ShardBytes`) только для файлов, реально существующих на диске.
 
 **Пакетная запись:** служба использует `SqliteCommand` с явной транзакцией, батчи по 1000+ строк за один `COMMIT`.
 
@@ -359,6 +373,17 @@ PRAGMA synchronous = NORMAL;
 | 20 | `SESSION_HIJACK_SUSPECT` | High | Несоответствие Session ID и IP-адреса источника |
 | 21 | `RAPID_RECONNECT` | Medium | Подозрительно частые переподключения с одного IP |
 
+### 5.4.1. Ужесточение правила PRIVILEGED_LOGIN
+
+Правило `PRIVILEGED_LOGIN` (Event 4672 - выдача SeDebug / SeTcb при входе) защищено от шторма известных сервисных SID при старте службы (одинаковые события от SYSTEM без IP-адреса):
+
+- **Фильтр по точному SID** - `S-1-5-18` (SYSTEM), `S-1-5-19` (LOCAL SERVICE) и `S-1-5-20` (NETWORK SERVICE) отсекаются по точному SID из нормализованного JSON `Details` (`subjectUserSid`), никогда - по локализованным именам учётных записей.
+- **Требуется сетевой контекст** - событие обязано нести непустой `SourceIp` и сетевой тип входа (3 / 7 / 10). Когда `LogonType` отсутствует (у Windows 4672 нет собственного поля), правило сопоставляет событие с Security 4624 по `SubjectLogonId == TargetLogonId`.
+- **Окно подавления** - одинаковые срабатывания ключа (пользователь, IP, тип входа) подавляются в течение `PrivilegedLoginSuppressionWindowMinutes` (по умолчанию 5); по истечении окна выпускается один сводный алерт со счётчиком подавленных событий.
+- **Бюджет алертов в минуту** - `PrivilegedLoginRateLimitPerMinute` (по умолчанию 20) ограничивает выход; throttling логируется один раз в минуту.
+- **Возрастной гейт** - события старше `AlertEventMaxAgeMinutes` (по умолчанию 5) остаются в `RawEvent` как факты, но никогда не порождают алерты (гейт применяет `AlertWorker` ко всем правилам).
+- **Zero-allocation путь отклонения** - `EvaluateAsync` не является async-методом и возвращает закешированный null-task, поэтому отклонённые оценки не выделяют память.
+
 ### 5.5. Автоблокировка Windows Firewall
 
 При срабатывании правил `BRUTE_FORCE`, `BRUTE_FORCE_NTLM`, `IP_REPUTATION` и настраиваемого порога:
@@ -389,6 +414,15 @@ ACL: только `BUILTIN\Administrators` (устанавливается че�
 
 Атомарное сохранение настроек: GUI отправляет изменения через IPC — сервис применяет их как единую транзакцию, без прямого доступа GUI к файлам конфигурации.
 
+Надёжность канала (v2.3.4+): `IpcServerWorker` запрашивает у ОС `MaxConcurrent + 1` инстансов, поэтому всегда слушающая standby-труба не конкурирует с обрабатываемыми подключениями. Win32 `ERROR_PIPE_BUSY` (231) классифицируется как «достигнут лимит инстансов», а не как перехват AV/EDR; насыщение снимается автоматически по мере завершения обработчиков.
+
+Наблюдаемость жизненного цикла (v2.3.5+): каждый экземпляр `IpcServerWorker` пишет факты в `%ProgramData%\RdpAudit\logs\ipc-startup.log`:
+- `instance constructed (pid, instanceId)` - создание экземпляра;
+- `ExecuteAsync entered (pid, instanceId, entry=N)` - n-й вход в цикл приёма;
+- `ExecuteAsync exiting (pid, instanceId, entryCount, exitCount, iteration, activeHandlers, livePipes, stoppingTokenCancelled, hostApplicationStoppingCancelled, exitReason, lifetimeMs)` - выход с причиной (`HostStop` при остановке хоста, `ServiceStop` при отмене только токена службы, `Faulted:<тип>` при аварии accept-цикла).
+
+Эти поля отличают реальный повторный вход (`entry=2/3` при том же `instanceId`) от пересоздания экземпляра или хоста (несколько разных `instanceId`).
+
 ### 5.7. Надёжность и устойчивость
 
 - **Exponential backoff** при ошибках БД (`SQLITE_BUSY`)
@@ -396,6 +430,9 @@ ACL: только `BUILTIN\Administrators` (устанавливается че�
 - **Graceful shutdown** — все воркеры корректно завершаются при `StopAsync`
 - **EF Core Migrations** применяются при старте (не только `EnsureCreated`)
 - **EventLog source** регистрируется при установке сервиса
+- **Таймауты при подключении к именованным трубам** - молчащий клиент освобождает инстанс
+- **TimedHostedService вокруг каждого воркера** - пишет `%ProgramData%\RdpAudit\logs\startup-sequence.log` с `StartAsync BEGIN/END/FAILED` каждого зарегистрированного воркера, чтобы зависший при старте был виден без рабочего IPC-канала
+- **Lifecycle-наблюдаемость `IpcServerWorker`** - breadcrumbs `instance constructed` / `ExecuteAsync entered` / `ExecuteAsync exiting` в `ipc-startup.log` отличают повторные входы одного экземпляра от пересоздания хоста
 
 ---
 
@@ -410,12 +447,17 @@ ACL: только `BUILTIN\Administrators` (устанавливается че�
 ### 6.2. Вкладка Prerequisites
 
 Автоматически проверяет условия, необходимые для работы сервиса:
-- Включён ли канал `Security` EventLog
-- Включены ли каналы TerminalServices (RCM и LSM)
-- Включена ли политика аудита для нужных подкатегорий
+- Наличие и включённость всех семи отслеживаемых каналов EventLog (Security, System,
+  а также каналы Terminal Services / RDP)
+- Применена ли политика аудита: доступ к объектам и базовый набор из пяти подкатегорий
 - Установлена ли служба
 
-Для каждого пункта отображается статус и кнопка «Fix» с немедленным применением.
+Если канал отключён, предлагается исправление `wevtutil sl /enabled:true`. Если канал
+отсутствует в данной редакции/сборке Windows (например `TerminalServices-Gateway` на
+машине без роли RD Gateway), он отмечается как «missing» без автоматического
+исправления - вкладка не предлагает кнопку включения для канала, который эта редакция
+Windows создать не может. Для каждого устранимого пункта отображается статус и кнопка
+«Fix» с немедленным применением.
 
 ### 6.3. Вкладка Audit Policy
 
@@ -725,6 +767,12 @@ Configurator настраивает SACL (System Access Control Lists) для о
       }
       // ... остальные правила
     },
+    "Alerts": {
+      "EnablePrivilegedLoginDetection": true,
+      "PrivilegedLoginSuppressionWindowMinutes": 5,
+      "PrivilegedLoginRateLimitPerMinute": 20,
+      "AlertEventMaxAgeMinutes": 5
+    },
     "AutoBlock": {
       "IsEnabled": true,
       "Providers": ["WindowsFirewall"],  // + "MikroTik" при настройке
@@ -886,6 +934,7 @@ publish/
 | MikroTik TLS error | Установить `VerifyTls: false` для self-signed или импортировать сертификат |
 | `SQLITE_BUSY` в логах | Нормально при кратковременной конкуренции; exponential backoff срабатывает автоматически |
 | Политика аудита показывает `?` | Запустить `auditpol /get /category:*` от SYSTEM; вкладка Audit Policy → Apply |
+| EventID 7013 и потеря shard-партий | Обновитесь до v2.3.4+; shard-фаза теперь выполняется вне try/catch основной транзакции на выделенном SQLite-подключении |
 | ProgramData ACL проблемы | `icacls "%ProgramData%\RdpAudit" /grant "NT AUTHORITY\SYSTEM:(OI)(CI)F"` |
 
 Руководство по ручной валидации на Windows-хосте перед деплоем: [`docs/90-windows-validation.md`](docs/90-windows-validation.md)

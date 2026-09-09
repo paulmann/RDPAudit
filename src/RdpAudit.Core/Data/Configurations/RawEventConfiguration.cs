@@ -1,10 +1,10 @@
-// File:    src/RdpAudit.Core/Data/Configurations/RawEventConfiguration.cs
-// Module:  RdpAudit.Core.Data.Configurations
-// Purpose: EF Core entity configuration for RawEvent.
-// Extends: Microsoft.EntityFrameworkCore.IEntityTypeConfiguration{RawEvent}
-// Author:  Mikhail Deynekin
-// Site:    https://Deynekin.com
-
+/* Project: RDPAudit 2.0 | Author: Mikhail Deynekin | Site: Deynekin.com | Email: Mikhail@Deynekin.com */
+// Version: 2.0.1
+// File   : RawEventConfiguration.cs
+// Project: RdpAudit.Core (RdpAudit.Core.Data.Configurations)
+// Purpose: Maps normalized raw events and their ingestion metadata to the SQLite schema.
+// Depends: RawEvent, IEntityTypeConfiguration
+// Extends: Mirror every new RawEvent persistence property here before generating a migration.
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
 using RdpAudit.Core.Models;
@@ -20,6 +20,9 @@ public sealed class RawEventConfiguration : IEntityTypeConfiguration<RawEvent>
 		b.HasKey(e => e.Id);
 		b.Property(e => e.Id).ValueGeneratedOnAdd();
 		b.Property(e => e.Channel).IsRequired().HasMaxLength(256);
+		b.Property(e => e.IngestionSequence).HasDefaultValue(0L);
+		b.Property(e => e.EventLayer).HasDefaultValue(0);
+		b.Property(e => e.SourceIpBinary).HasMaxLength(16).IsFixedLength();
 		b.Property(e => e.UserName).HasMaxLength(256);
 		b.Property(e => e.Domain).HasMaxLength(256);
 		b.Property(e => e.SourceIp).HasMaxLength(45);
@@ -40,6 +43,10 @@ public sealed class RawEventConfiguration : IEntityTypeConfiguration<RawEvent>
 		b.HasIndex(e => new { e.SessionId, e.TimeUtc });
 		b.HasIndex(e => new { e.Processed, e.TimeUtc });
 		b.HasIndex(e => new { e.ObjectName, e.EventId });
+		// Uniqueness applies only to sequences the ingestion worker actually assigned (> 0).
+		// The default 0 marks legacy or synthetic rows and is intentionally excluded from the constraint.
+		b.HasIndex(e => e.IngestionSequence).IsUnique().HasFilter("\"IngestionSequence\" > 0");
+		b.HasIndex(e => new { e.SourceIpBinary, e.TimeUtc });
 
 		b.HasOne(e => e.Address)
 			.WithMany()

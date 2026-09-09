@@ -1,11 +1,11 @@
 // File:    src/RdpAudit.Configurator/Services/InstallUpdateLogger.cs
 // Module:  RdpAudit.Configurator.Services
-// Purpose: Persists every install / update step to %ProgramData%\RdpAudit\Logs\install-update-*.log
+// Purpose: Persists every install / update step to %ProgramData%\RdpAudit\logs\install-update-*.log
 //          so the operator can attach a single self-contained log to a support ticket and so
 //          subsequent diagnostics calls can replay what the previous attempt did. Captures the
 //          full step list (including failure detail) and the final actionable verdict text.
 //          Every line carries a UTC timestamp, never a localised one. Failure to create or
-//          write the log file is swallowed — install/update must not regress because a log
+//          write the log file is swallowed - install/update must not regress because a log
 //          sink is unavailable.
 // Extends: System.Object
 // Author:  Mikhail Deynekin
@@ -20,10 +20,11 @@ namespace RdpAudit.Configurator.Services;
 /// <summary>One line in an install / update transcript.</summary>
 public sealed record InstallUpdateLogEntry(DateTime UtcTimestamp, string Level, string Message);
 
-/// <summary>Append-only logger writing %ProgramData%\RdpAudit\Logs\install-update-{utc}.log.</summary>
+/// <summary>Append-only logger writing %ProgramData%\RdpAudit\logs\install-update-{utc}.log.</summary>
 public sealed class InstallUpdateLogger
 {
-	private const string LogsSubfolder = "Logs";
+	// Canonical logs subfolder resolved from RdpAuditPaths (single source of truth, D2) instead
+	// of a local duplicate "Logs" literal that could drift from the rest of the product.
 	private const string FileNamePrefix = "install-update-";
 
 	private readonly object _gate = new();
@@ -38,7 +39,7 @@ public sealed class InstallUpdateLogger
 		string utcStamp = DateTime.UtcNow.ToString("yyyyMMddTHHmmssZ", CultureInfo.InvariantCulture);
 		string fileName = string.Format(CultureInfo.InvariantCulture,
 			"{0}{1}-{2}.log", FileNamePrefix, operation, utcStamp);
-		string logDir = Path.Combine(layout.ProgramDataDirectory, LogsSubfolder);
+		string logDir = Path.Combine(layout.ProgramDataDirectory, RdpAuditPaths.LogsFolderName);
 		_logFilePath = Path.Combine(logDir, fileName);
 		Operation = operation;
 	}
@@ -47,7 +48,7 @@ public sealed class InstallUpdateLogger
 	public string Operation { get; }
 
 	/// <summary>Path of the log file the entries are appended to. Always populated even if
-	/// the directory could not be created — the operator still sees the intended path in the
+	/// the directory could not be created - the operator still sees the intended path in the
 	/// UI message so they can verify whether the failure was the file system itself.</summary>
 	public string LogFilePath => _logFilePath;
 
@@ -68,7 +69,7 @@ public sealed class InstallUpdateLogger
 		AppendToFile(entry);
 	}
 
-	/// <summary>Convenience helpers — same shape as a step result.</summary>
+	/// <summary>Convenience helpers - same shape as a step result.</summary>
 	public void Info(string message) => Log("INFO", message);
 
 	public void Warn(string message) => Log("WARN", message);
@@ -99,7 +100,7 @@ public sealed class InstallUpdateLogger
 					}
 
 					string header = string.Format(CultureInfo.InvariantCulture,
-						"# RdpAudit {0} log — {1}{2}",
+						"# RdpAudit {0} log - {1}{2}",
 						Operation, DateTime.UtcNow.ToString("u", CultureInfo.InvariantCulture), Environment.NewLine);
 					File.AppendAllText(_logFilePath, header, Encoding.UTF8);
 					_initialized = true;

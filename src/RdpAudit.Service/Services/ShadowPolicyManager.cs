@@ -64,9 +64,7 @@ public sealed class ShadowPolicyManager
 	private readonly string _backupRoot;
 
 	public ShadowPolicyManager(ILogger<ShadowPolicyManager> logger)
-		: this(logger, Path.Combine(
-			Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
-			"RdpAudit"))
+		: this(logger, RdpAuditPaths.Default.ProgramDataDirectory)
 	{
 	}
 

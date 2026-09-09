@@ -570,6 +570,227 @@ namespace RdpAudit.Core.Data.Migrations
                     b.ToTable("DbProps", (string)null);
                 });
 
+            modelBuilder.Entity("RdpAudit.Core.Models.EventCollectionAudit", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int?>("EventId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("InvokerAccount")
+                        .IsRequired()
+                        .HasMaxLength(260)
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("InvokerSid")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("TEXT");
+
+                    b.Property<int>("Kind")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("NewValue")
+                        .HasMaxLength(512)
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Note")
+                        .HasMaxLength(512)
+                        .HasColumnType("TEXT");
+
+                    b.Property<long>("OccurredUtc")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("OldValue")
+                        .HasMaxLength(512)
+                        .HasColumnType("TEXT");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("OccurredUtc");
+
+                    b.ToTable("EventCollectionAudit", (string)null);
+                });
+
+            modelBuilder.Entity("RdpAudit.Core.Models.EventEnablement", b =>
+                {
+                    b.Property<int>("EventId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<bool>("IsEnabled")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<long>("UpdatedUtc")
+                        .HasColumnType("INTEGER");
+
+                    b.HasKey("EventId");
+
+                    b.ToTable("EventEnablement", (string)null);
+                });
+
+            modelBuilder.Entity("RdpAudit.Core.Models.EventRetention", b =>
+                {
+                    b.Property<int>("EventId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("RetentionDays")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<long>("UpdatedUtc")
+                        .HasColumnType("INTEGER");
+
+                    b.HasKey("EventId");
+
+                    b.ToTable("EventRetention", (string)null);
+                });
+
+            modelBuilder.Entity("RdpAudit.Core.Models.IngestionSequence", b =>
+                {
+                    b.Property<int>("Id")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<long>("NextValue")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER")
+                        .HasDefaultValue(1L);
+
+                    b.HasKey("Id");
+
+                    b.ToTable("IngestionSequence", (string)null);
+
+                    b.HasData(
+                        new
+                        {
+                            Id = 1,
+                            NextValue = 1L
+                        });
+                });
+
+            modelBuilder.Entity("RdpAudit.Core.Models.IpEventSummary", b =>
+                {
+                    b.Property<byte[]>("IpBinary16")
+                        .HasMaxLength(16)
+                        .HasColumnType("BLOB")
+                        .IsFixedLength();
+
+                    b.Property<int>("AddressFamily")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<long>("FailureCount")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER")
+                        .HasDefaultValue(0L);
+
+                    b.Property<int>("FirstEventId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<long>("FirstEventSequence")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<byte[]>("FirstEventSnapshot")
+                        .IsRequired()
+                        .HasColumnType("BLOB");
+
+                    b.Property<long>("FirstEventUtc")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("Flags")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER")
+                        .HasDefaultValue(0);
+
+                    b.Property<string>("IpText")
+                        .IsRequired()
+                        .HasMaxLength(45)
+                        .HasColumnType("TEXT");
+
+                    b.Property<bool>("IsSubnetAggregate")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER")
+                        .HasDefaultValue(false);
+
+                    b.Property<int>("LastEventId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<long>("LastEventSequence")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<byte[]>("LastEventSnapshot")
+                        .IsRequired()
+                        .HasColumnType("BLOB");
+
+                    b.Property<long>("LastEventUtc")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<long?>("ShardBytes")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<long?>("ShardEvictedCount")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int?>("ShardFormatVersion")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<long?>("ShardOldestRetainedUtc")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<long?>("ShardRecordCount")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("ShardRelativePath")
+                        .HasMaxLength(260)
+                        .HasColumnType("TEXT");
+
+                    b.Property<long>("SuccessCount")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER")
+                        .HasDefaultValue(0L);
+
+                    b.Property<long>("TotalEventCount")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER")
+                        .HasDefaultValue(0L);
+
+                    b.HasKey("IpBinary16");
+
+                    b.HasIndex("IpText")
+                        .IsUnique();
+
+                    b.HasIndex("LastEventUtc");
+
+                    b.ToTable("IpEventSummary", (string)null);
+                });
+
+            modelBuilder.Entity("RdpAudit.Core.Models.IpEventTypeCounter", b =>
+                {
+                    b.Property<byte[]>("IpBinary16")
+                        .HasMaxLength(16)
+                        .HasColumnType("BLOB")
+                        .IsFixedLength();
+
+                    b.Property<int>("EventId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<long>("Count")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER")
+                        .HasDefaultValue(0L);
+
+                    b.Property<long>("FirstUtc")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<long>("LastUtc")
+                        .HasColumnType("INTEGER");
+
+                    b.HasKey("IpBinary16", "EventId");
+
+                    b.HasIndex("EventId", "LastUtc");
+
+                    b.ToTable("IpEventTypeCounter", (string)null);
+                });
+
             modelBuilder.Entity("RdpAudit.Core.Models.LoginRule", b =>
                 {
                     b.Property<long>("Id")
@@ -727,6 +948,16 @@ namespace RdpAudit.Core.Data.Migrations
                     b.Property<int>("EventId")
                         .HasColumnType("INTEGER");
 
+                    b.Property<int>("EventLayer")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER")
+                        .HasDefaultValue(0);
+
+                    b.Property<long>("IngestionSequence")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER")
+                        .HasDefaultValue(0L);
+
                     b.Property<string>("LogonId")
                         .HasMaxLength(32)
                         .HasColumnType("TEXT");
@@ -755,6 +986,11 @@ namespace RdpAudit.Core.Data.Migrations
                         .HasMaxLength(45)
                         .HasColumnType("TEXT");
 
+                    b.Property<byte[]>("SourceIpBinary")
+                        .HasMaxLength(16)
+                        .HasColumnType("BLOB")
+                        .IsFixedLength();
+
                     b.Property<bool>("SourceIpDerived")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("INTEGER")
@@ -780,6 +1016,10 @@ namespace RdpAudit.Core.Data.Migrations
 
                     b.HasIndex("AddressId");
 
+                    b.HasIndex("IngestionSequence")
+                        .IsUnique()
+                        .HasFilter("\"IngestionSequence\" > 0");
+
                     b.HasIndex("SessionRefId");
 
                     b.HasIndex("EventId", "TimeUtc");
@@ -793,6 +1033,8 @@ namespace RdpAudit.Core.Data.Migrations
                     b.HasIndex("SessionId", "TimeUtc");
 
                     b.HasIndex("SourceIp", "TimeUtc");
+
+                    b.HasIndex("SourceIpBinary", "TimeUtc");
 
                     b.ToTable("RawEvents", (string)null);
                 });

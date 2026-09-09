@@ -1,16 +1,12 @@
-// File:    src/RdpAudit.Service/Processors/EventNormalizer.cs
-// Module:  RdpAudit.Service.Processors
-// Purpose: Translates a raw EventRecord XML payload into a fully-populated RawEvent entity.
-//          When the Details JSON exceeds the persistence cap, large string values are truncated
-//          field-by-field to keep the document well-formed. As a last resort the payload is
-//          replaced with a sentinel object containing the truncation metadata so downstream
-//          alert rules (StickyKeys / LsassAccess / PrivilegedGroupChange / ProcessAnomaly /
-//          GoldenTicket) can still parse evt.Details safely.
-// Extends: System.Object
-// Author:  Mikhail Deynekin
-// Site:    https://Deynekin.com
-
+/* Project: RDPAudit 2.0 | Author: Mikhail Deynekin | Site: Deynekin.com | Email: Mikhail@Deynekin.com */
+// Version: 2.0.0
+// File   : EventNormalizer.cs
+// Project: RdpAudit.Service (RdpAudit.Service.Processors)
+// Purpose: Converts captured event payloads into normalized persistent RawEvent entities.
+// Depends: RawEventDto, RawEvent, SessionCorrelationCache
+// Extends: Add event-specific extraction and persistence metadata without weakening forensic retention.
 using System.Globalization;
+using System.Net;
 using System.Text.Json;
 using System.Xml;
 using RdpAudit.Core.Events;
@@ -119,6 +115,11 @@ public sealed class EventNormalizer
 			EventId = dto.EventId,
 			Channel = dto.Channel,
 			TimeUtc = dto.TimeUtc,
+			IngestionSequence = dto.IngestionSequence,
+			EventLayer = (int)(dto.EventLayer == EventLayer.Unknown
+				? EventCatalog.LayerKindOf(dto.EventId)
+				: dto.EventLayer),
+			SourceIpBinary = GetCanonicalIpBinary(resolvedIp, dto.SourceIpBinary),
 			SourceIp = resolvedIp,
 			SourceIpDerived = derived && resolvedIp is not null,
 			SourceIpUnresolved = unresolved,
@@ -152,6 +153,21 @@ public sealed class EventNormalizer
 		};
 
 		return entity;
+	}
+
+	private static byte[]? GetCanonicalIpBinary(string? sourceIp, byte[]? capturedBinary)
+	{
+		if (capturedBinary is { Length: 16 })
+		{
+			return capturedBinary;
+		}
+
+		if (!IPAddress.TryParse(sourceIp, out IPAddress? parsed))
+		{
+			return null;
+		}
+
+		return parsed.MapToIPv6().GetAddressBytes();
 	}
 
 	/// <summary>Canonicalize the Status / SubStatus NTSTATUS string into <c>0xXXXXXXXX</c> form.

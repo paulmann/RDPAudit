@@ -1,11 +1,12 @@
 /* Project: RDPAudit 2.0 | Author: Mikhail Deynekin | Site: Deynekin.com | Email: Mikhail@Deynekin.com */
-// Version: 2.0.0
+// Version: 2.0.2
+// File   : ServiceMetrics.cs
+// Project: RdpAudit.Service (RdpAudit.Service)
+// Purpose: Exposes thread-safe pipeline and service counters to diagnostics and alert rules.
+// Depends: System.Threading, RdpAudit.Service.Workers
+// Extends: Add a paired read-only property and Interlocked mutation method for each new operational counter.
 
-// File:    src/RdpAudit.Service/ServiceMetrics.cs
-// Module:  RdpAudit.Service
-// Purpose: Thread-safe runtime counters surfaced via the IPC GetStatus command.
-// Extends: System.Object
-
+using RdpAudit.Service.Firewall;
 using RdpAudit.Service.Workers;
 
 namespace RdpAudit.Service;
@@ -64,6 +65,13 @@ public sealed class ServiceMetrics
 	private long _ringBufferOverflowCount;
 	private long _ringBufferReadCount;
 	private long _ringBufferWriteCount;
+	private long _floodSuppressedCount;
+	private long _floodSampledCount;
+	private long _shardRecordsAppended;
+	private long _shardsOpen;
+	private long _shardEvictions;
+	private long _shardWriteFailures;
+	private long _shardBudgetRefusals;
 
 	public long EventsCaptured => Interlocked.Read(ref _captured);
 
@@ -241,8 +249,19 @@ public sealed class ServiceMetrics
 	/// <summary>Cumulative count of successful Ring Buffer reads by the EventProcessorWorker.</summary>
 	public long RingBufferReadCount => Interlocked.Read(ref _ringBufferReadCount);
 
-	/// <summary>Cumulative count of successful Ring Buffer writes by the EventCollectorWorker.</summary>
+	/// <summary>Cumulative count of successful Ring Buffer writes by the EventCollectorHostedWorker.</summary>
 	public long RingBufferWriteCount => Interlocked.Read(ref _ringBufferWriteCount);
+
+	/// <summary>Cumulative count of non-critical event details suppressed by the flood guard.</summary>
+	public long FloodSuppressedCount => Interlocked.Read(ref _floodSuppressedCount);
+
+	/// <summary>Cumulative count of full-detail events selected by flood-guard sampling.</summary>
+	public long FloodSampledCount => Interlocked.Read(ref _floodSampledCount);
+	public long ShardRecordsAppended => Interlocked.Read(ref _shardRecordsAppended);
+	public long ShardsOpen => Interlocked.Read(ref _shardsOpen);
+	public long ShardEvictions => Interlocked.Read(ref _shardEvictions);
+	public long ShardWriteFailures => Interlocked.Read(ref _shardWriteFailures);
+	public long ShardBudgetRefusals => Interlocked.Read(ref _shardBudgetRefusals);
 
 	public void IncrementCaptured() => Interlocked.Increment(ref _captured);
 
@@ -529,4 +548,61 @@ public sealed class ServiceMetrics
 	/// <summary>Increments the Ring Buffer write counter.</summary>
 	public void IncrementRingBufferWrite() => 
 		Interlocked.Increment(ref _ringBufferWriteCount);
+
+	/// <summary>Increments the pre-enqueue flood suppression counter.</summary>
+	public void IncrementFloodSuppressed() =>
+		Interlocked.Increment(ref _floodSuppressedCount);
+
+	/// <summary>Increments the pre-enqueue flood sample counter.</summary>
+	public void IncrementFloodSampled() =>
+		Interlocked.Increment(ref _floodSampledCount);
+
+	public void IncrementShardRecordsAppended() => Interlocked.Increment(ref _shardRecordsAppended);
+	public void SetShardsOpen(long value) => Interlocked.Exchange(ref _shardsOpen, value);
+	public void IncrementShardEvictions() => Interlocked.Increment(ref _shardEvictions);
+	public void IncrementShardWriteFailures() => Interlocked.Increment(ref _shardWriteFailures);
+	public void IncrementShardBudgetRefusals() => Interlocked.Increment(ref _shardBudgetRefusals);
+
+	// --- PowerShell firewall live-scan latch telemetry ---
+
+	private string? _firewallScanBackend;
+	private long _firewallScanSwitchCount;
+
+	/// <summary>Current firewall live-scan backend, or null until the first scan. Surfaced via IPC
+	/// GetStatus so the operator can see when the PowerShell scanner has latched onto netsh.</summary>
+	public string? FirewallScanBackend
+	{
+		get { lock (_diagGate) { return _firewallScanBackend; } }
+	}
+
+	/// <summary>Cumulative count of live-scan latch events: how many times the scanner switched onto
+	/// the netsh text fallback since service start. Recovery back to PowerShell, and repeated netsh
+	/// scans while already latched, do not count.</summary>
+	public long FirewallScanSwitchCount => Interlocked.Read(ref _firewallScanSwitchCount);
+
+	/// <summary>Records the backend that produced the most recent live-scan result and counts a latch
+	/// event whenever the scanner moves onto the netsh fallback from any other state.</summary>
+	public void RecordFirewallScanBackend(FirewallScanBackend? backend)
+	{
+		string? name = backend?.ToString();
+		string? previous;
+		lock (_diagGate)
+		{
+			previous = _firewallScanBackend;
+			if (!string.Equals(previous, name, StringComparison.Ordinal))
+			{
+				_firewallScanBackend = name;
+			}
+		}
+
+		// Count only the fallback latch: the scanner switched TO netsh from a non-netsh state.
+		// The first fallback counts; subsequent netsh scans while latched, and recovery back to
+		// PowerShell, do not.
+		const string netshTextName = "NetshText";
+		if (string.Equals(name, netshTextName, StringComparison.Ordinal)
+			&& !string.Equals(previous, netshTextName, StringComparison.Ordinal))
+		{
+			Interlocked.Increment(ref _firewallScanSwitchCount);
+		}
+	}
 }
