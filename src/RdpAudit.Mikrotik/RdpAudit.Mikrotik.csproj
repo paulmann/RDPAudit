@@ -15,11 +15,19 @@
 	<ItemGroup>
 		<!-- Renci.SshNet is the ONLY new external dependency: it backs the one-time SSH bootstrap
 		     path. The production RouterOS api-ssl binary protocol is self-implemented over
-		     System.Net.Sockets / System.Net.Security and needs no third-party API package. -->
-		<PackageReference Include="SSH.NET" Version="2024.1.0" />
+		     System.Net.Sockets / System.Net.Security and needs no third-party API package.
+		     Pinned to 2026.0.0 (2026-08-09) which patches CVE-2026-48798 / GHSA-q939-rpr3-3284:
+		     the ScpClient recursive-download arbitrary-file-write via server-controlled SCP
+		     filenames. All versions <= 2025.1.0 are vulnerable; the fix constrains reconstructed
+		     local paths to remain inside the requested local directory and throws ScpException
+		     on any traversal attempt. NuGet NU1903 is emitted on 2024.1.0 and, combined with
+		     TreatWarningsAsErrors from Directory.Build.props, breaks any `dotnet restore`. -->
+		<PackageReference Include="SSH.NET" Version="2026.0.0" />
 		<PackageReference Include="MessagePack" Version="2.5.301" />
 		<PackageReference Include="Microsoft.Extensions.Logging" Version="8.0.1" />
-		<PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="8.0.2" />
+		<!-- 8.0.3 is required by SSH.NET 2026.0.0 transitive; keeping the explicit pin so the
+		     assembly-version graph is deterministic and doesn't drift on future SSH.NET bumps. -->
+		<PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="8.0.3" />
 		<PackageReference Include="Microsoft.Extensions.Logging.Console" Version="8.0.1" />
 		<PackageReference Include="System.Security.Cryptography.ProtectedData" Version="8.0.0" />
 		<PackageReference Include="System.Management" Version="8.0.0" />

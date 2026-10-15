@@ -1,10 +1,10 @@
-// File:    tests/RdpAudit.Core.Tests/IpcCommandStabilityTests.cs
-// Module:  RdpAudit.Core.Tests
-// Purpose: Locks the IpcCommand ABI. Fails if any ordinal is renumbered, removed, or duplicated.
-//          The IPC contract is append-only; this test is the canary that catches breaking edits.
-// Extends: System.Object
-// Author:  Mikhail Deynekin
-// Site:    https://Deynekin.com
+/* Project: RDPAudit 2.0 | Author: Mikhail Deynekin | Site: Deynekin.com | Email: Mikhail@Deynekin.com */
+// Version: 2.0.0
+// File   : IpcCommandStabilityTests.cs
+// Project: RdpAudit.Core.Tests (RdpAudit.Core.Tests)
+// Purpose: Locks append-only IPC and result-status ordinals against breaking ABI changes.
+// Depends: IpcCommand, IpcResultStatus, xUnit
+// Extends: Append stable ordinal assertions whenever a new IPC command is added.
 
 using RdpAudit.Core.Ipc;
 using Xunit;
@@ -83,6 +83,11 @@ public class IpcCommandStabilityTests
 	[InlineData(IpcCommand.QueryOperationLogs, 58)]
 	[InlineData(IpcCommand.GetOverviewProgress, 59)]
 	[InlineData(IpcCommand.RebuildAttackStats, 60)]
+	[InlineData(IpcCommand.PushMikroTikConfig, 61)]
+	[InlineData(IpcCommand.GetMikroTikMtlsStatus, 62)]
+	[InlineData(IpcCommand.GetAuthSuccessSummaryForIp, 63)]
+	[InlineData(IpcCommand.GetEventCollectionSettings, 64)]
+	[InlineData(IpcCommand.SaveEventCollectionSettings, 65)]
 	public void Ordinal_IsStable(IpcCommand command, int expected)
 	{
 		Assert.Equal(expected, (int)command);

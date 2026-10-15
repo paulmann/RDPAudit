@@ -16,6 +16,8 @@ using System.Globalization;
 using System.Runtime.Versioning;
 using System.Text;
 using RdpAudit.Configurator.Ipc;
+using RdpAudit.Configurator.Services;
+using RdpAudit.Core.Data;
 using RdpAudit.Core.Ipc;
 using RdpAudit.Core.Ipc.Contracts;
 using RdpAudit.Core.Util;
@@ -32,7 +34,9 @@ public sealed class DiagnosticsPage : TabPage
 	private readonly Button _copy;
 	private readonly Button _export;
 	private readonly Button _probe;
+	private readonly Button _diagnoseService;
 	private readonly Label _status;
+	private bool _migrationRecoveryInProgress;
 
 	public DiagnosticsPage(IpcClient ipc)
 	{
@@ -52,12 +56,18 @@ public sealed class DiagnosticsPage : TabPage
 		_copy = new Button { Text = "Copy to clipboard", Width = 150 };
 		_export = new Button { Text = "Export to file…", Width = 150 };
 		_probe = new Button { Text = "Run Security Auth Probe", Width = 200 };
+		_diagnoseService = new Button
+		{
+			Text = "Diagnose service startup",
+			Width = 210,
+		};
 		_refresh.Click += async (_, _) => await RefreshAsync().ConfigureAwait(true);
 		_copy.Click += OnCopy;
 		_export.Click += OnExport;
 		_probe.Click += async (_, _) => await RunProbeAsync().ConfigureAwait(true);
+		_diagnoseService.Click += async (_, _) => await RunServiceStartupDiagnosticsAsync().ConfigureAwait(true);
 
-		toolbar.Controls.AddRange(new Control[] { _refresh, _copy, _export, _probe });
+		toolbar.Controls.AddRange(new Control[] { _refresh, _copy, _export, _probe, _diagnoseService });
 
 		_status = new Label
 		{
@@ -83,7 +93,11 @@ public sealed class DiagnosticsPage : TabPage
 		Controls.Add(_status);
 		Controls.Add(toolbar);
 
-		HandleCreated += async (_, _) => await RefreshAsync().ConfigureAwait(true);
+		HandleCreated += async (_, _) =>
+		{
+			await TryShowMigrationRecoveryPromptAsync().ConfigureAwait(true);
+			await RefreshAsync().ConfigureAwait(true);
+		};
 	}
 
 	private async Task RefreshAsync()
@@ -251,6 +265,178 @@ public sealed class DiagnosticsPage : TabPage
 			_status.Text = "Export failed: " + ex.Message;
 		}
 	}
+
+	// Version: 1.0.0
+	/// <summary>Runs the IPC-free service startup diagnostics runner and dumps the report into
+	/// the read-only text box. Prompts the operator before running the optional console self-test
+	/// because it actually launches the service executable in this session.</summary>
+	private async Task RunServiceStartupDiagnosticsAsync()
+	{
+		DialogResult selfTest = MessageBox.Show(
+			this,
+			"Also launch the service executable with --console for up to 8 seconds to capture the " +
+			"startup exception directly?\n\n" +
+			"Yes  — include the console self-test (service must be stopped, admin recommended).\n" +
+			"No   — collect logs and SCM state only.",
+			"Diagnose service startup",
+			MessageBoxButtons.YesNoCancel,
+			MessageBoxIcon.Question,
+			MessageBoxDefaultButton.Button2);
+
+		if (selfTest == DialogResult.Cancel)
+		{
+			return;
+		}
+
+		bool runConsoleSelfTest = selfTest == DialogResult.Yes;
+
+		_status.Text = "Collecting service startup diagnostics…";
+		_diagnoseService.Enabled = false;
+		_refresh.Enabled         = false;
+		_probe.Enabled           = false;
+
+		try
+		{
+			ServiceStartupDiagnosticsRunner runner = new(
+				configuratorDirectory: AppContext.BaseDirectory,
+				runConsoleSelfTest:    runConsoleSelfTest);
+
+			string report = await Task.Run(() => runner.CollectAsync()).ConfigureAwait(true);
+
+			_report.Text = report;
+			_status.Text = "Service startup diagnostics collected " +
+				(runConsoleSelfTest ? "(with console self-test)" : "(logs + SCM only)") +
+				"  —  Copy / Export apply to this report.";
+
+			// Diagnostics often surface the migration failure via SCM state or event log entries. If the
+			// service left a recovery marker on disk, offer the operator a guided reset right here so the
+			// path from "diagnostics revealed the problem" to "database has been reset" is one dialog.
+			await TryShowMigrationRecoveryPromptAsync().ConfigureAwait(true);
+		}
+		catch (Exception ex)
+		{
+			_status.Text = "Startup diagnostics failed: " + ex.GetType().Name;
+			_report.Text = "Startup diagnostics failed: " + ex.GetType().Name + " — " + ex.Message +
+				Environment.NewLine + Environment.NewLine + ex.StackTrace;
+		}
+		finally
+		{
+			_diagnoseService.Enabled = true;
+			_refresh.Enabled         = true;
+			_probe.Enabled           = true;
+		}
+	}
+
+	// ── Migration failure recovery ───────────────────────────────────────────────
+
+	/// <summary>If the Service wrote a migration-failure marker under ProgramData, prompt the
+	/// operator once per tab-open cycle to back up the incompatible database and let the Service
+	/// bootstrap a fresh schema. All I/O happens off the UI thread so the tab stays responsive.</summary>
+	private async Task TryShowMigrationRecoveryPromptAsync()
+	{
+		if (_migrationRecoveryInProgress)
+		{
+			return;
+		}
+
+		string programData = ResolveProgramDataDirectory();
+
+		MigrationFailureMarkerPayload? marker;
+		try
+		{
+			marker = await Task.Run(() => DatabaseMigrationFailureMarker.TryRead(programData))
+				.ConfigureAwait(true);
+		}
+		catch
+		{
+			return;
+		}
+
+		if (marker is null)
+		{
+			return;
+		}
+
+		_migrationRecoveryInProgress = true;
+		try
+		{
+			string failed = marker.PendingMigrations.Count > 0 ? marker.PendingMigrations[0] : "(unknown)";
+			string exception = (marker.ExceptionType ?? "Exception") + " — " + (marker.ExceptionMessage ?? "(no message)");
+			string dbPath = string.IsNullOrWhiteSpace(marker.DatabasePath)
+				? RdpAuditPaths.Default.DatabasePath
+				: marker.DatabasePath;
+
+			string message =
+				"The RdpAudit service could not apply a database schema migration and stopped itself " +
+				"to avoid a Service Control Manager restart loop." + Environment.NewLine + Environment.NewLine +
+				"Failed migration: " + failed + Environment.NewLine +
+				"Marker written:   " + marker.TimestampUtc.ToString("yyyy-MM-dd HH:mm:ss 'UTC'", CultureInfo.InvariantCulture) + Environment.NewLine +
+				"Database file:    " + dbPath + Environment.NewLine +
+				"Exception:        " + exception + Environment.NewLine + Environment.NewLine +
+				"Would you like to back up the incompatible database (rdpaudit.db plus WAL/SHM sidecars " +
+				"will be renamed with a '.YYYYMMDD-HHmmss.bak' suffix) and let the service create a fresh " +
+				"database on next start?" + Environment.NewLine + Environment.NewLine +
+				"Yes — back up now and restart the service." + Environment.NewLine +
+				"No  — keep the marker; you can review the database manually and resolve later.";
+
+			DialogResult choice = MessageBox.Show(
+				this,
+				message,
+				"RdpAudit — database schema incompatible",
+				MessageBoxButtons.YesNo,
+				MessageBoxIcon.Warning,
+				MessageBoxDefaultButton.Button2);
+
+			if (choice != DialogResult.Yes)
+			{
+				return;
+			}
+
+			_status.Text = "Backing up incompatible database and restarting service…";
+			_diagnoseService.Enabled = false;
+			_refresh.Enabled         = false;
+			_probe.Enabled           = false;
+
+			DatabaseResetResult result;
+			try
+			{
+				DatabaseResetService reset = new();
+				result = await reset.ExecuteAsync(marker, programData).ConfigureAwait(true);
+			}
+			catch (Exception ex)
+			{
+				result = DatabaseResetResult.Fail(
+					"Database reset failed: " + ex.GetType().Name + " — " + ex.Message +
+					Environment.NewLine + ex.StackTrace);
+			}
+			finally
+			{
+				_diagnoseService.Enabled = true;
+				_refresh.Enabled         = true;
+				_probe.Enabled           = true;
+			}
+
+			_report.Text = result.Log;
+			_status.Text = result.Success
+				? "Database reset completed " + (result.BackupPath is null ? string.Empty : "— backup at " + result.BackupPath)
+				: "Database reset finished with errors — see the report above.";
+
+			MessageBox.Show(
+				this,
+				result.Success
+					? "Database has been backed up and the service has been started. A fresh database will be created on demand."
+					: "Database reset finished with errors. See the report on the Diagnostic tab for details.",
+				"RdpAudit — database reset",
+				MessageBoxButtons.OK,
+				result.Success ? MessageBoxIcon.Information : MessageBoxIcon.Error);
+		}
+		finally
+		{
+			_migrationRecoveryInProgress = false;
+		}
+	}
+
+	private static string ResolveProgramDataDirectory() => RdpAuditPaths.Default.ProgramDataDirectory;
 }
 
 /// <summary>Pure formatter that turns a <see cref="DiagnosticsSnapshotDto"/> into a flat,

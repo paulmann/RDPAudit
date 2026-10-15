@@ -5,7 +5,7 @@
 //          directly from disk, independent of IPC, so it is trustworthy even when the service is
 //          unreachable), the detailed IPC round-trip outcome from IpcClient.SendDetailedAsync, the
 //          tail of every log artifact the service produces -- %ProgramData%\RdpAudit\logs\ipc-startup.log,
-//          %ProgramData%\RdpAudit\RDPAudit_DEBUG_Log.txt (root, not logs\ -- matches Program.ConfigureSerilog),
+//          %ProgramData%\RdpAudit\logs\RDPAudit_DEBUG_Log.txt (matches Program.ConfigureSerilog),
 //          %ProgramData%\RdpAudit\logs\service-*.log -- and a listing of CrashGuard's crash folder with
 //          the most recent crash file's full text. All file I/O is best-effort and swallows errors so
 //          a missing/locked file never prevents the rest of the report from rendering.
@@ -38,14 +38,19 @@ public static class DiagnosticsExtrasCollector
 		bool ipcPipeConnected,
 		bool ipcResponseReceived)
 	{
-		string logsDir = Path.Combine(programDataDirectory, "logs");
-		string crashDir = Path.Combine(programDataDirectory, "crash");
+		// Resolve every log artifact through RdpAuditPaths (single source of truth, D2):
+		// logs\ipc-startup.log, logs\RDPAudit_DEBUG_Log.txt (matches Program.ConfigureSerilog),
+		// logs\service-*.log and CrashGuard's crash\ folder.
+		RdpAuditPaths paths = new(programDataDirectory);
+		string logsDir = paths.LogDirectory;
+		string crashDir = paths.CrashDirectory;
 
 		bool? diskDebugMode = ReadDiskDebugMode(appSettingsPath);
 
-		IReadOnlyList<string> ipcStartupTail = ReadTail(Path.Combine(logsDir, "ipc-startup.log"));
-		IReadOnlyList<string> debugLogTail = ReadTail(Path.Combine(programDataDirectory, "RDPAudit_DEBUG_Log.txt"));
-		IReadOnlyList<string> serviceLogTail = ReadNewestMatchingTail(logsDir, "service-*.log");
+		IReadOnlyList<string> ipcStartupTail = ReadTail(paths.IpcStartupLogPath);
+		IReadOnlyList<string> debugLogTail = ReadTail(paths.DebugLogPath);
+		IReadOnlyList<string> serviceLogTail = ReadNewestMatchingTail(
+			logsDir, RdpAuditPaths.ServiceLogFilePrefix + "*" + RdpAuditPaths.ServiceLogExtension);
 
 		(IReadOnlyList<string> crashFiles, string? lastCrashExcerpt) = ReadCrashFolder(crashDir);
 

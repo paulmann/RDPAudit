@@ -70,9 +70,7 @@ public sealed class LocalRdpConfigurationWriter
 	/// <summary>Construct using the default ProgramData layout
 	/// (<c>%ProgramData%\RdpAudit\Backups</c>), matching <see cref="BackupLayout"/>.</summary>
 	public LocalRdpConfigurationWriter()
-		: this(Path.Combine(
-			Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
-			"RdpAudit"))
+		: this(RdpAuditPaths.Default.ProgramDataDirectory)
 	{
 	}
 

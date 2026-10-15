@@ -94,6 +94,7 @@ public sealed class FirewallExpirationWorker : BackgroundService
 				&& b.ExpiresUtc != null
 				&& b.ExpiresUtc <= nowUtc)
 			.OrderBy(b => b.ExpiresUtc)
+			.ThenBy(b => b.Id)
 			.Take(100)
 			.ToListAsync(ct).ConfigureAwait(false);
 

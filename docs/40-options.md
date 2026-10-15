@@ -34,6 +34,8 @@ Backward-compatible with pre-Stage-1 deployments — new fields default to safe 
 | `WhitelistIps` | `[]` | Flat list of literal IPs in addition to `Whitelist` (CIDR entries). Consumed by the auto-block worker. |
 | `RefusePrivateAddressBlock` | `true` | Windows provider refuses to block loopback / RFC1918 / multicast / link-local addresses. |
 | `AutoBlockDebounceSeconds` | `60` | Per-IP debounce window applied by the auto-block worker to avoid block storms. |
+| `PowerShellScanTimeoutSeconds` | `30` | Hard timeout for the locale-independent PowerShell live firewall scan. Values below 1 are treated as the default. |
+| `PowerShellRetryProbeIntervalMinutes` | `15` | Minimum interval between PowerShell re-probe attempts while the live scanner is latched onto the netsh fallback. Values below 1 are treated as the default. |
 
 ## AbuseIpDbOptions
 

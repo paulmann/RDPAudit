@@ -13,7 +13,7 @@ All 21 alert rules live under `src/RdpAudit.Service/Alerts/` and are registered 
 | `RDP_SESSION_HIJACK` | T1563.002 | 4688 | Critical | `tscon.exe` or `mstsc /shadow` |
 | `RAPID_RECONNECT` | T1563.002 | 25 | Medium | Reconnect from different IP within N seconds of 24 |
 | `UNKNOWN_IP_SUCCESS` | T1021.001 | 4624 | Low | First success from IP after ≥ N prior failures |
-| `PRIVILEGED_LOGIN` | T1078 | 4672 | Medium | Sensitive privileges in details (SeDebug / SeTcb / etc.) |
+| `PRIVILEGED_LOGIN` | T1078 | 4672 | Medium | Sensitive privileges in details; hardened (see below) |
 | `PROCESS_ANOMALY` | T1059 | 4688 | Medium | Shell child of svchost / mstsc / rdpclip / explorer |
 | `LSASS_ACCESS` | T1003 | 4656 | Critical | Sensitive AccessMask on lsass with non-whitelisted accessor |
 | `TASK_PERSISTENCE` | T1053 | 4698 | High | Scheduled task created |
@@ -25,6 +25,18 @@ All 21 alert rules live under `src/RdpAudit.Service/Alerts/` and are registered 
 | `RDP_PORT_CHANGED` | T1572 | 4657 | Critical | Terminal Server `RDP-Tcp\PortNumber` modified |
 | `LSASS_PPL_TAMPER` | T1003 | 4657 | Critical | LSA `RunAsPPL` modified |
 | `KERBEROS_SPRAY` | T1110 | 4771 | High | ≥ N pre-auth failures from same IP |
+
+## PRIVILEGED_LOGIN hardening
+
+Event 4672 fires thousands of times in normal Windows operation (every service logon under `SYSTEM`, `LOCAL SERVICE`, `NETWORK SERVICE` assigns privileges), so the rule applies five gates before anything can alert:
+
+1. **Well-known service SID filter.** SIDs `S-1-5-18` (SYSTEM), `S-1-5-19` (LOCAL SERVICE) and `S-1-5-20` (NETWORK SERVICE) are rejected unconditionally - they are normal service noise, never an attacker logon.
+2. **Network-context requirement.** The event must carry a non-empty source IP and a network LogonType (`3`, `7`, `10`). A missing LogonType resolves the companion Security 4624 through `IAlertContext` before the event can alert.
+3. **Per-key suppression window.** Identical (user, source IP, logon type) triggers inside `Alerts.PrivilegedLoginSuppressionWindowMinutes` (default 5) are counted but not alerted; one summary alert carrying the suppressed count is emitted when the window expires.
+4. **Per-minute alert budget.** `Alerts.PrivilegedLoginRateLimitPerMinute` (default 20) caps how many alerts this rule can emit per minute; once exhausted, further alerts are dropped and the throttling fact is logged once per minute.
+5. **Historical-event age gate.** `Alerts.AlertEventMaxAgeMinutes` (default 5) is applied by `AlertWorker` to every rule: older events (backfill / replay / first-start hydration) are persisted as facts but never alerted on.
+
+All thresholds live in `AlertOptions` and are exposed in the default `appsettings.json` templates (`AppSettingsTemplate` for the service, `DefaultAppSettings` for the Configurator) - none are hard-coded. The rejection paths ahead of the alert decision are allocation-free so hostile event floods skip the rule without GC pressure.
 
 ## Adding a rule
 

@@ -1,7 +1,7 @@
 // File:    src/RdpAudit.Configurator/Services/PrerequisiteChecker.cs
 // Module:  RdpAudit.Configurator.Services
-// Purpose: Implements the 15 prerequisite probes shown on the Prerequisites tab.
-//          Object-Access auditing check uses GUID + auditpol /r CSV bitfield (locale-stable).
+// Purpose: Implements the 16 prerequisite probes shown on the Prerequisites tab.
+//          Audit probes use subcategory GUIDs + auditpol /r CSV bitfield (locale-stable), never localized names.
 // Extends: System.Object
 // Author:  Mikhail Deynekin
 // Site:    https://Deynekin.com
@@ -31,6 +31,9 @@ public sealed class PrerequisiteChecker
 {
 	public IReadOnlyList<PrerequisiteResult> RunAll()
 	{
+		// The channel probes are appended in canonical EtwProviderMap order (Security, System,
+		// TerminalServices-LocalSessionManager, TerminalServices-RemoteConnectionManager,
+		// RemoteDesktopServices-RdpCoreTS, TerminalServices-Gateway, TerminalServices-RDPClient).
 		List<PrerequisiteResult> results = new()
 		{
 			CheckOsVersion(),
@@ -39,16 +42,14 @@ public sealed class PrerequisiteChecker
 			CheckTermService(),
 			CheckRdpPort(),
 			CheckRdpFirewallRule(),
-			CheckSecurityChannel(),
-			CheckTsLocalChannel(),
-			CheckTsRemoteChannel(),
-			CheckRdpCoreChannel(),
-			CheckSeSecurityPrivilege(),
-			CheckProgramDataWritable(),
-			CheckDatabaseAccessible(),
-			CheckObjectAccessAuditing(),
-			CheckLsassPpl(),
 		};
+		results.AddRange(CheckEventChannels());
+		results.Add(CheckSeSecurityPrivilege());
+		results.Add(CheckProgramDataWritable());
+		results.Add(CheckDatabaseAccessible());
+		results.Add(CheckObjectAccessAuditing());
+		results.Add(CheckAuditBaseline());
+		results.Add(CheckLsassPpl());
 		return results;
 	}
 
@@ -351,17 +352,21 @@ public sealed class PrerequisiteChecker
 	}
 
 
-	private static PrerequisiteResult CheckSecurityChannel()
-		=> CheckEventChannelExists("Security");
+	private static List<PrerequisiteResult> CheckEventChannels()
+	{
+		// D7: one probe per monitored channel, driven by the unified EtwProviderMap channel list
+		// instead of a hand-picked subset. A channel that exists but is disabled offers a wevtutil
+		// fix; a channel that does not exist on this Windows build/SKU reports Missing and offers
+		// no fix, because "wevtutil sl /enabled:true" cannot create a channel whose provider
+		// manifest is not installed.
+		List<PrerequisiteResult> results = new();
+		foreach (EtwProviderInfo info in EtwProviderMap.Entries)
+		{
+			results.Add(CheckEventChannelExists(info.Channel));
+		}
 
-	private static PrerequisiteResult CheckTsLocalChannel()
-		=> CheckEventChannelExists("Microsoft-Windows-TerminalServices-LocalSessionManager/Operational");
-
-	private static PrerequisiteResult CheckTsRemoteChannel()
-		=> CheckEventChannelExists("Microsoft-Windows-TerminalServices-RemoteConnectionManager/Operational");
-
-	private static PrerequisiteResult CheckRdpCoreChannel()
-		=> CheckEventChannelExists("Microsoft-Windows-RemoteDesktopServices-RdpCoreTS/Operational");
+		return results;
+	}
 
 	private static PrerequisiteResult CheckEventChannelExists(string channel)
 	{
@@ -370,16 +375,40 @@ public sealed class PrerequisiteChecker
 			using System.Diagnostics.Eventing.Reader.EventLogSession session = new();
 			System.Diagnostics.Eventing.Reader.EventLogConfiguration config = new(channel, session);
 			bool enabled = config.IsEnabled;
-			PrerequisiteFix? fix = enabled
-				? null
-				: new PrerequisiteFix("Enable channel via wevtutil", () =>
-					Task.FromResult(RunCommand("wevtutil", "sl \"" + channel + "\" /enabled:true") == 0
-						? "Enabled" : "wevtutil failed"));
-			return new PrerequisiteResult($"Channel: {channel}", enabled, $"Enabled={enabled}", fix);
+			return BuildChannelResult(channel, EventChannelClassifier.Classify(exists: true, enabled));
+		}
+		catch (System.Diagnostics.Eventing.Reader.EventLogNotFoundException)
+		{
+			return BuildChannelResult(channel, EventChannelClassifier.Classify(exists: false, enabled: false));
 		}
 		catch (Exception ex)
 		{
 			return new PrerequisiteResult($"Channel: {channel}", false, ex.Message);
+		}
+	}
+
+	/// <summary>Maps the pure <see cref="EventChannelHealth"/> verdict to a prerequisite row:
+	/// Missing channels deliberately carry no Fix, so the Prerequisites tab never offers a wevtutil
+	/// enable button for a channel that cannot be created on this Windows build/SKU.</summary>
+	private static PrerequisiteResult BuildChannelResult(string channel, EventChannelHealth health)
+	{
+		switch (health)
+		{
+			case EventChannelHealth.Ok:
+				return new PrerequisiteResult($"Channel: {channel}", true, "Enabled=True");
+
+			case EventChannelHealth.Disabled:
+				PrerequisiteFix fix = new("Enable channel via wevtutil", () =>
+					Task.FromResult(RunCommand("wevtutil", "sl \"" + channel + "\" /enabled:true") == 0
+						? "Enabled" : "wevtutil failed"));
+				return new PrerequisiteResult($"Channel: {channel}", false,
+					"Enabled=False (channel exists but logging is disabled)", fix);
+
+			case EventChannelHealth.Missing:
+			default:
+				return new PrerequisiteResult($"Channel: {channel}", false,
+					"Missing on this Windows build/SKU (channel not found). No automatic fix available - enable the Windows feature that owns this channel.",
+					null);
 		}
 	}
 
@@ -402,8 +431,7 @@ public sealed class PrerequisiteChecker
 
 	private static PrerequisiteResult CheckProgramDataWritable()
 	{
-		string programData = Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData);
-		string dir = Path.Combine(programData, "RdpAudit");
+		string dir = RdpAuditPaths.Default.ProgramDataDirectory;
 		try
 		{
 			Directory.CreateDirectory(dir);
@@ -470,6 +498,45 @@ public sealed class PrerequisiteChecker
 			});
 
 		return new PrerequisiteResult("Object Access auditing", ok, string.Join("; ", details), fix);
+	}
+
+	private static PrerequisiteResult CheckAuditBaseline()
+	{
+		// D6: aggregated probe over the five security-audit baseline subcategories
+		// (Logon, Special Logon, Account Lockout, Credential Validation, Kerberos
+		// Authentication Service). Each must report BOTH Success and Failure; the
+		// decision comes from the pure Core fold EvaluateBaseline so the check stays
+		// deterministic and unit-tested, while reading stays GUID-based (locale-stable).
+		IReadOnlyDictionary<string, AuditPolicyState?> current = AuditPolicyManager.ReadBaselineStates();
+		IReadOnlyList<AuditBaselineResult> verdicts = AuditPolicyManager.EvaluateBaseline(current);
+
+		List<string> details = new(verdicts.Count);
+		foreach (AuditBaselineResult v in verdicts)
+		{
+			AuditPolicyState? state = v.Current;
+			details.Add(string.Format(CultureInfo.InvariantCulture, "{0}: {1}",
+				v.Subcategory,
+				state is null ? "read failed" : string.Format(CultureInfo.InvariantCulture, "S={0} F={1}",
+					state.Success ? "Y" : "N", state.Failure ? "Y" : "N")));
+		}
+
+		bool ok = verdicts.All(v => v.Ok);
+		PrerequisiteFix? fix = ok
+			? null
+			: new PrerequisiteFix("Enable Success+Failure on audit baseline subcategories", () =>
+			{
+				IReadOnlyList<AuditPolicyApplyResult> apply = new AuditPolicyManager().ApplyBaseline();
+				int failed = apply.Count(r => r.ExitCode != 0);
+				return Task.FromResult(failed == 0
+					? string.Format(CultureInfo.InvariantCulture, "Applied Success+Failure to {0} subcategories", apply.Count)
+					: string.Format(CultureInfo.InvariantCulture, "{0}/{1} subcategory updates failed", failed, apply.Count));
+			});
+
+		return new PrerequisiteResult(
+			"Audit subcategories Success+Failure enforced",
+			ok,
+			string.Join("; ", details),
+			fix);
 	}
 
 	private static PrerequisiteResult CheckLsassPpl()

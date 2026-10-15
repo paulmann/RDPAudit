@@ -1,5 +1,5 @@
 /* Project: RDPAudit 2.0 | Author: Mikhail Deynekin | Site: Deynekin.com | Email: Mikhail@Deynekin.com */
-// Version: 1.0.0
+// Version: 2.0.0
 // File   : TerminalServicesBackfillWorker.cs
 // Project: RdpAudit.Service (RdpAudit.Service.Workers)
 // Purpose: Bounded, idempotent backfill for TS-LocalSessionManager, TS-RemoteConnectionManager,
@@ -7,7 +7,9 @@
 //          channel; without this worker, historical 261/1149/21/24/25/131/140 events are lost
 //          forever on service restart or database reset, and RDP Activity can never be
 //          reconstructed for hosts where identity/IP correlation relies on these channels.
-// Depends: EventChannel, ServiceMetrics, IOptionsMonitor<RdpAuditOptions>, EventCatalog
+//          v2.0.0 (iter16): writes now go through IEventPipe.TryWrite so the semaphore-backed
+//          RingBufferEventPipe.WaitToReadAsync consumer is signalled on every backfill write.
+// Depends: IEventPipe, ServiceMetrics, IOptionsMonitor<RdpAuditOptions>, EventCatalog
 // Extends: Add a new (Channel, EventIds) entry to ChannelBackfillTargets when a new
 //          non-Security channel needs historical recovery.
 
@@ -42,7 +44,7 @@ public sealed class TerminalServicesBackfillWorker : BackgroundService
 			[EventCatalog.ChannelRdpCore] = new[] { 65, 82, 131, 140, 141 },
 		};
 
-	private readonly EventChannel _channel;
+	private readonly IEventPipe _pipe;
 	private readonly ServiceMetrics _metrics;
 	private readonly ILogger<TerminalServicesBackfillWorker> _logger;
 	private readonly IOptionsMonitor<RdpAuditOptions> _options;
@@ -51,12 +53,16 @@ public sealed class TerminalServicesBackfillWorker : BackgroundService
 	private const int SeenRingCapacity = 16_384;
 
 	public TerminalServicesBackfillWorker(
-		EventChannel channel,
+		IEventPipe pipe,
 		ServiceMetrics metrics,
 		ILogger<TerminalServicesBackfillWorker> logger,
 		IOptionsMonitor<RdpAuditOptions> options)
 	{
-		_channel = channel;
+		ArgumentNullException.ThrowIfNull(pipe);
+		ArgumentNullException.ThrowIfNull(metrics);
+		ArgumentNullException.ThrowIfNull(logger);
+		ArgumentNullException.ThrowIfNull(options);
+		_pipe = pipe;
 		_metrics = metrics;
 		_logger = logger;
 		_options = options;
@@ -155,7 +161,10 @@ public sealed class TerminalServicesBackfillWorker : BackgroundService
 					XmlPayload = xml,
 				};
 
-				bool writtenWithoutOverflow = _channel.Channel.TryWrite(dto);
+				// v2.0.0 (iter16): route through IEventPipe so the semaphore-backed WaitToReadAsync
+				// consumer is signalled on every backfill write. The underlying transport is the same
+				// physical ring buffer that IEventPipe exposes.
+				bool writtenWithoutOverflow = _pipe.TryWrite(dto);
 				forwarded++;
 				_metrics.IncrementCaptured();
 

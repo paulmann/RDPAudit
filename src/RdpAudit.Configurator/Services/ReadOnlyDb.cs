@@ -11,6 +11,7 @@ using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using RdpAudit.Core.Config;
 using RdpAudit.Core.Data;
+using RdpAudit.Core.Util;
 
 namespace RdpAudit.Configurator.Services;
 
@@ -20,10 +21,10 @@ public static class ReadOnlyDb
 	public static AuditDbContext Open()
 	{
 		string dbPath = ResolveDatabasePath();
-		DbContextOptions<AuditDbContext> options = new DbContextOptionsBuilder<AuditDbContext>()
-			.UseSqlite($"Data Source={dbPath};Mode=ReadOnly;Cache=Shared")
-			.Options;
-		return new AuditDbContext(options);
+		DbContextOptionsBuilder<AuditDbContext> builder = new DbContextOptionsBuilder<AuditDbContext>()
+			.UseSqlite($"Data Source={dbPath};Mode=ReadOnly;Cache=Shared");
+		AuditDbContextOptions.ApplyWarningPolicy(builder);
+		return new AuditDbContext(builder.Options);
 	}
 
 	public static string DatabasePath => ResolveDatabasePath();
@@ -31,9 +32,9 @@ public static class ReadOnlyDb
 	/// <summary>Honour Storage.DatabasePath from appsettings.json; fall back to the ProgramData default.</summary>
 	private static string ResolveDatabasePath()
 	{
-		string programData = Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData);
-		string appsettings = Path.Combine(programData, "RdpAudit", "appsettings.json");
-		string fallback = Path.Combine(programData, "RdpAudit", "rdpaudit.db");
+		RdpAuditPaths paths = RdpAuditPaths.Default;
+		string appsettings = paths.AppSettingsPath;
+		string fallback = paths.DatabasePath;
 
 		if (!File.Exists(appsettings))
 		{

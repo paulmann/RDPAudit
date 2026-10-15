@@ -72,6 +72,7 @@ public sealed class EnforcementReconciliationService
 				|| b.Status == ActiveBlockStatus.Pending
 				|| b.Status == ActiveBlockStatus.Failed)
 			.OrderByDescending(b => b.CreatedUtc)
+			.ThenByDescending(b => b.Id)
 			.Take(5000)
 			.ToListAsync(ct).ConfigureAwait(false);
 
@@ -125,6 +126,7 @@ public sealed class EnforcementReconciliationService
 		await using AuditDbContext db = await _factory.CreateDbContextAsync(ct).ConfigureAwait(false);
 		List<ActiveBlock> rows = await db.ActiveBlocks.AsNoTracking()
 			.OrderByDescending(b => b.CreatedUtc)
+			.ThenByDescending(b => b.Id)
 			.Take(2000)
 			.ToListAsync(ct).ConfigureAwait(false);
 
@@ -437,6 +439,7 @@ public sealed class EnforcementReconciliationService
 			ids = await db.BlocklistEntries.AsNoTracking()
 				.Where(b => b.IsEnabled && b.Ip != null && b.Ip != string.Empty)
 				.OrderByDescending(b => b.AddedUtc)
+				.ThenByDescending(b => b.Id)
 				.Select(b => b.Id)
 				.Take(5000)
 				.ToListAsync(ct).ConfigureAwait(false);

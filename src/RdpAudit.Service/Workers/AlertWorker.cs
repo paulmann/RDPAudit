@@ -109,9 +109,21 @@ public sealed class AlertWorker : BackgroundService
 
 		RdpAuditOptions options = _options.CurrentValue;
 		bool measure = options.Diagnostics.LogAlertEvaluationTimings;
+		TimeSpan maxEventAge = TimeSpan.FromMinutes(Math.Max(1, options.Alerts.AlertEventMaxAgeMinutes));
+		DateTime nowUtc = DateTime.UtcNow;
 
 		foreach (RawEvent evt in batch)
 		{
+			// Historical / backfill gate (startup replay of old Security events): events older
+			// than the configured age remain persisted as RawEvent facts (they were committed by
+			// EventProcessorWorker before rules ever run) but are never sent to any rule, so they
+			// can produce neither an Alerts row nor a Windows Event Log entry.
+			if (nowUtc - evt.TimeUtc > maxEventAge)
+			{
+				evt.Processed = true;
+				continue;
+			}
+
 			foreach (IAlertRule rule in _rules)
 			{
 				if (!rule.IsEnabled(options))

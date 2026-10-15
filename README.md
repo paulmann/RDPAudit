@@ -1,6 +1,6 @@
 # RDPAudit — Windows RDP Security Monitoring & Auto-Block Platform
 
-[![Version](https://img.shields.io/badge/version-2.0.0-blue.svg)](https://github.com/paulmann/RDPAudit)
+[![Version](https://img.shields.io/badge/version-2.0.2-blue.svg)](https://github.com/paulmann/RDPAudit)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![.NET](https://img.shields.io/badge/dotnet-8.0--windows-blue.svg)](https://dotnet.microsoft.com/)
 [![Platform](https://img.shields.io/badge/platform-Windows%2010%2B%20%2F%20Server%202016%2B-blue.svg)](https://www.microsoft.com/windows/)
@@ -358,6 +358,17 @@ Each rule is implemented as a dedicated alert evaluator and participates in a co
 | 20 | `SESSION_HIJACK_SUSPECT` | High | Session correlation anomaly |
 | 21 | `RAPID_RECONNECT` | Medium | Repeated reconnect activity from the same IP |
 
+### 5.4.1. PRIVILEGED_LOGIN hardening
+
+The `PRIVILEGED_LOGIN` rule (Event 4672 - SeDebug / SeTcb assigned at logon) is hardened against the start-of-service well-known-SID storm (identical SYSTEM alerts with no source IP):
+
+- **Exact SID filter** - `S-1-5-18` (SYSTEM), `S-1-5-19` (LOCAL SERVICE) and `S-1-5-20` (NETWORK SERVICE) are rejected by exact SID read from the normalized `Details` JSON (`subjectUserSid`), never by localized account names.
+- **Network context required** - the event must carry a non-empty `SourceIp` and a network logon type (3 / 7 / 10). A missing `LogonType` (Windows 4672 has no field of its own) falls back to correlating the matching Security 4624 via `SubjectLogonId == TargetLogonId`.
+- **Suppression window** - identical triggers per (user, source ip, logon type) are suppressed inside `PrivilegedLoginSuppressionWindowMinutes` (default 5); when the window expires, a single summary alert carries the suppressed count.
+- **Per-minute alert budget** - `PrivilegedLoginRateLimitPerMinute` (default 20) caps the output; throttling is logged once per minute.
+- **Historical age gate** - events older than `AlertEventMaxAgeMinutes` (default 5) remain persisted as `RawEvent` facts but never alert (applied by `AlertWorker` to all rules).
+- **Zero-allocation rejection path** - `EvaluateAsync` is a non-async method returning a cached null-task singleton, so rejected evaluations allocate nothing.
+
 ### 5.5. Windows Firewall Auto-Blocking
 
 When rules such as `BRUTE_FORCE`, `BRUTE_FORCE_NTLM`, or `IP_REPUTATION` are triggered, the service can create a per-IP inbound block rule.
@@ -387,11 +398,15 @@ netsh advfirewall firewall add rule `
 - The GUI never writes service-owned configuration files directly.
 - Settings are sent over IPC and committed atomically by the service.
 - Connection deadlines prevent the Configurator from hanging indefinitely.
+- The pipe is served by `IpcServerWorker`, which requests `MaxConcurrent + 1` OS instances so the always-listening standby pipe never competes with a connected handler. Win32 `ERROR_PIPE_BUSY` (231) is classified as "instance cap reached", not as AV/EDR interception; saturation drains automatically as handlers complete.
+- Each worker instance writes observable lifecycle facts to `%ProgramData%\RdpAudit\logs\ipc-startup.log`: `instance constructed` / `ExecuteAsync entered` / `ExecuteAsync exiting (pid, instanceId, entryCount, exitCount, iteration, activeHandlers, livePipes, stoppingTokenCancelled, hostApplicationStoppingCancelled, exitReason, lifetimeMs)`. These fields prove whether one process ever ran more than one worker or host instance.
 
 ### 5.7. Reliability and Resilience
 
 - Exponential backoff for transient database contention such as `SQLITE_BUSY`
 - End-to-end `CancellationToken` propagation across async flows
+- Every hosted worker is wrapped in `TimedHostedService` and writes `startup-sequence.log` begin/end/failure marks
+- `IpcServerWorker` logs per-instance lifecycle breadcrumbs so a repeated `ExecuteAsync entered` in one PID can be attributed to one or multiple worker/host instances
 - Graceful shutdown on service stop
 - EF Core migrations applied at startup
 - Event Log source registration during installation
@@ -409,12 +424,17 @@ The **Overview** tab is the operator dashboard. It summarizes service state, cur
 ### 6.2. Prerequisites Tab
 
 The **Prerequisites** tab checks the required Windows conditions:
-- Audit channels enabled
-- Terminal Services channels enabled
-- Audit policy correctly applied
+- All seven monitored event-log channels present and enabled (Security, System, and the
+  Terminal Services / RDP channels)
+- Required audit-policy subcategories applied (object access + the five-subcategory
+  baseline)
 - Service installed and reachable
 
-Each failed prerequisite can be fixed directly from the UI.
+A disabled channel offers a `wevtutil sl /enabled:true` fix. A channel that does not exist
+on this Windows build/SKU (for example `TerminalServices-Gateway` on a host without the RD
+Gateway role) is reported as missing with no automatic fix, so the tab never offers an
+enable button for a channel this Windows edition cannot create. Each fixable failure can be
+applied directly from the UI.
 
 ### 6.3. Audit Policy Tab
 
@@ -708,6 +728,12 @@ This supports detection of Sticky Keys backdoors, RDP port changes, and LSASS/PP
         "WorkDays": ["Monday","Tuesday","Wednesday","Thursday","Friday"],
         "TimeZoneId": "UTC"
       }
+    },
+    "Alerts": {
+      "EnablePrivilegedLoginDetection": true,
+      "PrivilegedLoginSuppressionWindowMinutes": 5,
+      "PrivilegedLoginRateLimitPerMinute": 20,
+      "AlertEventMaxAgeMinutes": 5
     },
     "AutoBlock": {
       "IsEnabled": true,

@@ -1,16 +1,12 @@
-// File:    tests/RdpAudit.Service.Tests/AttackStatsStaleRebuildV136Tests.cs
-// Module:  RdpAudit.Service.Tests
-// Purpose: Regression coverage for the v1.3.6 stale-RDP-Activity fix. On a brute-forced host the
-//          look-back window holds more AuthAttemptFacts than MaxRawEventsPerPass; the previous
-//          incremental pass ordered by Id ASC and silently dropped the freshest facts, freezing
-//          AttackStat.LastSeenUtc while RawEvents / AuthAttemptFacts kept advancing. These tests pin:
-//          (1) current-day facts update AttackStats; (2) a full rebuild advances a stale row's
-//          LastSeenUtc to the current day from fresh facts; (3) the incremental pass advances past an
-//          old backlog (newest-first) once the window exceeds the cap; (4) a non-default RDP port
-//          (e.g. 55554) is irrelevant to aggregation — the worker never inspects the listener port.
-// Extends: System.Object
-// Author:  Mikhail Deynekin
-// Site:    https://Deynekin.com
+/* Project: RDPAudit 2.0 | Author: Mikhail Deynekin | Site: Deynekin.com | Email: Mikhail@Deynekin.com */
+// Version: 2.0.1
+// File   : AttackStatsStaleRebuildV136Tests.cs
+// Project: RdpAudit.Service.Tests (RdpAudit.Service.Tests)
+// Purpose: Regression coverage for the v1.3.6 stale-RDP-Activity fix. The worker uses a rolling
+//          30-day look-back anchored on DateTime.UtcNow, so test timestamps are computed relative to
+//          UtcNow rather than hard-coded to avoid rot as calendar time advances.
+// Depends: AttackStatsRefreshWorker, AuditDbContext, AuthAttemptFact
+// Extends: If the worker's LookBackWindow changes, keep test anchors inside the new window.
 
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
@@ -24,8 +20,13 @@ namespace RdpAudit.Service.Tests;
 
 public class AttackStatsStaleRebuildV136Tests
 {
-	private static DateTime CurrentDayUtc => new(2026, 6, 10, 15, 10, 1, DateTimeKind.Utc);
-	private static DateTime StaleDayUtc => new(2026, 6, 1, 9, 0, 0, DateTimeKind.Utc);
+	// Anchor test timestamps inside the worker's rolling 30-day look-back window that starts at UtcNow.
+	// CurrentDay = UtcNow (truncated to the second). Stale = CurrentDay - 9 days (still inside 30 days).
+	private static readonly DateTime CurrentDayUtc = TruncateToSecond(DateTime.UtcNow);
+	private static readonly DateTime StaleDayUtc = CurrentDayUtc.AddDays(-9);
+
+	private static DateTime TruncateToSecond(DateTime value)
+		=> new(value.Year, value.Month, value.Day, value.Hour, value.Minute, value.Second, DateTimeKind.Utc);
 
 	private static async Task<(IDbContextFactory<AuditDbContext> factory, SqliteConnection conn)> CreateDbAsync()
 	{

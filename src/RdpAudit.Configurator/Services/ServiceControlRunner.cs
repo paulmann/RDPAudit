@@ -126,7 +126,6 @@ public sealed class ServiceControlRunner
 	/// never leave the install directory inconsistent. After the copy the service is started
 	/// again (best-effort; failure is reported in the returned <see cref="ServiceOperationResult"/>).
 	/// The update path is wrapped in an <see cref="InstallUpdateLogger"/> writing
-	/// %ProgramData%\RdpAudit\Logs\install-update-update-{utc}.log so the operator can attach
 	/// the transcript to a support ticket.</summary>
 	public async Task<ServiceOperationResult> UpdateInstalledFilesAsync(
 		string distributionDir,

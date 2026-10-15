@@ -168,6 +168,235 @@ public class ServiceDiagnosticsReportBuilderTests
 	}
 
 	[Fact]
+	public void Build_IpcCounters_RendersDedicatedSection()
+	{
+		BinaryFingerprint dist = MakeFingerprint(Path.Combine(DistDir, ExeName), "ABCD", "1.1.0");
+		BinaryFingerprint installed = MakeFingerprint(Path.Combine(InstallDir, ExeName), "ABCD", "1.1.0");
+		ServiceDiagnosticsInput input = MakeInput(
+			dist, installed,
+			scmInstalled: true,
+			scmImagePath: "\"" + Path.Combine(InstallDir, ExeName) + "\"",
+			runtimeVersion: "1.1.0",
+			ipcConnected: true,
+			running: new RunningProcessFingerprint(1234, Path.Combine(InstallDir, ExeName), installed, new DateTime(2026, 5, 26, 12, 0, 0, DateTimeKind.Utc)));
+
+		ServiceDiagnosticsReport report = ServiceDiagnosticsReportBuilder.Build(input with
+		{
+			IpcCounters = new ServiceDiagnosticsIpcCounters(
+				ServiceStartedUtc: null,
+				ServiceUptime: TimeSpan.FromHours(2),
+				EventsCaptured: 42,
+				EventsDropped: 3,
+				AlertsRaised: 7,
+				ActiveSessions: 2,
+				Security4624Count: 10,
+				Security4625Count: 5,
+				Security4648Count: 1),
+			GeneratedUtc = new DateTime(2026, 5, 26, 14, 0, 0, DateTimeKind.Utc)
+		});
+
+		Assert.Contains("[IPC counters]", report.ReportText, StringComparison.Ordinal);
+		Assert.Contains("EventsCaptured: 42", report.ReportText, StringComparison.Ordinal);
+		Assert.Contains("EventsDropped: 3", report.ReportText, StringComparison.Ordinal);
+		Assert.Contains("AlertsRaised: 7", report.ReportText, StringComparison.Ordinal);
+		Assert.Contains("ActiveSessions: 2", report.ReportText, StringComparison.Ordinal);
+		Assert.Contains("Security4624Count: 10", report.ReportText, StringComparison.Ordinal);
+		Assert.Contains("Security4625Count: 5", report.ReportText, StringComparison.Ordinal);
+		Assert.Contains("Security4648Count: 1", report.ReportText, StringComparison.Ordinal);
+		Assert.Contains("ServiceUptime: 0d 02:00:00", report.ReportText, StringComparison.Ordinal);
+	}
+
+	[Fact]
+	public void Build_WithoutIpcCounters_OmitsCountersSection()
+	{
+		BinaryFingerprint dist = MakeFingerprint(Path.Combine(DistDir, ExeName), "ABCD", "1.1.0");
+		BinaryFingerprint installed = MakeFingerprint(Path.Combine(InstallDir, ExeName), "ABCD", "1.1.0");
+		ServiceDiagnosticsInput input = MakeInput(
+			dist, installed,
+			scmInstalled: true,
+			scmImagePath: "\"" + Path.Combine(InstallDir, ExeName) + "\"",
+			runtimeVersion: "1.1.0",
+			ipcConnected: true,
+			running: new RunningProcessFingerprint(1234, Path.Combine(InstallDir, ExeName), installed, new DateTime(2026, 5, 26, 12, 0, 0, DateTimeKind.Utc)));
+
+		ServiceDiagnosticsReport report = ServiceDiagnosticsReportBuilder.Build(input with
+		{
+			GeneratedUtc = new DateTime(2026, 5, 26, 14, 0, 0, DateTimeKind.Utc)
+		});
+
+		Assert.DoesNotContain("[IPC counters]", report.ReportText, StringComparison.Ordinal);
+	}
+
+	[Fact]
+	public void Build_ScmServiceStartUtc_FromProcessStartTime()
+	{
+		DateTime processStart = new(2026, 5, 26, 11, 30, 0, DateTimeKind.Utc);
+		DateTime generated = new(2026, 5, 26, 14, 0, 0, DateTimeKind.Utc);
+		BinaryFingerprint dist = MakeFingerprint(Path.Combine(DistDir, ExeName), "ABCD", "1.1.0");
+		BinaryFingerprint installed = MakeFingerprint(Path.Combine(InstallDir, ExeName), "ABCD", "1.1.0");
+		ServiceDiagnosticsInput input = MakeInput(
+			dist, installed,
+			scmInstalled: true,
+			scmImagePath: "\"" + Path.Combine(InstallDir, ExeName) + "\"",
+			runtimeVersion: "1.1.0",
+			ipcConnected: true,
+			running: new RunningProcessFingerprint(1234, Path.Combine(InstallDir, ExeName), installed, processStart));
+
+		ServiceDiagnosticsReport report = ServiceDiagnosticsReportBuilder.Build(input with { GeneratedUtc = generated });
+
+		Assert.Contains("ServiceStartUtc: 2026-05-26 11:30:00Z", report.ReportText, StringComparison.Ordinal);
+		Assert.Contains("Uptime: 0d 02:30:00", report.ReportText, StringComparison.Ordinal);
+		Assert.Contains("UptimeStatus: OK", report.ReportText, StringComparison.Ordinal);
+	}
+
+	[Fact]
+	public void Build_ScmServiceStartUtc_FallsBackToIpc()
+	{
+		DateTime ipcStart = new(2026, 5, 26, 13, 0, 0, DateTimeKind.Utc);
+		DateTime generated = new(2026, 5, 26, 14, 0, 0, DateTimeKind.Utc);
+		BinaryFingerprint dist = MakeFingerprint(Path.Combine(DistDir, ExeName), "ABCD", "1.1.0");
+		BinaryFingerprint installed = MakeFingerprint(Path.Combine(InstallDir, ExeName), "ABCD", "1.1.0");
+		ServiceDiagnosticsInput input = MakeInput(
+			dist, installed,
+			scmInstalled: true,
+			scmImagePath: "\"" + Path.Combine(InstallDir, ExeName) + "\"",
+			runtimeVersion: "1.1.0",
+			ipcConnected: true,
+			running: new RunningProcessFingerprint(1234, Path.Combine(InstallDir, ExeName), installed, null));
+
+		ServiceDiagnosticsReport report = ServiceDiagnosticsReportBuilder.Build(input with
+		{
+			IpcCounters = new ServiceDiagnosticsIpcCounters(
+				ServiceStartedUtc: ipcStart,
+				ServiceUptime: null,
+				EventsCaptured: null,
+				EventsDropped: null,
+				AlertsRaised: null,
+				ActiveSessions: null,
+				Security4624Count: null,
+				Security4625Count: null,
+				Security4648Count: null),
+			GeneratedUtc = generated
+		});
+
+		Assert.Contains("ServiceStartUtc: 2026-05-26 13:00:00Z", report.ReportText, StringComparison.Ordinal);
+		Assert.Contains("Uptime: 0d 01:00:00", report.ReportText, StringComparison.Ordinal);
+	}
+
+	[Fact]
+	public void Build_NoStartSource_ReportsUnknown()
+	{
+		BinaryFingerprint dist = MakeFingerprint(Path.Combine(DistDir, ExeName), "ABCD", "1.1.0");
+		BinaryFingerprint installed = MakeFingerprint(Path.Combine(InstallDir, ExeName), "ABCD", "1.1.0");
+		ServiceDiagnosticsInput input = MakeInput(
+			dist, installed,
+			scmInstalled: true,
+			scmImagePath: "\"" + Path.Combine(InstallDir, ExeName) + "\"",
+			runtimeVersion: "1.1.0",
+			ipcConnected: true,
+			running: new RunningProcessFingerprint(1234, Path.Combine(InstallDir, ExeName), installed, null));
+
+		ServiceDiagnosticsReport report = ServiceDiagnosticsReportBuilder.Build(input with
+		{
+			GeneratedUtc = new DateTime(2026, 5, 26, 14, 0, 0, DateTimeKind.Utc)
+		});
+
+		Assert.Contains("ServiceStartUtc: (unknown)", report.ReportText, StringComparison.Ordinal);
+		Assert.Contains("Uptime: (unknown)", report.ReportText, StringComparison.Ordinal);
+		Assert.Contains("UptimeStatus: Unknown", report.ReportText, StringComparison.Ordinal);
+	}
+
+	[Fact]
+	public void Build_SameInputsTwice_ProducesIdenticalReport()
+	{
+		DateTime processStart = new(2026, 5, 26, 11, 30, 0, DateTimeKind.Utc);
+		DateTime generated = new(2026, 5, 26, 14, 0, 0, DateTimeKind.Utc);
+		BinaryFingerprint dist = MakeFingerprint(Path.Combine(DistDir, ExeName), "ABCD", "1.1.0");
+		BinaryFingerprint installed = MakeFingerprint(Path.Combine(InstallDir, ExeName), "ABCD", "1.1.0");
+		ServiceDiagnosticsInput input = MakeInput(
+			dist, installed,
+			scmInstalled: true,
+			scmImagePath: "\"" + Path.Combine(InstallDir, ExeName) + "\"",
+			runtimeVersion: "1.1.0",
+			ipcConnected: true,
+			running: new RunningProcessFingerprint(1234, Path.Combine(InstallDir, ExeName), installed, processStart));
+
+		ServiceDiagnosticsExtras extras = new(
+			DiskDebugModeEnabled: true,
+			IpcOutcome: "Success",
+			IpcErrorDetail: null,
+			IpcErrorType: null,
+			IpcDurationMs: 12,
+			IpcTimeoutMs: 5000,
+			IpcPipeConnected: true,
+			IpcResponseReceived: true,
+			IpcStartupLogTail: new[] { "line-1" },
+			DebugLogTail: new[] { "debug-1" },
+			ServiceLogTail: new[] { "svc-1" },
+			CrashFiles: new[] { "crash.txt" },
+			LastCrashExcerpt: "excerpt");
+
+		ServiceDiagnosticsReport first = ServiceDiagnosticsReportBuilder.Build(input with
+		{
+			Extras = extras,
+			IpcCounters = new ServiceDiagnosticsIpcCounters(
+				ServiceStartedUtc: processStart,
+				ServiceUptime: TimeSpan.FromHours(2),
+				EventsCaptured: 10,
+				EventsDropped: 2,
+				AlertsRaised: 1,
+				ActiveSessions: 1,
+				Security4624Count: 4,
+				Security4625Count: 3,
+				Security4648Count: 0),
+			GeneratedUtc = generated
+		});
+		ServiceDiagnosticsReport second = ServiceDiagnosticsReportBuilder.Build(input with
+		{
+			Extras = extras,
+			IpcCounters = new ServiceDiagnosticsIpcCounters(
+				ServiceStartedUtc: processStart,
+				ServiceUptime: TimeSpan.FromHours(2),
+				EventsCaptured: 10,
+				EventsDropped: 2,
+				AlertsRaised: 1,
+				ActiveSessions: 1,
+				Security4624Count: 4,
+				Security4625Count: 3,
+				Security4648Count: 0),
+			GeneratedUtc = generated
+		});
+
+		Assert.Equal(first.ReportText, second.ReportText);
+		Assert.Equal(first.Verdict, second.Verdict);
+		Assert.Equal(first.VerdictLabel, second.VerdictLabel);
+	}
+
+	[Fact]
+	public void Build_ConfigurationValuesSection_MatchesLayout()
+	{
+		BinaryFingerprint dist = MakeFingerprint(Path.Combine(DistDir, ExeName), "ABCD", "1.1.0");
+		BinaryFingerprint installed = MakeFingerprint(Path.Combine(InstallDir, ExeName), "ABCD", "1.1.0");
+		ServiceDiagnosticsInput input = MakeInput(
+			dist, installed,
+			scmInstalled: true,
+			scmImagePath: "\"" + Path.Combine(InstallDir, ExeName) + "\"",
+			runtimeVersion: "1.1.0",
+			ipcConnected: true,
+			running: new RunningProcessFingerprint(1234, Path.Combine(InstallDir, ExeName), installed, new DateTime(2026, 5, 26, 12, 0, 0, DateTimeKind.Utc)));
+
+		ServiceDiagnosticsReport report = ServiceDiagnosticsReportBuilder.Build(input with
+		{
+			GeneratedUtc = new DateTime(2026, 5, 26, 14, 0, 0, DateTimeKind.Utc)
+		});
+
+		Assert.Contains("[Configuration values]", report.ReportText, StringComparison.Ordinal);
+		Assert.Contains("Install directory: " + InstallDir, report.ReportText, StringComparison.Ordinal);
+		Assert.Contains("ProgramData directory: C:\\ProgramData\\RdpAudit", report.ReportText, StringComparison.Ordinal);
+		Assert.Contains("Database path: C:\\ProgramData\\RdpAudit\\rdpaudit.db", report.ReportText, StringComparison.Ordinal);
+	}
+
+	[Fact]
 	public void Build_ReportText_IncludesVerdictAndAllSections()
 	{
 		BinaryFingerprint dist = MakeFingerprint(Path.Combine(DistDir, ExeName), "ABCD", "1.1.0");

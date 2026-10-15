@@ -11,8 +11,8 @@
 	Configurator executable.
 
 .NOTES
-	Author : Mikhail Deynekin — https://Deynekin.com — Mikhail@Deynekin.com
-	Version: 1.2.5
+	Author : Mikhail Deynekin - https://Deynekin.com - Mikhail@Deynekin.com
+	Version: 1.5.0
 
 .FEATURES
 	Detects and reports any previously installed RdpAudit version (with version number).
@@ -26,6 +26,12 @@
 	Sync-Repository (v1.2.5) now verifies/repairs the remote origin URL, performs a
 	full-refspec fetch to break --single-branch limitations, and uses a safe
 	'checkout -B' so a missing local branch no longer aborts the installer.
+	v1.5.0 adds RDPAudit 2.0 prerequisite awareness: ETW event channel probe for
+	the five TerminalServices/RdpCoreTS providers, audit-policy probe (Logon /
+	Special Logon / Object Access), Performance Log Users group membership probe,
+	TraceEvent 3.2.5 NuGet cache verification and a new -IngestionMode parameter
+	that writes the operator's transport choice (EventLog / Etw / Auto) into
+	%ProgramData%\RdpAudit\appsettings.json without disturbing operator overrides.
 
 .REQUIREMENTS
 	PowerShell 7+
@@ -42,7 +48,12 @@ param(
 
 	[string]$RepositoryUrl = 'https://github.com/paulmann/RDPAudit.git',
 
-	[string]$RepositoryBranch = 'main',
+	# The RDPAudit 2.0 work lives on the feature/rdpaudit-2.0-event-collection branch
+	# (SSH.NET 2026.0.0, current migration set, current test suite). 'main' is a legacy
+	# 1.x tag that still pins the vulnerable SSH.NET 2024.1.0 (GHSA-q939-rpr3-3284) and
+	# would fail 'dotnet restore' due to NU1903 (WarningsAsErrors). Override this
+	# parameter explicitly if you need to build a different branch.
+	[string]$RepositoryBranch = 'feature/rdpaudit-2.0-event-collection',
 
 	[string]$SafeMessagePackVersion = '2.5.301',
 
@@ -52,12 +63,114 @@ param(
 
 	[switch]$NonInteractive,
 
-	[switch]$SkipLaunch
+	[switch]$SkipLaunch,
+
+	# Directory that will receive the RDPAudit_Install_<Date_Time>.log transcript file.
+	# Defaults to '<WorkDirectory>\logs'. The directory is created on demand and is never
+	# deleted or truncated by the installer, so previous runs remain available for review.
+	[string]$LogDirectory = '',
+
+	# When present, dotnet test streams every test outcome (Passed + Failed + Skipped) to
+	# the console and transcript. Default behaviour is 'minimal' verbosity which only
+	# reports Failed tests plus the final summary, keeping the transcript compact. The
+	# machine-readable TRX result file is written to <LogDirectory>\test-results\ either
+	# way, so the full list of Passed tests is always available for inspection.
+	[switch]$VerboseTests,
+
+	# When present, dotnet test is invoked with maximum diagnostic instrumentation so a
+	# failing run leaves behind everything needed to root-cause the failure offline:
+	#   * Console + TRX loggers switch to 'detailed' verbosity.
+	#   * --blame-hang / --blame-hang-dump-type full : any test that exceeds the hang
+	#     timeout produces a FULL memory dump of the test host (heap + threads).
+	#   * --blame-crash / --blame-crash-dump-type full : a full dump is taken if the test
+	#     host itself crashes (unhandled exception, StackOverflow, AccessViolation).
+	#   * --diag <path> : dotnet test writes its internal diagnostic log (host launch,
+	#     data-collector attach, discovery, execution) next to the TRX file.
+	#   * DOTNET_TieredCompilation is set to 0 for the duration of the run so tiered JIT
+	#     promotion cannot introduce transient one-shot allocations into GC allocation
+	#     assertions (e.g. ShardWriter Append zero-alloc test).
+	#   * A per-run env-dump.txt captures OS, .NET runtime, CPU/RAM, environment
+	#     variables prefixed with DOTNET_/RDPAUDIT_, and the exact test command line.
+	# Implies -VerboseTests. Dumps and diag logs land in <LogDirectory>\test-results\
+	# so review is uniform with the TRX artifact.
+	[switch]$DebugTests,
+
+	# When present, the host PowerShell process itself is terminated after a successful
+	# installation (equivalent to typing 'exit' at the prompt). Useful for scripted /
+	# unattended runs launched from a task scheduler or one-shot desktop shortcut where
+	# leaving an open console window is undesirable. Without this switch the installer
+	# simply returns control to the current prompt so the operator can keep working in
+	# the same window. Failed runs are never auto-exited — the window always stays open
+	# so the fatal error and log path remain visible.
+	[switch]$ExitAfterInstall,
+
+	# When present, perform a destructive clean install:
+	#   1. Uninstall the RdpAudit Windows service (sc.exe delete) if it is registered.
+	#   2. Delete the entire <WorkDirectory>\Service tree, including .git, publish and
+	#      all locally built binaries. The subsequent 'git clone' will recreate it from
+	#      scratch on the requested branch.
+	#   3. Delete every RdpAudit database and migration-failure marker under
+	#      %ProgramData%\RdpAudit (rdpaudit.db, rdpaudit.db-wal, rdpaudit.db-shm, all
+	#      rdpaudit.db.*.bak backups, and migration-failure.marker.json). The
+	#      appsettings.json / operator-authored configuration is preserved.
+	# The transcript log directory (<LogDirectory>) is NEVER touched, so previous
+	# installer runs remain reviewable. Fails the installation if the operator does
+	# not confirm the destructive prompt (unless -NonInteractive is also set, in
+	# which case confirmation is implied).
+	[switch]$CleanInstall,
+
+	# RDPAudit 2.0 event transport selector, written to
+	# %ProgramData%\RdpAudit\appsettings.json (RdpAudit:IngestionMode) after a
+	# successful publish. 'Auto' keeps the service self-selecting (ETW when the
+	# process is elevated with ETW privileges, EventLogWatcher otherwise), 'Etw'
+	# forces the hybrid ETW/EventLog routing implemented on
+	# feature/rdpaudit-2.0-event-collection (commit 3c), 'EventLog' pins the
+	# legacy v1.0 EventLogWatcher transport for regression testing. The value is
+	# merged into an existing appsettings.json without disturbing operator
+	# overrides.
+	[ValidateSet('EventLog', 'Etw', 'Auto')]
+	[string]$IngestionMode = 'Auto'
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
+
+# ── Installation Transcript Log ──────────────────────────────────────────────
+
+# Every run captures a full transcript to a timestamped file so the operator can
+# review the entire installation output after the fact without having to keep the
+# window open or copy from the console (which is fragile: selecting text pauses
+# the console and any keypress can dismiss modal prompts). The file lives under
+# <WorkDirectory>\logs by default and is created regardless of exit outcome.
+
+if ([string]::IsNullOrWhiteSpace($LogDirectory)) {
+	$LogDirectory = Join-Path -Path $WorkDirectory -ChildPath 'logs'
+}
+
+try {
+	if (-not (Test-Path -LiteralPath $LogDirectory)) {
+		New-Item -ItemType Directory -Path $LogDirectory -Force | Out-Null
+	}
+} catch {
+	Write-Warning ("Could not create log directory '{0}': {1}. Falling back to TEMP." -f $LogDirectory, $_.Exception.Message)
+	$LogDirectory = $env:TEMP
+}
+
+$script:InstallLogTimestamp = (Get-Date).ToString('yyyy-MM-dd_HH-mm-ss')
+$script:InstallLogFile = Join-Path -Path $LogDirectory -ChildPath ("RDPAudit_Install_{0}.log" -f $script:InstallLogTimestamp)
+$script:TranscriptStarted = $false
+
+try {
+	Start-Transcript -Path $script:InstallLogFile -Force -IncludeInvocationHeader | Out-Null
+	$script:TranscriptStarted = $true
+} catch {
+	Write-Warning ("Could not start transcript at '{0}': {1}. Installation will continue without a log file." -f $script:InstallLogFile, $_.Exception.Message)
+}
+
+Write-Host ''
+Write-Host ('Installation log: {0}' -f $script:InstallLogFile) -ForegroundColor Cyan
+Write-Host ''
 
 # ── Fields & Configuration ───────────────────────────────────────────────────
 
@@ -71,6 +184,33 @@ $script:PublishRoot = Join-Path -Path $script:RepositoryDirectory -ChildPath 'pu
 $script:MinimumDotNetSdkVersion = [Version]'8.0'
 $script:WindowsServiceName = 'RdpAuditService'
 $script:RequiredComponents = @('PowerShell 7+', 'Windows', 'Administrator', 'Git', '.NET SDK 8+')
+
+# RDPAudit 2.0 event-transport prerequisites. Kept as script-scope constants so a
+# single edit here propagates to the probe, the auto-repair routine and the
+# Configurator wiki without introducing string drift.
+$script:EtwRequiredEventChannels = @(
+	'Microsoft-Windows-TerminalServices-LocalSessionManager/Operational',
+	'Microsoft-Windows-TerminalServices-RemoteConnectionManager/Operational',
+	'Microsoft-Windows-RemoteDesktopServices-RdpCoreTS/Operational',
+	'Microsoft-Windows-TerminalServices-Gateway/Operational',
+	'Microsoft-Windows-TerminalServices-RDPClient/Operational'
+)
+
+# Auditpol subcategory GUIDs. Names are locale-dependent (Russian Windows returns
+# 'Вход в систему' instead of 'Logon'); GUIDs are stable across every locale and
+# every Windows build from 2008 R2 onwards, so we probe and repair by GUID and
+# only translate for the operator-facing log line.
+$script:AuditpolRequiredSubcategories = @(
+	[pscustomobject]@{ Name = 'Logon';           Guid = '{0CCE9215-69AE-11D9-BED3-505054503030}' },
+	[pscustomobject]@{ Name = 'Special Logon';   Guid = '{0CCE921B-69AE-11D9-BED3-505054503030}' },
+	[pscustomobject]@{ Name = 'Logoff';          Guid = '{0CCE9216-69AE-11D9-BED3-505054503030}' },
+	[pscustomobject]@{ Name = 'File System';     Guid = '{0CCE921D-69AE-11D9-BED3-505054503030}' },
+	[pscustomobject]@{ Name = 'Registry';        Guid = '{0CCE921E-69AE-11D9-BED3-505054503030}' }
+)
+
+$script:TraceEventPackageId = 'Microsoft.Diagnostics.Tracing.TraceEvent'
+$script:TraceEventPackageVersion = '3.2.5'
+$script:PerformanceLogUsersSid = 'S-1-5-32-559'
 
 # Process image names (without extension) of every RdpAudit component that may be
 # running and must be released before the publish folder can be rebuilt in place.
@@ -87,6 +227,7 @@ $script:InstallState = [pscustomobject]@{
 	InstalledPrerequisites = New-Object System.Collections.Generic.List[string]
 	Fixes = New-Object System.Collections.Generic.List[string]
 	Actions = New-Object System.Collections.Generic.List[string]
+	CleanInstallPerformed = $false
 }
 
 function Add-InstallAction {
@@ -325,6 +466,148 @@ function New-PrerequisiteRecord {
 	}
 }
 
+# ── RDPAudit 2.0 ETW & Audit Prerequisites ───────────────────────────────────────
+
+# Version: 1.0.0
+# Returns a probe result for one Windows event log channel. Uses wevtutil.exe
+# 'gl' (get-log) rather than Get-WinEvent so we succeed even on locked-down
+# Server Core installations where the WinRM/WMI provider is disabled but the
+# EventLog service itself is up. Values other than 'true' (including a missing
+# channel, which prints an error on stderr and exits non-zero) are reported as
+# disabled so the operator sees a clear MISSING row.
+function Test-EtwChannelEnabled {
+	param(
+		[Parameter(Mandatory)]
+		[string]$Channel
+	)
+
+	if (-not $IsWindows) {
+		return [pscustomobject]@{ Channel = $Channel; IsEnabled = $false; Detail = 'NOT WINDOWS' }
+	}
+
+	$wevtutil = Get-Command -Name 'wevtutil.exe' -ErrorAction SilentlyContinue
+	if ($null -eq $wevtutil) {
+		return [pscustomobject]@{ Channel = $Channel; IsEnabled = $false; Detail = 'wevtutil.exe not found' }
+	}
+
+	try {
+		$output = & wevtutil.exe gl $Channel 2>$null
+		if ($LASTEXITCODE -ne 0 -or $null -eq $output) {
+			return [pscustomobject]@{ Channel = $Channel; IsEnabled = $false; Detail = 'channel not found' }
+		}
+		$enabledLine = $output | Where-Object { $_ -match '^\s*enabled:\s*' } | Select-Object -First 1
+		if ($null -eq $enabledLine) {
+			return [pscustomobject]@{ Channel = $Channel; IsEnabled = $false; Detail = 'no enabled: line' }
+		}
+		$isEnabled = ($enabledLine -match '^\s*enabled:\s*true\s*$')
+		return [pscustomobject]@{ Channel = $Channel; IsEnabled = $isEnabled; Detail = $enabledLine.Trim() }
+	} catch {
+		return [pscustomobject]@{ Channel = $Channel; IsEnabled = $false; Detail = $_.Exception.Message }
+	}
+}
+
+# Version: 1.0.0
+# Returns per-subcategory audit-policy state by GUID. auditpol.exe supports
+# /r /csv for a stable machine-readable output that does not shift between
+# Windows locales - column 5 ('Setting Value') is what we compare against
+# 'Success and Failure', which is auditpol's canonical value for a fully
+# enabled subcategory. We cannot rely on the locale-dependent display name of
+# the subcategory itself, so we invoke auditpol once per required GUID.
+function Get-AuditpolSubcategoryStatus {
+	param(
+		[Parameter(Mandatory)]
+		[string]$SubcategoryGuid,
+
+		[Parameter(Mandatory)]
+		[string]$DisplayName
+	)
+
+	if (-not $IsWindows) {
+		return [pscustomobject]@{ Name = $DisplayName; Guid = $SubcategoryGuid; IsEnabled = $false; Detail = 'NOT WINDOWS' }
+	}
+
+	$auditpol = Get-Command -Name 'auditpol.exe' -ErrorAction SilentlyContinue
+	if ($null -eq $auditpol) {
+		return [pscustomobject]@{ Name = $DisplayName; Guid = $SubcategoryGuid; IsEnabled = $false; Detail = 'auditpol.exe not found' }
+	}
+
+	try {
+		$csv = & auditpol.exe /get /subcategory:$SubcategoryGuid /r 2>$null
+		if ($LASTEXITCODE -ne 0 -or $null -eq $csv) {
+			return [pscustomobject]@{ Name = $DisplayName; Guid = $SubcategoryGuid; IsEnabled = $false; Detail = 'auditpol query failed' }
+		}
+		$dataLine = $csv | Where-Object { $_ -match ',' -and $_ -notmatch '^Machine Name' } | Select-Object -First 1
+		if ($null -eq $dataLine) {
+			return [pscustomobject]@{ Name = $DisplayName; Guid = $SubcategoryGuid; IsEnabled = $false; Detail = 'empty auditpol row' }
+		}
+		$fields = $dataLine -split ','
+		$setting = if ($fields.Length -ge 5) { $fields[4].Trim().Trim('"') } else { '' }
+		$isEnabled = ($setting -match '^(Success and Failure|Success and failure)$')
+		return [pscustomobject]@{ Name = $DisplayName; Guid = $SubcategoryGuid; IsEnabled = $isEnabled; Detail = $setting }
+	} catch {
+		return [pscustomobject]@{ Name = $DisplayName; Guid = $SubcategoryGuid; IsEnabled = $false; Detail = $_.Exception.Message }
+	}
+}
+
+# Version: 1.0.0
+# Returns $true when the current process token is a member of the built-in
+# Performance Log Users group (SID S-1-5-32-559) OR is elevated as a member of
+# Administrators. Either grants the SeSystemProfilePrivilege that TraceEvent's
+# real-time session requires. We match by SID rather than translated name so
+# the probe works on a Russian-language Windows install where the group is
+# rendered as 'Пользователи журналов производительности'.
+function Test-EtwPrivilegePresent {
+	if (-not $IsWindows) {
+		return $false
+	}
+
+	try {
+		$identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
+		$principal = New-Object System.Security.Principal.WindowsPrincipal($identity)
+		if ($principal.IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator)) {
+			return $true
+		}
+		$perfSid = New-Object System.Security.Principal.SecurityIdentifier($script:PerformanceLogUsersSid)
+		return $principal.IsInRole($perfSid)
+	} catch {
+		return $false
+	}
+}
+
+# Version: 1.0.0
+# Probes the NuGet global-packages cache for the exact TraceEvent version the
+# 2.0 event-collection layer restores. dotnet restore will download it on the
+# next build regardless, but reporting the cache state up-front tells the
+# operator whether the first build will need network access. Same pattern as
+# Get-MoqInstalledVersion.
+function Get-TraceEventInstalledVersion {
+	$dotnet = Get-Command -Name 'dotnet' -ErrorAction SilentlyContinue
+	if ($null -eq $dotnet) {
+		return $null
+	}
+	try {
+		$nugetRoot = & dotnet nuget locals global-packages -l 2>$null
+		if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($nugetRoot)) {
+			return $null
+		}
+		$path = ($nugetRoot -replace '^\s*global-packages:\s*', '').Trim()
+		if (-not (Test-Path -Path $path -PathType Container)) {
+			return $null
+		}
+		$packageRoot = Join-Path -Path $path -ChildPath ($script:TraceEventPackageId.ToLowerInvariant())
+		if (-not (Test-Path -Path $packageRoot -PathType Container)) {
+			return $null
+		}
+		$versionDir = Join-Path -Path $packageRoot -ChildPath $script:TraceEventPackageVersion
+		if (Test-Path -Path $versionDir -PathType Container) {
+			return $script:TraceEventPackageVersion
+		}
+		return $null
+	} catch {
+		return $null
+	}
+}
+
 # ── Prerequisite Checks ──────────────────────────────────────────────────────
 
 function Get-PrerequisiteStatus {
@@ -407,6 +690,58 @@ function Get-PrerequisiteStatus {
 		-IsSatisfied (-not [string]::IsNullOrWhiteSpace($wingetVersionText)) `
 		-IsMandatory $false `
 		-WingetId $null
+
+	# RDPAudit 2.0 ETW-transport prerequisites. All are IsMandatory=$false so a
+	# missing channel or audit policy does not block the build: the service
+	# still runs in EventLogWatcher mode, and Repair-Rdp2xPrerequisites offers
+	# the operator an interactive fix immediately after the check.
+	$channelStates = @(foreach ($channel in $script:EtwRequiredEventChannels) { Test-EtwChannelEnabled -Channel $channel })
+	$channelsEnabled = @($channelStates | Where-Object { $_.IsEnabled }).Count
+	$channelsTotal = $channelStates.Count
+	$items += New-PrerequisiteRecord `
+		-Name 'ETW event channels' `
+		-Required 'TerminalServices+RdpCoreTS enabled' `
+		-Installed ("{0}/{1} enabled" -f $channelsEnabled, $channelsTotal) `
+		-IsSatisfied ($channelsEnabled -eq $channelsTotal) `
+		-IsMandatory $false `
+		-WingetId $null
+
+	$auditStates = @(foreach ($sub in $script:AuditpolRequiredSubcategories) { Get-AuditpolSubcategoryStatus -SubcategoryGuid $sub.Guid -DisplayName $sub.Name })
+	$auditEnabled = @($auditStates | Where-Object { $_.IsEnabled }).Count
+	$auditTotal = $auditStates.Count
+	$items += New-PrerequisiteRecord `
+		-Name 'Audit policy' `
+		-Required 'Logon/Logoff/File System' `
+		-Installed ("{0}/{1} Success+Failure" -f $auditEnabled, $auditTotal) `
+		-IsSatisfied ($auditEnabled -eq $auditTotal) `
+		-IsMandatory $false `
+		-WingetId $null
+
+	$etwPrivilege = Test-EtwPrivilegePresent
+	$etwPrivilegeText = if ($etwPrivilege) { 'Elevated' } else { 'NOT PRESENT' }
+	$items += New-PrerequisiteRecord `
+		-Name 'ETW privilege' `
+		-Required 'Admin or Perf Log Users' `
+		-Installed $etwPrivilegeText `
+		-IsSatisfied $etwPrivilege `
+		-IsMandatory $false `
+		-WingetId $null
+
+	$traceEventVersion = Get-TraceEventInstalledVersion
+	$traceEventInstalledText = if ($null -ne $traceEventVersion) { $traceEventVersion } else { 'NOT FOUND (auto-added)' }
+	$items += New-PrerequisiteRecord `
+		-Name 'TraceEvent (NuGet)' `
+		-Required ("{0} in cache" -f $script:TraceEventPackageVersion) `
+		-Installed $traceEventInstalledText `
+		-IsSatisfied ($null -ne $traceEventVersion) `
+		-IsMandatory $false `
+		-WingetId $null
+
+	# Expose the underlying probe rows so Repair-Rdp2xPrerequisites can consume
+	# them without repeating the wevtutil / auditpol invocations.
+	$script:LastEtwChannelStates = $channelStates
+	$script:LastAuditSubcategoryStates = $auditStates
+	$script:LastEtwPrivilegePresent = $etwPrivilege
 
 	return $items
 }
@@ -827,6 +1162,110 @@ function Install-MissingPrerequisites {
 
 # ── Repository Operations ────────────────────────────────────────────────────
 
+function Invoke-CleanInstallPurge {
+	# Version: 1.0.0
+	#
+	# Destructive pre-installation cleanup used ONLY when -CleanInstall is on the
+	# command line. Callers MUST invoke Stop-RdpAuditProcesses first so that no
+	# file handles remain on the service binaries or the SQLite database.
+	#
+	# What is removed:
+	#   1. The Windows service registration (sc.exe delete <name>) if it exists.
+	#   2. The whole <WorkDirectory>\Service tree (git checkout + publish output).
+	#   3. Every RdpAudit database file under %ProgramData%\RdpAudit:
+	#      rdpaudit.db, rdpaudit.db-wal, rdpaudit.db-shm, rdpaudit.db.*.bak.
+	#   4. The migration-failure marker (migration-failure.marker.json).
+	#
+	# What is preserved:
+	#   * <LogDirectory> — installer transcripts must survive so previous runs can
+	#     be reviewed.
+	#   * %ProgramData%\RdpAudit\appsettings.json and any other operator-authored
+	#     configuration files. Only *.db* files and the migration marker are removed.
+	Write-Section 'Clean Install — Purge Previous Installation'
+
+	$confirmed = Confirm-Action -Prompt ("CLEAN INSTALL will DELETE '{0}' and every RdpAudit database under %ProgramData%\RdpAudit. This is irreversible. Continue?" -f $script:RepositoryDirectory) -DefaultYes $false
+	if (-not $confirmed) {
+		throw 'Clean install cancelled by operator.'
+	}
+
+	# 1. Remove Windows service registration so any leftover service entry does
+	#    not point at bytes we are about to delete.
+	try {
+		$existingService = Get-Service -Name $script:WindowsServiceName -ErrorAction SilentlyContinue
+		if ($null -ne $existingService) {
+			Write-Info "Unregistering Windows service '$($script:WindowsServiceName)' ..."
+			& sc.exe delete $script:WindowsServiceName | Out-Null
+			if ($LASTEXITCODE -eq 0) {
+				Write-Ok "Service '$($script:WindowsServiceName)' unregistered."
+			} else {
+				Write-WarningMessage "sc.exe delete '$($script:WindowsServiceName)' exited with code $LASTEXITCODE. Continuing anyway."
+			}
+		} else {
+			Write-Info "Service '$($script:WindowsServiceName)' is not registered — nothing to unregister."
+		}
+	} catch {
+		Write-WarningMessage ("Failed to query/remove service '{0}': {1}. Continuing anyway." -f $script:WindowsServiceName, $_.Exception.Message)
+	}
+
+	# 2. Delete the <WorkDirectory>\Service tree in full.
+	if (Test-Path -LiteralPath $script:RepositoryDirectory) {
+		Write-Info "Removing repository/publish directory: $($script:RepositoryDirectory)"
+		try {
+			Remove-Item -LiteralPath $script:RepositoryDirectory -Recurse -Force -ErrorAction Stop
+			Write-Ok "Deleted: $($script:RepositoryDirectory)"
+		} catch {
+			throw ("Clean install could not delete '{0}': {1}. Close any Explorer / editor / terminal holding a file in that tree and re-run with -CleanInstall." -f $script:RepositoryDirectory, $_.Exception.Message)
+		}
+	} else {
+		Write-Info "Repository/publish directory does not exist — nothing to delete: $($script:RepositoryDirectory)"
+	}
+
+	# 3. + 4. Delete databases and migration marker under %ProgramData%\RdpAudit.
+	$programDataRoot = [Environment]::GetFolderPath('CommonApplicationData')
+	$rdpAuditDataDirectory = Join-Path -Path $programDataRoot -ChildPath 'RdpAudit'
+
+	if (Test-Path -LiteralPath $rdpAuditDataDirectory) {
+		Write-Info "Purging databases and migration marker under: $rdpAuditDataDirectory"
+
+		# Databases: rdpaudit.db + WAL/SHM sidecars + rdpaudit.db.*.bak rotated backups.
+		$databasePatterns = @('rdpaudit.db', 'rdpaudit.db-wal', 'rdpaudit.db-shm', 'rdpaudit.db.*.bak')
+		$removedDatabaseCount = 0
+		foreach ($pattern in $databasePatterns) {
+			$dbMatches = @(Get-ChildItem -LiteralPath $rdpAuditDataDirectory -Filter $pattern -File -ErrorAction SilentlyContinue)
+			foreach ($dbFile in $dbMatches) {
+				try {
+					Remove-Item -LiteralPath $dbFile.FullName -Force -ErrorAction Stop
+					Write-Ok ("  deleted: {0}" -f $dbFile.Name)
+					$removedDatabaseCount++
+				} catch {
+					Write-WarningMessage ("  failed to delete '{0}': {1}" -f $dbFile.FullName, $_.Exception.Message)
+				}
+			}
+		}
+		if ($removedDatabaseCount -eq 0) {
+			Write-Info '  no rdpaudit.db* files were present.'
+		}
+
+		# Migration failure marker.
+		$migrationMarker = Join-Path -Path $rdpAuditDataDirectory -ChildPath 'migration-failure.marker.json'
+		if (Test-Path -LiteralPath $migrationMarker) {
+			try {
+				Remove-Item -LiteralPath $migrationMarker -Force -ErrorAction Stop
+				Write-Ok '  deleted: migration-failure.marker.json'
+			} catch {
+				Write-WarningMessage ("  failed to delete migration marker: {0}" -f $_.Exception.Message)
+			}
+		}
+
+		Write-Ok 'Configuration files (appsettings.json etc.) preserved.'
+	} else {
+		Write-Info "No %ProgramData%\RdpAudit directory found — nothing to purge."
+	}
+
+	$script:InstallState.CleanInstallPerformed = $true
+	Write-Ok 'Clean install pre-purge finished. Proceeding with a fresh installation.'
+}
+
 function Initialize-Workspace {
 	Write-Section 'Workspace'
 
@@ -1162,6 +1601,171 @@ function Update-Ca1859SourceWarnings {
 	Test-Ca1859PatchVerification
 }
 
+# ── RDPAudit 2.0 Repair & Configuration ──────────────────────────────────────
+
+# Version: 1.0.0
+# Interactively repairs the non-mandatory RDPAudit 2.0 prerequisites: enables
+# any disabled ETW event channels via wevtutil and turns on the required
+# auditpol subcategories via GUID. Skipped in NonInteractive mode unless every
+# prerequisite is already satisfied. The routine never fails the installer -
+# it only records a warning and lets the operator run the fix by hand later.
+function Repair-Rdp2xPrerequisites {
+	if (-not $IsWindows) {
+		Write-Info 'RDPAudit 2.0 repair skipped (not Windows).'
+		return
+	}
+
+	$missingChannels = @($script:LastEtwChannelStates | Where-Object { -not $_.IsEnabled })
+	$missingAudit = @($script:LastAuditSubcategoryStates | Where-Object { -not $_.IsEnabled })
+
+	if ($missingChannels.Count -eq 0 -and $missingAudit.Count -eq 0) {
+		Write-Ok 'RDPAudit 2.0 ETW channels and audit policy are already fully enabled.'
+		return
+	}
+
+	Write-Section 'RDPAudit 2.0 Repair'
+
+	if ($missingChannels.Count -gt 0) {
+		Write-WarningMessage ("{0} ETW event channel(s) are disabled:" -f $missingChannels.Count)
+		foreach ($ch in $missingChannels) {
+			Write-Host ("    - {0}" -f $ch.Channel) -ForegroundColor Yellow
+		}
+	}
+
+	if ($missingAudit.Count -gt 0) {
+		Write-WarningMessage ("{0} audit subcategory/ies are not Success+Failure:" -f $missingAudit.Count)
+		foreach ($sub in $missingAudit) {
+			Write-Host ("    - {0} (current: {1})" -f $sub.Name, $sub.Detail) -ForegroundColor Yellow
+		}
+	}
+
+	$doRepair = Confirm-Action -Prompt 'Enable the missing ETW channels and audit subcategories now?' -DefaultYes $true
+	if (-not $doRepair) {
+		Write-Info 'RDPAudit 2.0 repair skipped by operator. Configurator will still run in EventLogWatcher mode.'
+		return
+	}
+
+	foreach ($ch in $missingChannels) {
+		Write-Info ("Enabling channel: {0}" -f $ch.Channel)
+		try {
+			& wevtutil.exe sl $ch.Channel /e:true | Out-Null
+			if ($LASTEXITCODE -eq 0) {
+				Write-Ok ("Channel enabled: {0}" -f $ch.Channel)
+				$script:InstallState.Fixes.Add(("Enabled ETW channel: {0}" -f $ch.Channel))
+			} else {
+				Write-WarningMessage ("wevtutil sl exited with code {0} for channel {1}." -f $LASTEXITCODE, $ch.Channel)
+			}
+		} catch {
+			Write-WarningMessage ("Failed to enable {0}: {1}" -f $ch.Channel, $_.Exception.Message)
+		}
+	}
+
+	foreach ($sub in $missingAudit) {
+		Write-Info ("Enabling audit subcategory: {0} ({1})" -f $sub.Name, $sub.Guid)
+		try {
+			& auditpol.exe /set /subcategory:$($sub.Guid) /success:enable /failure:enable | Out-Null
+			if ($LASTEXITCODE -eq 0) {
+				Write-Ok ("Audit subcategory enabled: {0}" -f $sub.Name)
+				$script:InstallState.Fixes.Add(("Enabled audit subcategory: {0}" -f $sub.Name))
+			} else {
+				Write-WarningMessage ("auditpol exited with code {0} for {1}." -f $LASTEXITCODE, $sub.Name)
+			}
+		} catch {
+			Write-WarningMessage ("Failed to enable audit subcategory {0}: {1}" -f $sub.Name, $_.Exception.Message)
+		}
+	}
+}
+
+# Version: 1.0.0
+# Merges the operator's -IngestionMode choice into the deployed appsettings.json
+# WITHOUT disturbing operator overrides. The file lives under
+# %ProgramData%\RdpAudit\appsettings.json and is created by publish.ps1 on the
+# very first install; on subsequent installs it already contains custom values
+# so we must (1) load the existing JSON, (2) upsert RdpAudit.IngestionMode,
+# (3) save with the same encoding (UTF-8 without BOM, LF newlines, tab indent).
+function Set-IngestionModeInAppSettings {
+	if (-not $IsWindows) {
+		Write-Info 'IngestionMode configuration skipped (not Windows).'
+		return
+	}
+
+	$programData = [System.Environment]::GetFolderPath('CommonApplicationData')
+	$configRoot = Join-Path -Path $programData -ChildPath 'RdpAudit'
+	$configFile = Join-Path -Path $configRoot -ChildPath 'appsettings.json'
+
+	try {
+		if (-not (Test-Path -LiteralPath $configRoot)) {
+			New-Item -ItemType Directory -Path $configRoot -Force | Out-Null
+		}
+
+		$existing = $null
+		if (Test-Path -LiteralPath $configFile) {
+			try {
+				$raw = Get-Content -LiteralPath $configFile -Raw -ErrorAction Stop
+				if (-not [string]::IsNullOrWhiteSpace($raw)) {
+					$existing = $raw | ConvertFrom-Json -ErrorAction Stop
+				}
+			} catch {
+				Write-WarningMessage ("Existing appsettings.json is not valid JSON ({0}). Rewriting with defaults." -f $_.Exception.Message)
+				$existing = $null
+			}
+		}
+
+		if ($null -eq $existing) {
+			$existing = [pscustomobject]@{}
+		}
+
+		# Upsert RdpAudit section without dropping any operator-added keys.
+		if ($existing.PSObject.Properties.Name -notcontains 'RdpAudit') {
+			$existing | Add-Member -MemberType NoteProperty -Name 'RdpAudit' -Value ([pscustomobject]@{})
+		}
+
+		if ($existing.RdpAudit.PSObject.Properties.Name -contains 'IngestionMode') {
+			$existing.RdpAudit.IngestionMode = $IngestionMode
+		} else {
+			$existing.RdpAudit | Add-Member -MemberType NoteProperty -Name 'IngestionMode' -Value $IngestionMode
+		}
+
+		$json = $existing | ConvertTo-Json -Depth 32
+		# ConvertTo-Json emits 2-space indent. Convert those to tabs so the file
+		# stays consistent with the rest of the codebase, then normalise line
+		# endings. We rewrite line-by-line to avoid PowerShell's ScriptBlock
+		# replacement quirk where `$_` inside the replacement refers to the Match
+		# object, not to the ForEach-Object iterator variable.
+		$normalizedLines = foreach ($line in ($json -split "`r?`n")) {
+			$leadingSpaces = 0
+			while ($leadingSpaces -lt $line.Length -and $line[$leadingSpaces] -eq ' ') {
+				$leadingSpaces++
+			}
+			$tabCount = [Math]::Floor($leadingSpaces / 2)
+			("`t" * $tabCount) + $line.Substring($leadingSpaces)
+		}
+		$json = $normalizedLines -join "`n"
+		[System.IO.File]::WriteAllText($configFile, $json + "`n", (New-Object System.Text.UTF8Encoding($false)))
+
+		Write-Ok ("IngestionMode = '{0}' written to {1}" -f $IngestionMode, $configFile)
+		$script:InstallState.Actions.Add(("Wrote IngestionMode = {0} to {1}" -f $IngestionMode, $configFile))
+	} catch {
+		Write-WarningMessage ("Failed to write IngestionMode to {0}: {1}" -f $configFile, $_.Exception.Message)
+	}
+}
+
+# Version: 1.0.0
+# Sanity-checks that the exact TraceEvent version required by the RDPAudit 2.0
+# event-collection layer is present in the NuGet global cache AFTER dotnet
+# restore has completed. If not, dotnet restore silently used a satellite feed
+# or a proxy corp mirror that resolved to a different version - report loudly
+# but do not fail the pipeline (the assembly reference will fail dotnet build
+# a few seconds later with a much clearer diagnostic).
+function Test-TraceEventCacheAfterRestore {
+	$version = Get-TraceEventInstalledVersion
+	if ($null -eq $version) {
+		Write-WarningMessage ("TraceEvent {0} is not in the NuGet global cache after restore. The 2.0 ETW transport will fail to load." -f $script:TraceEventPackageVersion)
+		return
+	}
+	Write-Ok ("TraceEvent {0} present in NuGet cache." -f $version)
+}
+
 # ── Build Pipeline ───────────────────────────────────────────────────────────
 
 function Invoke-RdpAuditBuildPipeline {
@@ -1182,6 +1786,11 @@ function Invoke-RdpAuditBuildPipeline {
 		-WorkingDirectory $script:RepositoryDirectory `
 		-FailureMessage 'dotnet restore failed.'
 
+	# Verify the RDPAudit 2.0 ETW transport dependency landed in the NuGet cache
+	# before dotnet build reads it. Non-fatal: dotnet build will surface a much
+	# clearer diagnostic if the package really is missing.
+	Test-TraceEventCacheAfterRestore
+
 	Write-Section 'dotnet build'
 	Invoke-CheckedCommand `
 		-FilePath 'dotnet' `
@@ -1190,11 +1799,178 @@ function Invoke-RdpAuditBuildPipeline {
 		-FailureMessage 'dotnet build failed.'
 
 	Write-Section 'dotnet test'
-	Invoke-CheckedCommand `
-		-FilePath 'dotnet' `
-		-Arguments @('test', '.\RdpAudit.sln', '-c', 'Release', '--no-build') `
-		-WorkingDirectory $script:RepositoryDirectory `
-		-FailureMessage 'dotnet test failed.'
+	# --blame-hang-timeout <n> aborts a test that runs longer than the timeout AND prints the
+	# assembly + test name that was running when the timeout fired, so we always know which
+	# test hung the run.
+	#
+	# Console logger verbosity:
+	#   * default (-VerboseTests NOT set)  — 'minimal' — only Failed tests + summary are
+	#     streamed to the console/transcript. This keeps the RDPAudit_Install_*.log file
+	#     small enough to skim even when hundreds of tests pass.
+	#   * -VerboseTests                    — 'normal'  — every test outcome is streamed.
+	#
+	# The full result set (Passed / Failed / Skipped, per-test duration, stack traces) is
+	# additionally captured to a TRX file under <LogDirectory>\test-results\ regardless of
+	# verbosity, so no information is lost even in minimal mode.
+	$testResultsDirectory = Join-Path -Path $LogDirectory -ChildPath 'test-results'
+	try {
+		if (-not (Test-Path -LiteralPath $testResultsDirectory)) {
+			New-Item -ItemType Directory -Path $testResultsDirectory -Force | Out-Null
+		}
+	} catch {
+		Write-WarningMessage ("Could not create test results directory '{0}': {1}. TRX file will be written to the repository default." -f $testResultsDirectory, $_.Exception.Message)
+		$testResultsDirectory = $null
+	}
+
+	$trxFileName = "RDPAudit_Tests_{0}.trx" -f $script:InstallLogTimestamp
+	# -DebugTests implies -VerboseTests: no reason to hide the per-test stream when the
+	# operator has already opted into maximum diagnostic collection.
+	$effectiveVerbose = $VerboseTests -or $DebugTests
+	$consoleVerbosity = if ($DebugTests) { 'detailed' } elseif ($effectiveVerbose) { 'normal' } else { 'minimal' }
+
+	if ($DebugTests) {
+		Write-Info 'DEBUG diagnostic run enabled (-DebugTests): full hang/crash dumps, detailed logger, tiered JIT disabled.'
+	} elseif ($effectiveVerbose) {
+		Write-Info 'Full test output enabled (-VerboseTests). Every Passed/Failed test will be streamed.'
+	} else {
+		Write-Info 'Compact test output (default). Only Failed tests will be streamed; full results in the TRX file.'
+	}
+
+	# Snapshot environment + hardware for the diagnostic bundle when -DebugTests is set.
+	# Fully guarded: any single WMI/CIM query failure must not abort the installer, we just
+	# note it in the env-dump.txt and keep going.
+	if ($DebugTests -and $testResultsDirectory) {
+		$envDumpPath = Join-Path -Path $testResultsDirectory -ChildPath ('RDPAudit_EnvDump_{0}.txt' -f $script:InstallLogTimestamp)
+		try {
+			$dump = [System.Collections.Generic.List[string]]::new()
+			$dump.Add(('# RDPAudit debug env dump   {0} UTC' -f ([DateTime]::UtcNow.ToString('u'))))
+			$dump.Add(('PSVersion               : {0}' -f $PSVersionTable.PSVersion))
+			$dump.Add(('CLR Version             : {0}' -f [Environment]::Version))
+			$dump.Add(('OSVersion               : {0}' -f [Environment]::OSVersion))
+			$dump.Add(('MachineName             : {0}' -f [Environment]::MachineName))
+			$dump.Add(('ProcessorCount          : {0}' -f [Environment]::ProcessorCount))
+			$dump.Add(('Is64BitOperatingSystem  : {0}' -f [Environment]::Is64BitOperatingSystem))
+			$dump.Add(('Is64BitProcess          : {0}' -f [Environment]::Is64BitProcess))
+			$dump.Add(('CurrentDirectory        : {0}' -f (Get-Location).Path))
+			try {
+				$os = Get-CimInstance -ClassName Win32_OperatingSystem -ErrorAction Stop
+				$dump.Add(('OS.Caption              : {0}' -f $os.Caption))
+				$dump.Add(('OS.Version              : {0}' -f $os.Version))
+				$dump.Add(('OS.BuildNumber          : {0}' -f $os.BuildNumber))
+				$dump.Add(('OS.OSArchitecture       : {0}' -f $os.OSArchitecture))
+				$dump.Add(('OS.FreePhysicalMemoryKB : {0}' -f $os.FreePhysicalMemory))
+				$dump.Add(('OS.TotalVisibleMemoryKB : {0}' -f $os.TotalVisibleMemorySize))
+			} catch { $dump.Add(('OS query failed         : {0}' -f $_.Exception.Message)) }
+			try {
+				$cpu = Get-CimInstance -ClassName Win32_Processor -ErrorAction Stop | Select-Object -First 1
+				if ($cpu) {
+					$dump.Add(('CPU.Name                : {0}' -f $cpu.Name))
+					$dump.Add(('CPU.NumberOfCores       : {0}' -f $cpu.NumberOfCores))
+					$dump.Add(('CPU.LogicalProcessors   : {0}' -f $cpu.NumberOfLogicalProcessors))
+					$dump.Add(('CPU.MaxClockSpeedMHz    : {0}' -f $cpu.MaxClockSpeed))
+				}
+			} catch { $dump.Add(('CPU query failed        : {0}' -f $_.Exception.Message)) }
+			try {
+				$dotnetInfo = & dotnet --info 2>&1 | Out-String
+				$dump.Add('')
+				$dump.Add('# dotnet --info')
+				$dump.Add($dotnetInfo)
+			} catch { $dump.Add(('dotnet --info failed    : {0}' -f $_.Exception.Message)) }
+			$dump.Add('')
+			$dump.Add('# Filtered environment (DOTNET_*, RDPAUDIT_*, TEMP, USERNAME, USERDOMAIN)')
+			foreach ($ev in [Environment]::GetEnvironmentVariables().GetEnumerator() | Sort-Object Name) {
+				if ($ev.Name -match '^(DOTNET_|RDPAUDIT_|TEMP$|TMP$|USERNAME$|USERDOMAIN$|PROCESSOR_)') {
+					$dump.Add(('{0,-32} = {1}' -f $ev.Name, $ev.Value))
+				}
+			}
+			[System.IO.File]::WriteAllLines($envDumpPath, $dump.ToArray(), [System.Text.UTF8Encoding]::new($false))
+			Write-Info ("Env dump written: {0}" -f $envDumpPath)
+		} catch {
+			Write-WarningMessage ("Could not write env dump '{0}': {1}" -f $envDumpPath, $_.Exception.Message)
+		}
+
+		# Disable tiered JIT for this run only. Tiered promotion can cause a one-shot
+		# JIT metadata allocation to fall inside the measurement window of
+		# GC.GetAllocatedBytesForCurrentThread and turn a stable zero-alloc test into
+		# a flaky ~5 KB failure. Scoped to the child dotnet process via env inheritance.
+		$script:PreviousTieredCompilation = $env:DOTNET_TieredCompilation
+		$env:DOTNET_TieredCompilation = '0'
+		Write-Info 'DOTNET_TieredCompilation=0 exported for this dotnet test run.'
+	}
+
+	$diagLogPath = $null
+	if ($DebugTests -and $testResultsDirectory) {
+		$diagLogPath = Join-Path -Path $testResultsDirectory -ChildPath ('RDPAudit_TestDiag_{0}.log' -f $script:InstallLogTimestamp)
+	}
+
+	$testArguments = [System.Collections.Generic.List[string]]::new()
+	$testArguments.Add('test')
+	$testArguments.Add('.\RdpAudit.sln')
+	$testArguments.Add('-c')
+	$testArguments.Add('Release')
+	$testArguments.Add('--no-build')
+	$testArguments.Add('--blame-hang')
+	$testArguments.Add('--blame-hang-timeout')
+	if ($DebugTests) { $testArguments.Add('5min') } else { $testArguments.Add('90s') }
+	if ($DebugTests) {
+		$testArguments.Add('--blame-hang-dump-type')
+		$testArguments.Add('full')
+		$testArguments.Add('--blame-crash')
+		$testArguments.Add('--blame-crash-dump-type')
+		$testArguments.Add('full')
+		if ($diagLogPath) {
+			$testArguments.Add('--diag')
+			$testArguments.Add($diagLogPath)
+		}
+	}
+	$testArguments.Add('--logger')
+	$testArguments.Add(("console;verbosity={0}" -f $consoleVerbosity))
+	$testArguments.Add('--logger')
+	if ($DebugTests) {
+		$testArguments.Add(("trx;LogFileName={0};verbosity=detailed" -f $trxFileName))
+	} else {
+		$testArguments.Add(("trx;LogFileName={0}" -f $trxFileName))
+	}
+	if ($testResultsDirectory) {
+		$testArguments.Add('--results-directory')
+		$testArguments.Add($testResultsDirectory)
+	}
+
+	try {
+		Invoke-CheckedCommand `
+			-FilePath 'dotnet' `
+			-Arguments $testArguments.ToArray() `
+			-WorkingDirectory $script:RepositoryDirectory `
+			-FailureMessage 'dotnet test failed.'
+	} finally {
+		# Always restore tiered JIT state, even on test failure. The env var is process-scoped
+		# so a hard installer crash would still leak it, but the surrounding transcript keeps
+		# the operator informed.
+		if ($DebugTests) {
+			if ($null -eq $script:PreviousTieredCompilation) {
+				Remove-Item Env:\DOTNET_TieredCompilation -ErrorAction SilentlyContinue
+			} else {
+				$env:DOTNET_TieredCompilation = $script:PreviousTieredCompilation
+			}
+			Write-Info 'DOTNET_TieredCompilation restored.'
+			if ($diagLogPath -and (Test-Path -LiteralPath $diagLogPath)) {
+				Write-Ok ("dotnet test diagnostic log: {0}" -f $diagLogPath)
+			}
+			if ($testResultsDirectory) {
+				$dumps = Get-ChildItem -Path $testResultsDirectory -Filter '*.dmp' -ErrorAction SilentlyContinue
+				foreach ($dmp in $dumps) {
+					Write-Ok ("Memory dump collected: {0} ({1:N0} bytes)" -f $dmp.FullName, $dmp.Length)
+				}
+			}
+		}
+	}
+
+	if ($testResultsDirectory) {
+		$trxPath = Join-Path -Path $testResultsDirectory -ChildPath $trxFileName
+		if (Test-Path -LiteralPath $trxPath) {
+			Write-Ok ("Full test results (all outcomes) saved to: {0}" -f $trxPath)
+		}
+	}
 
 	Write-Section 'publish.ps1'
 	Invoke-CheckedCommand `
@@ -1351,6 +2127,12 @@ function Show-InstallationSummary {
 		foreach ($p in $state.ForcedProcesses) { Write-Host "   - $p force-terminated (soft timeout exceeded)" -ForegroundColor Yellow }
 	}
 
+	# Clean install disclosure — makes destructive runs stand out in the transcript.
+	if ($state.CleanInstallPerformed) {
+		Write-Host ''
+		Write-Host ' Clean install      : Previous <WorkDirectory>\Service tree and all rdpaudit.db* files were deleted before this run.' -ForegroundColor Yellow
+	}
+
 	# What was installed.
 	Write-Host ''
 	if ($state.InstalledPrerequisites.Count -gt 0) {
@@ -1400,6 +2182,7 @@ function Invoke-Main {
 	Write-Info "Branch             : $RepositoryBranch"
 	Write-Info "MessagePack target : $SafeMessagePackVersion"
 	Write-Info "Graceful timeout   : $GracefulShutdownTimeoutSeconds second(s)"
+	Write-Info "Ingestion mode     : $IngestionMode"
 
 	# Report any previously installed build (with its version) before changing anything.
 	Show-ExistingInstallation
@@ -1434,6 +2217,10 @@ function Invoke-Main {
 	# folder can be rebuilt in place. Graceful first, forced only after the timeout.
 	Stop-RdpAuditProcesses
 
+	if ($CleanInstall) {
+		Invoke-CleanInstallPurge
+	}
+
 	Initialize-Workspace
 	Sync-Repository
 	Set-DotNetSdkGlobalJson
@@ -1441,7 +2228,9 @@ function Invoke-Main {
 	Update-Ca1859SourceWarnings
 	Confirm-MikrotikBuildPrerequisites
 	Install-MoqPackage -RepositoryRoot $script:RepositoryDirectory
+	Repair-Rdp2xPrerequisites
 	Invoke-RdpAuditBuildPipeline
+	Set-IngestionModeInAppSettings
 	Resolve-InstalledTargetVersion
 	Start-Configurator
 
@@ -1451,17 +2240,84 @@ function Invoke-Main {
 	Write-Ok 'RdpAudit installation pipeline completed successfully.'
 }
 
-try {
-	Invoke-Main
-	exit 0
-} catch {
-	Write-Section 'Fatal Error'
-	Write-ErrorMessage $_.Exception.Message
+# Version: 1.3.0
+# Terminates the installer without blocking on user input. Historical builds
+# called $Host.UI.RawUI.ReadKey() at the end so a double-click launch would keep
+# the console visible, but that call also captured any keypress (including the
+# ones the operator uses to copy text with Ctrl+C / mouse selection + Enter),
+# so the window would appear to close spontaneously. Now every run writes a
+# complete transcript to RDPAudit_Install_<Date_Time>.log; the operator can
+# review the file at their own pace, and the console window is returned to the
+# shell so it stays fully interactive for further work.
+function Stop-InstallationTranscript {
+	if ($script:TranscriptStarted) {
+		try {
+			Stop-Transcript | Out-Null
+		} catch {
+			# Ignore — the transcript is best-effort and must never mask the real exit reason.
+		}
+		$script:TranscriptStarted = $false
+	}
+}
 
-	if ($null -ne $_.ScriptStackTrace) {
-		Write-Host ''
-		Write-Host $_.ScriptStackTrace -ForegroundColor DarkRed
+function Show-InstallationLogHint {
+	param(
+		[Parameter(Mandatory)][int]$ExitCode
+	)
+
+	Write-Host ''
+	if ($ExitCode -eq 0) {
+		Write-Host 'Installation completed. Returning to the shell prompt.' -ForegroundColor Green
+	} else {
+		Write-Host ("Installation FAILED with exit code {0}." -f $ExitCode) -ForegroundColor Red
+	}
+	Write-Host ("Full log saved to: {0}" -f $script:InstallLogFile) -ForegroundColor Cyan
+	Write-Host ''
+}
+
+try {
+	try {
+		Invoke-Main
+		$exitCode = 0
+	} catch {
+		Write-Section 'Fatal Error'
+		Write-ErrorMessage $_.Exception.Message
+
+		if ($null -ne $_.ScriptStackTrace) {
+			Write-Host ''
+			Write-Host $_.ScriptStackTrace -ForegroundColor DarkRed
+		}
+
+		$exitCode = 1
 	}
 
-	exit 1
+	Show-InstallationLogHint -ExitCode $exitCode
+} finally {
+	Stop-InstallationTranscript
+}
+
+# Publish the effective exit code so callers can inspect $LASTEXITCODE after the run.
+$global:LASTEXITCODE = $exitCode
+
+# When -ExitAfterInstall is set AND the installation succeeded, terminate the host
+# PowerShell process itself so a scripted launch closes cleanly. Without the switch
+# the script simply returns control to the current prompt (regardless of outcome) so
+# the operator can keep working in the same window. Failed runs never auto-close the
+# host — the window must stay open so the fatal error and log path remain visible.
+if ($ExitAfterInstall -and $exitCode -eq 0 -and $Host.Name -eq 'ConsoleHost') {
+	Write-Host 'ExitAfterInstall requested, closing PowerShell host.' -ForegroundColor DarkGray
+	[Environment]::Exit($exitCode)
+}
+
+# When the script was launched from a physical file (pwsh -File install.ps1) we
+# honour classic script semantics and terminate the process with the exit code.
+# When the script was streamed inline via ScriptBlock invocation (irm | iex or
+# & ([scriptblock]::Create((irm ...))) style bootstrapping) $MyInvocation.MyCommand
+# has no source path, so an 'exit' here would close the operator's interactive
+# host window even on a routine prerequisite failure. In that case we simply
+# return control to the enclosing prompt with $LASTEXITCODE already set.
+$scriptPath = $null
+try { $scriptPath = $MyInvocation.MyCommand.Path } catch { $scriptPath = $null }
+if (-not [string]::IsNullOrWhiteSpace($scriptPath)) {
+	exit $exitCode
 }
