@@ -885,7 +885,7 @@ See also: [`docs/90-windows-validation.md`](docs/90-windows-validation.md)
 
 ## 17. License and Author
 
-**License:** [MIT License](LICENSE)
+**License:** [PolyForm Noncommercial License 1.0.0](LICENSE)
 
 **Author:** Mikhail Deynekin
 - Website: [deynekin.com](https://deynekin.com)
@@ -901,4 +901,4 @@ See also: [`docs/90-windows-validation.md`](docs/90-windows-validation.md)
 
 ---
 
-> © 2025–2026 Mikhail Deynekin. Released under the [MIT License](LICENSE).
+> © 2025–2026 Mikhail Deynekin. Released under the [PolyForm Noncommercial License 1.0.0](LICENSE).
