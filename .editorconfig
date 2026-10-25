@@ -1,0 +1,45 @@
+root = true
+
+[*]
+end_of_line = lf
+charset = utf-8
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+[*.{cs,csproj,sln,props,targets,json,md,xml,manifest}]
+indent_style = tab
+indent_size = 4
+tab_width = 4
+
+[*.cs]
+csharp_style_namespace_declarations = file_scoped:silent
+csharp_indent_labels = one_less_than_current
+csharp_using_directive_placement = outside_namespace:silent
+csharp_prefer_braces = true:silent
+csharp_style_expression_bodied_methods = false:silent
+
+# Tab-indentation enforcement
+indent_style = tab
+indent_size = 4
+tab_width = 4
+
+# ── Intentional security-design decisions in RdpAudit.Mikrotik ───────────────
+# These two analyzer rules flag patterns that are deliberate and required by the
+# MikroTik api-ssl mutual-TLS bootstrap. They are configured here (project-level,
+# reviewable) rather than suppressed inline, per the project's no-pragma policy.
+[src/RdpAudit.Mikrotik/**/*.cs]
+
+# CA5398: RouterOsApiClient pins the api-ssl channel to TLS 1.2 + TLS 1.3 on
+# purpose. This is a hardening decision for a long-lived router-control channel:
+# it forbids any silent downgrade to a legacy protocol. Modern TLS only.
+dotnet_diagnostic.CA5398.severity = none
+
+# CA5380: The setup wizard intentionally installs the operator-supplied RouterOS
+# CA public certificate into LocalMachine\Root so the api-ssl server certificate
+# chains to a trusted root. This is the documented, user-initiated trust step of
+# the bootstrap, performed elevated, and is the core purpose of WindowsCertStoreHelper.
+dotnet_diagnostic.CA5380.severity = none
+
+[*.{ps1,psm1,psd1}]
+indent_style = space
+indent_size = 4

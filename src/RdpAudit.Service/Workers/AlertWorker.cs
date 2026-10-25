@@ -1,0 +1,193 @@
+// File:    src/RdpAudit.Service/Workers/AlertWorker.cs
+// Module:  RdpAudit.Service.Workers
+// Purpose: Periodically scans unprocessed RawEvents and applies the registered alert rules.
+// Extends: Microsoft.Extensions.Hosting.BackgroundService
+// Author:  Mikhail Deynekin
+// Site:    https://Deynekin.com
+
+using System.Diagnostics;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
+using RdpAudit.Core.Config;
+using RdpAudit.Core.Data;
+using RdpAudit.Core.Events;
+using RdpAudit.Core.Models;
+
+namespace RdpAudit.Service.Workers;
+
+/// <summary>Periodically scans unprocessed RawEvents and applies the registered alert rules.</summary>
+public sealed class AlertWorker : BackgroundService
+{
+	private readonly IDbContextFactory<AuditDbContext> _factory;
+	private readonly IEnumerable<IAlertRule> _rules;
+	private readonly IAlertContext _context;
+	private readonly ServiceMetrics _metrics;
+	private readonly IOptionsMonitor<RdpAuditOptions> _options;
+	private readonly ILogger<AlertWorker> _logger;
+
+	public AlertWorker(
+		IDbContextFactory<AuditDbContext> factory,
+		IEnumerable<IAlertRule> rules,
+		IAlertContext context,
+		ServiceMetrics metrics,
+		IOptionsMonitor<RdpAuditOptions> options,
+		ILogger<AlertWorker> logger)
+	{
+		_factory = factory;
+		_rules = rules;
+		_context = context;
+		_metrics = metrics;
+		_options = options;
+		_logger = logger;
+	}
+
+	protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+	{
+		// Yield immediately, before anything else runs. .NET's Generic Host calls
+		// IHostedService.StartAsync for every registered service sequentially and synchronously
+		// (dotnet/runtime#116181); BackgroundService.StartAsync executes ExecuteAsync inline up to its
+		// first await, on the same thread that is starting the host. _rules.Count() below forces
+		// immediate resolution/enumeration of every IAlertRule singleton (21 rules registered in
+		// AlertRuleRegistration.Register) -- if any rule's constructor ever does non-trivial work
+		// (I/O, config read, a lock), that work would run synchronously here and starve every
+		// hosted service registered after AlertWorker. Task.Yield() guarantees control returns to the
+		// host immediately, before _rules.Count() or anything else executes, regardless of what the
+		// rest of this method does synchronously.
+		await Task.Yield();
+
+		_logger.LogInformation("{Worker} starting with {Count} alert rules",
+			nameof(AlertWorker),
+			_rules.Count());
+		try
+		{
+			while (!stoppingToken.IsCancellationRequested)
+			{
+				try
+				{
+					int processed = await ProcessOnceAsync(stoppingToken).ConfigureAwait(false);
+					if (processed == 0)
+					{
+						await Task.Delay(TimeSpan.FromSeconds(2), stoppingToken).ConfigureAwait(false);
+					}
+				}
+				catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+				{
+					break;
+				}
+				catch (Exception ex)
+				{
+					_logger.LogError(ex, "Alert evaluation iteration failed");
+					await Task.Delay(TimeSpan.FromSeconds(5), stoppingToken).ConfigureAwait(false);
+				}
+			}
+		}
+		catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+		{
+		}
+		finally
+		{
+			_logger.LogInformation("{Worker} stopped", nameof(AlertWorker));
+		}
+	}
+
+	private async Task<int> ProcessOnceAsync(CancellationToken ct)
+	{
+		await using AuditDbContext db = await _factory.CreateDbContextAsync(ct).ConfigureAwait(false);
+		List<RawEvent> batch = await db.RawEvents
+			.Where(e => !e.Processed)
+			.OrderBy(e => e.Id)
+			.Take(500)
+			.ToListAsync(ct)
+			.ConfigureAwait(false);
+
+		if (batch.Count == 0)
+		{
+			int raised = await ProcessCrossHostChainsAsync(db, ct).ConfigureAwait(false);
+			await db.SaveChangesAsync(ct).ConfigureAwait(false);
+			return raised;
+		}
+
+		RdpAuditOptions options = _options.CurrentValue;
+		bool measure = options.Diagnostics.LogAlertEvaluationTimings;
+		TimeSpan maxEventAge = TimeSpan.FromMinutes(Math.Max(1, options.Alerts.AlertEventMaxAgeMinutes));
+		DateTime nowUtc = DateTime.UtcNow;
+
+		foreach (RawEvent evt in batch)
+		{
+			// Historical / backfill gate (startup replay of old Security events): events older
+			// than the configured age remain persisted as RawEvent facts (they were committed by
+			// EventProcessorWorker before rules ever run) but are never sent to any rule, so they
+			// can produce neither an Alerts row nor a Windows Event Log entry.
+			if (nowUtc - evt.TimeUtc > maxEventAge)
+			{
+				evt.Processed = true;
+				continue;
+			}
+
+			foreach (IAlertRule rule in _rules)
+			{
+				if (!rule.IsEnabled(options))
+				{
+					continue;
+				}
+
+				Stopwatch? sw = measure ? Stopwatch.StartNew() : null;
+				try
+				{
+					Alert? alert = await rule.EvaluateAsync(evt, _context, ct).ConfigureAwait(false);
+					if (alert is not null)
+					{
+						db.Alerts.Add(alert);
+						_metrics.IncrementAlert();
+						_logger.LogWarning(
+							"Alert {RuleId} severity={Severity} user={UserName} ip={SourceIp} message={Message}",
+							alert.RuleId,
+							alert.Severity,
+							alert.UserName,
+							alert.SourceIp,
+							alert.Message);
+					}
+				}
+				catch (Exception ex)
+				{
+					_logger.LogError(ex, "Alert rule {RuleId} threw on event {EventId}", rule.RuleId, evt.Id);
+				}
+				finally
+				{
+					if (sw is not null)
+					{
+						sw.Stop();
+						_logger.LogDebug(
+							"Rule {RuleId} took {Elapsed}ms on event {EventId}",
+							rule.RuleId,
+							sw.ElapsedMilliseconds,
+							evt.Id);
+					}
+				}
+			}
+
+			evt.Processed = true;
+		}
+
+		int chainAlerts = await ProcessCrossHostChainsAsync(db, ct).ConfigureAwait(false);
+
+		await db.SaveChangesAsync(ct).ConfigureAwait(false);
+		return batch.Count + chainAlerts;
+	}
+
+	/// <summary>Raises CROSS_HOST_CHAIN alerts for newly detected, unacknowledged chains and links
+	/// each alert back into its chain row (the durable per-chain dedup gate); returns the number
+	/// of alerts raised.</summary>
+	private async Task<int> ProcessCrossHostChainsAsync(AuditDbContext db, CancellationToken ct)
+	{
+		int raised = await CrossHostChainAlertProcessor.ProcessAsync(db, _logger, ct).ConfigureAwait(false);
+		for (int i = 0; i < raised; i++)
+		{
+			_metrics.IncrementAlert();
+		}
+
+		return raised;
+	}
+}

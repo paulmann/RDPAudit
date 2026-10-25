@@ -1,0 +1,568 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "RdpAudit Read-Only REST API",
+    "version": "1.0.0",
+    "description": "Read-only HTTPS API of the RdpAudit service. Every path except /healthz requires the Api.Token bearer token. All endpoints are GET/HEAD only; request bodies are never accepted. Error responses use RFC 9457 application/problem+json bodies."
+  },
+  "servers": [
+    {
+      "url": "https://127.0.0.1:8443",
+      "description": "Default listener (Api.ListenAddress = 127.0.0.1, Api.Port = 8443)."
+    }
+  ],
+  "security": [
+    {
+      "bearerAuth": []
+    }
+  ],
+  "paths": {
+    "/healthz": {
+      "get": {
+        "summary": "Anonymous health probe",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "The API listener is up.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Health"
+                }
+              }
+            }
+          },
+          "429": { "$ref": "#/components/responses/TooManyRequests" }
+        }
+      }
+    },
+    "/api/status": {
+      "get": {
+        "summary": "Runtime service status",
+        "description": "Snapshot of runtime service health produced by the GetStatus IPC command.",
+        "responses": {
+          "200": {
+            "description": "Status snapshot.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceStatus"
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "405": { "$ref": "#/components/responses/MethodNotAllowed" },
+          "429": { "$ref": "#/components/responses/TooManyRequests" },
+          "500": { "$ref": "#/components/responses/ServerError" }
+        }
+      }
+    },
+    "/api/alerts": {
+      "get": {
+        "summary": "Recent alerts",
+        "description": "Up to 200 newest alerts ordered by Id descending.",
+        "responses": {
+          "200": {
+            "description": "Alerts array.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": { "$ref": "#/components/schemas/Alert" }
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "405": { "$ref": "#/components/responses/MethodNotAllowed" },
+          "429": { "$ref": "#/components/responses/TooManyRequests" },
+          "500": { "$ref": "#/components/responses/ServerError" }
+        }
+      }
+    },
+    "/api/sessions": {
+      "get": {
+        "summary": "Recent sessions",
+        "description": "Up to 500 newest RDP sessions ordered by connect time descending.",
+        "responses": {
+          "200": {
+            "description": "Sessions array.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": { "$ref": "#/components/schemas/Session" }
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "405": { "$ref": "#/components/responses/MethodNotAllowed" },
+          "429": { "$ref": "#/components/responses/TooManyRequests" },
+          "500": { "$ref": "#/components/responses/ServerError" }
+        }
+      }
+    },
+    "/api/config": {
+      "get": {
+        "summary": "Masked service configuration",
+        "description": "Current service configuration with every secret field (AbuseIpDb.ApiKey, MikroTik.Password, Api.Token) masked.",
+        "responses": {
+          "200": {
+            "description": "Masked configuration object.",
+            "content": {
+              "application/json": {
+                "schema": { "type": "object" }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "405": { "$ref": "#/components/responses/MethodNotAllowed" },
+          "429": { "$ref": "#/components/responses/TooManyRequests" },
+          "500": { "$ref": "#/components/responses/ServerError" }
+        }
+      }
+    },
+    "/api/events": {
+      "get": {
+        "summary": "Paged raw events",
+        "description": "Bounded, filtered page of RawEvents ordered by TimeUtc descending, Id descending. All numeric bounds are clamped server-side.",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": { "type": "integer", "format": "int32", "default": 100 },
+            "description": "Page size; clamped to 1..500."
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "schema": { "type": "integer", "format": "int32", "default": 0 },
+            "description": "Zero-based page offset; clamped to 0..1000000."
+          },
+          {
+            "name": "eventId",
+            "in": "query",
+            "schema": { "type": "integer", "format": "int32" },
+            "description": "Exact Windows event id filter."
+          },
+          {
+            "name": "channel",
+            "in": "query",
+            "schema": { "type": "string" },
+            "description": "Exact event channel filter (max 256 characters)."
+          },
+          {
+            "name": "sourceIp",
+            "in": "query",
+            "schema": { "type": "string" },
+            "description": "Source IP filter; invalid IP literals are rejected with 400."
+          },
+          {
+            "name": "userName",
+            "in": "query",
+            "schema": { "type": "string" },
+            "description": "Contains filter on the user name (max 256 characters)."
+          },
+          {
+            "name": "sinceUtc",
+            "in": "query",
+            "schema": { "type": "string", "format": "date-time" },
+            "description": "Inclusive lower time bound."
+          },
+          {
+            "name": "toUtc",
+            "in": "query",
+            "schema": { "type": "string", "format": "date-time" },
+            "description": "Inclusive upper time bound."
+          },
+          {
+            "name": "includeExplain",
+            "in": "query",
+            "schema": { "type": "boolean", "default": false },
+            "description": "Include the SQLite EXPLAIN QUERY PLAN digest in the response."
+          },
+          {
+            "name": "includeDetails",
+            "in": "query",
+            "schema": { "type": "boolean", "default": false },
+            "description": "Include the Details column of each event."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Paged events.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/PagedEventPage" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "405": { "$ref": "#/components/responses/MethodNotAllowed" },
+          "429": { "$ref": "#/components/responses/TooManyRequests" },
+          "500": { "$ref": "#/components/responses/ServerError" }
+        }
+      }
+    },
+    "/api/addresses": {
+      "get": {
+        "summary": "IP activity aggregates",
+        "description": "Per-IP reputation and aggregated activity counters produced by the GetAddresses IPC command, ordered by LastSeen descending.",
+        "responses": {
+          "200": {
+            "description": "Addresses array.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": { "$ref": "#/components/schemas/Address" }
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "405": { "$ref": "#/components/responses/MethodNotAllowed" },
+          "429": { "$ref": "#/components/responses/TooManyRequests" },
+          "500": { "$ref": "#/components/responses/ServerError" }
+        }
+      }
+    },
+    "/api/attacks": {
+      "get": {
+        "summary": "Attack statistics",
+        "description": "Attack statistics snapshot produced by the GetAttackStats IPC command. Query filters map directly onto AttackStatsRequest.",
+        "parameters": [
+          {
+            "name": "ipQuery",
+            "in": "query",
+            "schema": { "type": "string" },
+            "description": "Case-insensitive substring matched against the row IP (max 256 characters; longer values are ignored)."
+          },
+          {
+            "name": "minThreatScore",
+            "in": "query",
+            "schema": { "type": "number", "format": "double" },
+            "description": "Inclusive minimum ThreatScore; invalid or negative values are rejected with 400."
+          },
+          {
+            "name": "onlyBlocked",
+            "in": "query",
+            "schema": { "type": "boolean", "default": false },
+            "description": "When true, only rows with IsBlocked set are returned."
+          },
+          {
+            "name": "sinceUtc",
+            "in": "query",
+            "schema": { "type": "string", "format": "date-time" },
+            "description": "Inclusive lower bound on LastSeenUtc; invalid instants are rejected with 400."
+          },
+          {
+            "name": "untilUtc",
+            "in": "query",
+            "schema": { "type": "string", "format": "date-time" },
+            "description": "Inclusive upper bound on LastSeenUtc; invalid instants are rejected with 400."
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": { "type": "integer", "format": "int32", "default": 500 },
+            "description": "Maximum number of rows returned; clamped to 1..2000 server-side. Invalid or negative values are rejected with 400."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Attack statistics snapshot.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/AttackStats" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "405": { "$ref": "#/components/responses/MethodNotAllowed" },
+          "429": { "$ref": "#/components/responses/TooManyRequests" },
+          "500": { "$ref": "#/components/responses/ServerError" }
+        }
+      }
+    },
+    "/openapi/v1.json": {
+      "get": {
+        "summary": "OpenAPI descriptor",
+        "description": "Returns this committed OpenAPI 3.0 descriptor.",
+        "responses": {
+          "200": {
+            "description": "The OpenAPI descriptor.",
+            "content": {
+              "application/json": {
+                "schema": { "type": "object" }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "405": { "$ref": "#/components/responses/MethodNotAllowed" },
+          "429": { "$ref": "#/components/responses/TooManyRequests" }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "opaque token"
+      }
+    },
+    "responses": {
+      "BadRequest": {
+        "description": "A query parameter failed validation.",
+        "content": {
+          "application/problem+json": {
+            "schema": { "$ref": "#/components/schemas/Problem" }
+          }
+        }
+      },
+      "Unauthorized": {
+        "description": "Missing or invalid bearer token.",
+        "headers": {
+          "WWW-Authenticate": {
+            "schema": { "type": "string" },
+            "description": "Bearer realm=\"rdpaudit\"."
+          }
+        },
+        "content": {
+          "application/problem+json": {
+            "schema": { "$ref": "#/components/schemas/Problem" }
+          }
+        }
+      },
+      "MethodNotAllowed": {
+        "description": "The resource supports GET and HEAD only.",
+        "content": {
+          "application/problem+json": {
+            "schema": { "$ref": "#/components/schemas/Problem" }
+          }
+        }
+      },
+      "TooManyRequests": {
+        "description": "The per-minute request budget for this client IP is exhausted.",
+        "headers": {
+          "Retry-After": {
+            "schema": { "type": "integer", "format": "int32" },
+            "description": "Seconds until the rate-limit window resets."
+          }
+        },
+        "content": {
+          "application/problem+json": {
+            "schema": { "$ref": "#/components/schemas/Problem" }
+          }
+        }
+      },
+      "ServerError": {
+        "description": "The request could not be completed.",
+        "content": {
+          "application/problem+json": {
+            "schema": { "$ref": "#/components/schemas/Problem" }
+          }
+        }
+      }
+    },
+    "schemas": {
+      "Address": {
+        "type": "object",
+        "description": "IP reputation and aggregated activity counters per source address.",
+        "properties": {
+          "id": { "type": "integer", "format": "int64" },
+          "ip": { "type": "string" },
+          "failCount": { "type": "integer", "format": "int32" },
+          "successCount": { "type": "integer", "format": "int32" },
+          "firstSeen": { "type": "string", "format": "date-time" },
+          "lastSeen": { "type": "string", "format": "date-time" },
+          "threatScore": { "type": "number", "format": "double" },
+          "isBlocked": { "type": "boolean" },
+          "blockReason": { "type": "string", "nullable": true },
+          "userNames": { "type": "string", "nullable": true },
+          "isPublicIp": { "type": "boolean" }
+        },
+        "required": ["id", "ip", "failCount", "successCount", "firstSeen", "lastSeen", "threatScore", "isBlocked", "isPublicIp"]
+      },
+      "AttackStats": {
+        "type": "object",
+        "description": "Snapshot produced by the GetAttackStats IPC command.",
+        "properties": {
+          "status": { "type": "string" },
+          "windowStartUtc": { "type": "string", "format": "date-time" },
+          "windowEndUtc": { "type": "string", "format": "date-time" },
+          "failedLogons": { "type": "integer", "format": "int64" },
+          "successfulLogons": { "type": "integer", "format": "int64" },
+          "distinctSourceIps": { "type": "integer", "format": "int64" },
+          "alertsRaised": { "type": "integer", "format": "int64" },
+          "addressesAutoBlocked": { "type": "integer", "format": "int64" },
+          "message": { "type": "string", "nullable": true },
+          "entries": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/AttackStatEntry" }
+          },
+          "totalMatching": { "type": "integer", "format": "int32" },
+          "appliedLimit": { "type": "integer", "format": "int32" },
+          "unresolvedFailedLogons": { "type": "integer", "format": "int64" },
+          "distinctResolvedSourceIps": { "type": "integer", "format": "int64" }
+        },
+        "required": ["status", "windowStartUtc", "windowEndUtc", "failedLogons", "successfulLogons", "distinctSourceIps", "alertsRaised", "addressesAutoBlocked"]
+      },
+      "AttackStatEntry": {
+        "type": "object",
+        "description": "Per-IP row of the Attack Statistics snapshot.",
+        "properties": {
+          "ip": { "type": "string" },
+          "totalAttempts": { "type": "integer", "format": "int64" },
+          "successful": { "type": "integer", "format": "int64" },
+          "failed": { "type": "integer", "format": "int64" },
+          "firstSeenUtc": { "type": "string", "format": "date-time" },
+          "lastSeenUtc": { "type": "string", "format": "date-time" },
+          "durationSeconds": { "type": "integer", "format": "int64" },
+          "top10AttemptedLogins": { "type": "string" },
+          "lastLoginType": { "type": "integer", "format": "int32", "nullable": true },
+          "threatScore": { "type": "number", "format": "double" },
+          "threatLevel": { "type": "string" },
+          "isBlocked": { "type": "boolean" },
+          "lastUpdatedUtc": { "type": "string", "format": "date-time" },
+          "hasActiveConnectionFact": { "type": "boolean" },
+          "factFailedLogons": { "type": "integer", "format": "int64" },
+          "factSuccessfulLogons": { "type": "integer", "format": "int64" },
+          "factLastSeenUtc": { "type": "string", "format": "date-time", "nullable": true },
+          "factFirstSeenUtc": { "type": "string", "format": "date-time", "nullable": true },
+          "isUnresolved": { "type": "boolean" },
+          "classification": { "type": "string" },
+          "displayIp": { "type": "string" },
+          "isHighRisk": { "type": "boolean" },
+          "threatIntelConfidenceScore": { "type": "integer", "format": "int32" }
+        },
+        "required": ["ip", "threatScore", "isBlocked"]
+      },
+      "Problem": {
+        "type": "object",
+        "description": "RFC 9457 problem details object.",
+        "properties": {
+          "type": { "type": "string", "format": "uri-reference" },
+          "title": { "type": "string" },
+          "status": { "type": "integer", "format": "int32" },
+          "detail": { "type": "string" },
+          "instance": { "type": "string" }
+        },
+        "required": ["title", "status"]
+      },
+      "Health": {
+        "type": "object",
+        "properties": {
+          "status": { "type": "string" },
+          "bindings": {
+            "type": "array",
+            "items": { "type": "string" }
+          }
+        },
+        "required": ["status"]
+      },
+      "PagedEventPage": {
+        "type": "object",
+        "properties": {
+          "offset": { "type": "integer", "format": "int32" },
+          "limit": { "type": "integer", "format": "int32" },
+          "total": { "type": "integer", "format": "int32" },
+          "events": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/Event" }
+          },
+          "explainPlan": {
+            "type": "array",
+            "items": { "type": "string" }
+          }
+        },
+        "required": ["offset", "limit", "total", "events"]
+      },
+      "Event": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "integer", "format": "int64" },
+          "eventId": { "type": "integer", "format": "int32" },
+          "channel": { "type": "string" },
+          "timeUtc": { "type": "string", "format": "date-time" },
+          "ingestionSequence": { "type": "integer", "format": "int64" },
+          "eventLayer": { "type": "integer", "format": "int32" },
+          "sourceIp": { "type": "string", "nullable": true },
+          "sourceIpDerived": { "type": "boolean" },
+          "sourceIpUnresolved": { "type": "boolean" },
+          "userName": { "type": "string", "nullable": true },
+          "domain": { "type": "string", "nullable": true },
+          "sessionId": { "type": "integer", "format": "int32", "nullable": true },
+          "logonType": { "type": "integer", "format": "int32", "nullable": true },
+          "logonId": { "type": "string", "nullable": true },
+          "authPackage": { "type": "string", "nullable": true },
+          "status": { "type": "string", "nullable": true },
+          "processName": { "type": "string", "nullable": true },
+          "commandLine": { "type": "string", "nullable": true },
+          "objectName": { "type": "string", "nullable": true },
+          "accessMask": { "type": "string", "nullable": true },
+          "details": { "type": "string", "nullable": true }
+        },
+        "required": ["id", "eventId", "channel", "timeUtc"]
+      },
+      "Alert": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "integer", "format": "int64" },
+          "ruleId": { "type": "string" },
+          "severity": { "type": "string" },
+          "timeUtc": { "type": "string", "format": "date-time" },
+          "sourceIp": { "type": "string", "nullable": true },
+          "userName": { "type": "string", "nullable": true },
+          "message": { "type": "string" },
+          "details": { "type": "string", "nullable": true },
+          "acknowledged": { "type": "boolean" },
+          "triggerEventId": { "type": "integer", "format": "int64" }
+        },
+        "required": ["id", "ruleId", "severity", "timeUtc", "message", "acknowledged"]
+      },
+      "Session": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "integer", "format": "int64" },
+          "wtsSessionId": { "type": "integer", "format": "int32" },
+          "userName": { "type": "string", "nullable": true },
+          "domain": { "type": "string", "nullable": true },
+          "sourceIp": { "type": "string", "nullable": true },
+          "connectUtc": { "type": "string", "format": "date-time" },
+          "disconnectUtc": { "type": "string", "format": "date-time", "nullable": true },
+          "logoffUtc": { "type": "string", "format": "date-time", "nullable": true },
+          "logonType": { "type": "integer", "format": "int32", "nullable": true },
+          "logonId": { "type": "string", "nullable": true },
+          "status": { "type": "string" },
+          "flags": { "type": "string", "nullable": true }
+        },
+        "required": ["id", "wtsSessionId", "connectUtc", "status"]
+      },
+      "ServiceStatus": {
+        "type": "object",
+        "properties": {
+          "version": { "type": "string" },
+          "startedUtc": { "type": "string", "format": "date-time" },
+          "uptime": { "type": "string" },
+          "processId": { "type": "integer", "format": "int32" },
+          "eventsCaptured": { "type": "integer", "format": "int64" },
+          "eventsDropped": { "type": "integer", "format": "int64" },
+          "alertsRaised": { "type": "integer", "format": "int64" },
+          "activeSessions": { "type": "integer", "format": "int32" },
+          "channelStatus": {
+            "type": "object",
+            "additionalProperties": { "type": "string" }
+          }
+        },
+        "required": ["version", "startedUtc", "uptime", "processId"]
+      }
+    }
+  }
+}

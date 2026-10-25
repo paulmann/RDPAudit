@@ -1,0 +1,1387 @@
+# Service Changelog
+
+Automatically maintained by DevAgent.
+
+- [2026-08-23T22:56:36] src/RdpAudit.Service/Workers/EventProcessorWorker.cs (backup v1)
+- [2026-08-23T23:57:30] tests/RdpAudit.Service.Tests/EventProcessorWorkerShardCommitTests.cs
+- [2026-08-24T12:49:40] src/RdpAudit.Service/Workers/IpcServerWorker.cs (backup v1)
+- [2026-08-24T13:05:21] src/RdpAudit.Service/Workers/IpcServerWorker.cs (backup v2)
+- [2026-08-24T13:14:20] tests/RdpAudit.Service.Tests/IpcServerWorkerInstanceCapTests.cs
+- [2026-08-24T13:15:22] tests/RdpAudit.Service.Tests/IpcServerWorkerInstanceCapTests.cs (backup v1)
+- [2026-08-24T13:17:50] src/RdpAudit.Service/Workers/IpcServerWorker.cs (backup v3)
+- [2026-08-24T13:21:18] src/RdpAudit.Service/Workers/IpcServerWorker.cs (backup v4)
+- [2026-08-24T15:23:47] src/RdpAudit.Service/Storage/ShardIngestionSink.cs (backup v1)
+- [2026-08-24T15:26:54] src/RdpAudit.Service/Workers/EventProcessorWorker.cs (backup v3)
+- [2026-08-24T15:28:07] src/RdpAudit.Service/Workers/EventProcessorWorker.cs (backup v4)
+- [2026-08-24T15:28:33] src/RdpAudit.Service/Workers/EventProcessorWorker.cs (backup v5)
+- [2026-08-24T15:29:20] src/RdpAudit.Service/Workers/EventProcessorWorker.cs (backup v6)
+- [2026-08-24T15:31:18] tests/RdpAudit.Service.Tests/EventProcessorWorkerShardCommitTests.cs (backup v1)
+- [2026-08-24T15:36:16] src/RdpAudit.Service/Storage/ShardIngestionSink.cs (backup v2)
+- [2026-08-24T15:38:40] src/RdpAudit.Service/Storage/ShardIngestionSink.cs (backup v3)
+- [2026-08-24T15:39:08] src/RdpAudit.Service/Workers/EventProcessorWorker.cs (backup v7)
+- [2026-08-24T15:43:18] tests/RdpAudit.Service.Tests/Scenarios/ShardCommitDurabilityScenarios.cs
+- [2026-08-24T15:43:58] tests/RdpAudit.Service.Tests/Scenarios/ShardCommitDurabilityScenarios.cs (backup v1)
+- [2026-08-24T16:10:01] src/RdpAudit.Service/Infrastructure/SingleInstanceGuard.cs
+- [2026-08-24T16:13:04] src/RdpAudit.Service/Program.cs (backup v1)
+- [2026-08-24T16:18:29] src/RdpAudit.Service/Program.cs (backup v2)
+- [2026-08-24T16:23:09] src/RdpAudit.Service/Infrastructure/SingleInstanceGuard.cs (backup v1)
+- [2026-08-24T16:26:28] src/RdpAudit.Service/Program.cs (backup v3)
+- [2026-08-24T16:26:58] tests/RdpAudit.Service.Tests/SingleInstanceGuardTests.cs
+- [2026-08-24T16:29:33] src/RdpAudit.Service/Infrastructure/SingleInstanceGuard.cs (backup v2)
+- [2026-08-24T16:34:40] src/RdpAudit.Service/Infrastructure/SingleInstanceGuard.cs (backup v3)
+- [2026-08-24T16:39:50] src/RdpAudit.Service/Infrastructure/SingleInstanceGuard.cs (backup v4)
+- [2026-08-24T16:43:55] src/RdpAudit.Service/Infrastructure/SingleInstanceGuard.cs (backup v5) - Complete SingleInstanceGuard with process-registry dedupe, safe handle adoption, DACL fallback and abandoned-mutex recovery.
+- [2026-08-24T16:50:56] src/RdpAudit.Service/Infrastructure/SingleInstanceGuard.cs (backup v6)
+- [2026-08-24T16:53:38] tests/RdpAudit.Service.Tests/SingleInstanceGuardTests.cs (backup v1)
+- [2026-08-24T16:55:57] tests/RdpAudit.Service.Tests/SingleInstanceGuardTests.cs (backup v2)
+- [2026-08-24T16:58:20] src/RdpAudit.Service/Infrastructure/SingleInstanceGuard.cs (backup v7)
+- [2026-08-24T16:58:48] src/RdpAudit.Service/Infrastructure/SingleInstanceGuard.cs (backup v8)
+- [2026-08-24T16:59:18] tests/RdpAudit.Service.Tests/SingleInstanceGuardTests.cs (backup v3)
+- [2026-08-24T16:59:37] tests/RdpAudit.Service.Tests/SingleInstanceGuardTests.cs (backup v4)
+- [2026-08-24T17:09:52] PROJECT_MAP.md (backup v2)
+- [2026-08-24T17:10:00] PROJECT_MAP.md (backup v3)
+- [2026-08-24T17:10:11] docs/20-service.md (backup v2)
+- [2026-08-24T17:10:56] docs/91-troubleshooting.md (backup v2)
+- [2026-08-24T17:16:47] PROJECT_MAP.md (backup v4)
+- [2026-08-24T17:18:31] PROJECT_MAP.md (backup v5)
+- [2026-08-24T17:19:21] PROJECT_MAP.md (backup v6)
+- [2026-08-24T17:19:32] PROJECT_MAP.md (backup v7)
+- [2026-08-24T17:20:02] docs/20-service.md (backup v3)
+- [2026-08-24T17:20:28] docs/91-troubleshooting.md (backup v3)
+- [2026-08-24T17:21:12] README.md (backup v2)
+- [2026-08-24T17:21:45] README.md (backup v3)
+- [2026-08-24T17:23:45] README.ru.md (backup v2)
+- [2026-08-24T17:24:23] README.ru.md (backup v3)
+- [2026-08-24T18:06:26] src/RdpAudit.Core/Config/FirewallOptions.cs (backup v1)
+- [2026-08-24T18:56:16] src/RdpAudit.Service/AppSettingsTemplate.cs (backup v1)
+- [2026-08-24T18:56:43] src/RdpAudit.Service/AppSettingsTemplate.cs (backup v2)
+- [2026-08-24T18:57:09] src/RdpAudit.Configurator/Services/DefaultAppSettings.cs (backup v1)
+- [2026-08-24T18:57:27] docs/40-options.md (backup v3)
+- [2026-08-24T18:57:39] docs/45-firewall.md (backup v3)
+- [2026-08-24T18:57:48] src/RdpAudit.Service/ServiceMetrics.cs (backup v1)
+- [2026-08-24T19:00:03] src/RdpAudit.Service/ServiceMetrics.cs (backup v2)
+- [2026-08-24T19:00:55] src/RdpAudit.Core/Ipc/ServiceStatus.cs (backup v1)
+- [2026-08-24T19:01:02] src/RdpAudit.Core/Ipc/ServiceStatus.cs (backup v2)
+- [2026-08-24T19:01:18] src/RdpAudit.Service/Ipc/IpcDispatcher.cs (backup v1)
+- [2026-08-24T19:13:23] src/RdpAudit.Service/ServiceMetrics.cs (backup v3)
+- [2026-08-24T19:16:55] src/RdpAudit.Service/Firewall/PowerShellProbeLatch.cs
+- [2026-08-24T19:17:47] src/RdpAudit.Service/Firewall/PowerShellFirewallRuleScanner.cs (backup v1)
+- [2026-08-24T19:18:01] src/RdpAudit.Service/Firewall/PowerShellFirewallRuleScanner.cs (backup v2)
+- [2026-08-24T19:34:46] src/RdpAudit.Service/Firewall/PowerShellFirewallRuleScanner.cs (backup v3)
+- [2026-08-24T19:37:33] src/RdpAudit.Service/Program.cs (backup v4)
+- [2026-08-24T19:38:26] src/RdpAudit.Service/Program.cs (backup v5)
+- [2026-08-24T19:39:32] src/RdpAudit.Service/Firewall/PowerShellFirewallRuleScanner.cs (backup v4)
+- [2026-08-24T19:43:33] tests/RdpAudit.Service.Tests/PowerShellFirewallScannerLatchTests.cs
+- [2026-08-24T20:01:27] tests/RdpAudit.Service.Tests/PowerShellFirewallScannerLatchTests.cs (backup v1)
+- [2026-08-24T20:03:12] src/RdpAudit.Service/ServiceMetrics.cs (backup v4)
+- [2026-08-24T20:03:57] tests/RdpAudit.Service.Tests/PowerShellFirewallScannerLatchTests.cs (backup v2)
+- [2026-08-24T20:04:03] tests/RdpAudit.Service.Tests/PowerShellFirewallScannerLatchTests.cs (backup v3)
+- [2026-08-24T21:09:51] tests/RdpAudit.Service.Tests/Scenarios/ShardCommitDurabilityScenarios.cs (backup v2)
+- [2026-08-24T21:11:19] tests/RdpAudit.Service.Tests/Scenarios/ShardCommitDurabilityScenarios.cs (backup v3)
+- [2026-08-24T21:11:56] tests/RdpAudit.Service.Tests/Scenarios/ShardCommitDurabilityScenarios.cs (backup v4)
+- [2026-08-24T21:13:12] tests/RdpAudit.Service.Tests/Scenarios/ShardCommitDurabilityScenarios.cs (backup v5)
+- [2026-08-24T22:10:15] src/RdpAudit.Service/Workers/IpcServerWorker.cs (backup v5)
+- [2026-08-24T22:10:30] src/RdpAudit.Service/Program.cs (backup v6)
+- [2026-08-24T22:11:20] src/RdpAudit.Service/Program.cs (backup v7)
+- [2026-08-24T22:15:33] tests/RdpAudit.Service.Tests/IpcServerWorkerLifecycleTests.cs
+- [2026-08-24T22:16:22] tests/RdpAudit.Service.Tests/IpcServerWorkerLifecycleTests.cs (backup v1)
+- [2026-08-24T23:52:33] PROJECT_MAP.md (backup v9)
+- [2026-08-24T23:52:45] README.md (backup v5)
+- [2026-08-24T23:53:04] README.md (backup v6)
+- [2026-08-25T00:07:37] README.ru.md (backup v5)
+- [2026-08-25T00:11:01] docs/50-ipc.md (backup v3) - docs/50-ipc.md: add v2.3.5 lifecycle coverage bullet + new lifecycle observability section
+- [2026-08-25T00:15:51] docs/20-service.md (backup v5)
+- [2026-08-25T00:16:29] docs/91-troubleshooting.md (backup v5)
+- [2026-08-25T01:02:31] src/RdpAudit.Core/Config/AlertOptions.cs (backup v1)
+- [2026-08-25T01:02:53] src/RdpAudit.Core/Events/EventXmlParser.cs (backup v1)
+- [2026-08-25T01:03:21] src/RdpAudit.Core/Events/EventXmlParser.cs (backup v2)
+- [2026-08-25T01:06:58] src/RdpAudit.Core/Events/EventXmlParser.cs (backup v3)
+- [2026-08-25T01:16:09] src/RdpAudit.Service/Alerts/PrivilegedLoginRule.cs (backup v1)
+- [2026-08-25T01:16:51] src/RdpAudit.Service/Workers/AlertWorker.cs (backup v1)
+- [2026-08-25T01:17:01] src/RdpAudit.Service/AppSettingsTemplate.cs (backup v3)
+- [2026-08-25T01:18:59] src/RdpAudit.Service/Alerts/PrivilegedLoginRule.cs (backup v2)
+- [2026-08-25T01:21:47] src/RdpAudit.Service/Alerts/PrivilegedLoginRule.cs (backup v3)
+- [2026-08-25T01:23:44] tests/RdpAudit.Service.Tests/Alerts/PrivilegedLoginRuleTests.cs
+- [2026-08-25T01:24:35] src/RdpAudit.Service/Alerts/PrivilegedLoginRule.cs (backup v4)
+- [2026-08-25T01:24:47] src/RdpAudit.Service/Alerts/PrivilegedLoginRule.cs (backup v5)
+- [2026-08-25T01:24:47] PRIVILEGED_LOGIN hardening: exact SID filter (S-1-5-18/19/20), mandatory network context, suppression window + summary alert, per-minute rate limit, historical age gate; docs updated.- [2026-08-25T01:43:52] CHANGELOG.md (backup v3)
+- [2026-08-25T01:44:48] docs/20-service.md (backup v6)
+- [2026-08-25T01:47:14] PROJECT_MAP.md (backup v10)
+- [2026-08-25T01:47:26] PROJECT_MAP.md (backup v11)
+- [2026-08-25T01:48:03] README.md (backup v7)
+- [2026-08-25T01:48:19] README.ru.md (backup v6)
+- [2026-08-25T02:08:28] src/RdpAudit.Core/Ipc/IpcConstants.cs (backup v1)
+- [2026-08-25T02:10:08] src/RdpAudit.Service/Workers/IpcServerWorker.cs (backup v6)
+- [2026-08-25T02:10:23] src/RdpAudit.Service/Workers/IpcServerWorker.cs (backup v7)
+- [2026-08-25T02:11:08] src/RdpAudit.Service/Workers/IpcServerWorker.cs (backup v8)
+- [2026-08-25T02:11:08] src/RdpAudit.Service/Workers/IpcServerWorker.cs (backup v9)
+- [2026-08-25T02:12:50] src/RdpAudit.Service/Workers/IpcServerWorker.cs (backup v10)
+- [2026-08-25T02:13:48] src/RdpAudit.Service/Workers/IpcServerWorker.cs (backup v11)
+- [2026-08-25T02:14:43] src/RdpAudit.Service/Workers/IpcServerWorker.cs (backup v12)
+- [2026-08-25T02:15:36] src/RdpAudit.Service/Workers/IpcServerWorker.cs (backup v13)
+- [2026-08-25T02:16:53] tests/RdpAudit.Service.Tests/IpcServerWorkerLifecycleTests.cs (backup v2)
+- [2026-08-25T02:17:53] tests/RdpAudit.Service.Tests/IpcServerWorkerLifecycleTests.cs (backup v3)
+- [2026-08-25T02:19:55] tests/RdpAudit.Service.Tests/IpcServerWorkerLifecycleTests.cs (backup v4)
+- [2026-08-25T09:23:06] tests/RdpAudit.Service.Tests/IpcServerWorkerLifecycleTests.cs (backup v5)
+- [2026-08-25T09:25:40] tests/RdpAudit.Service.Tests/IpcServerWorkerLifecycleTests.cs (backup v6)
+- [2026-08-25T09:26:25] tests/RdpAudit.Service.Tests/IpcServerWorkerLifecycleTests.cs (backup v7)
+- [2026-08-25T13:19:21] src/RdpAudit.Service/Infrastructure/BookmarkCheckpointLedger.cs (backup v1) - Add ForgetChannel API to BookmarkCheckpointLedger for P2 bookmark-reset purge
+- [2026-08-25T13:19:43] src/RdpAudit.Service/EventSources/EventCollectorHost.cs (backup v1)
+- [2026-08-25T13:27:15] src/RdpAudit.Core/Config/MonitoringOptions.cs (backup v1)
+- [2026-08-25T13:37:26] src/RdpAudit.Core/Config/MonitoringOptions.cs (backup v2)
+- [2026-08-25T13:39:22] src/RdpAudit.Service/Workers/SecurityBackfillWorker.cs (backup v1)
+- [2026-08-25T13:40:42] src/RdpAudit.Core/Config/MonitoringOptions.cs (backup v3)
+- [2026-08-25T13:41:07] src/RdpAudit.Core/Config/MonitoringOptions.cs (backup v4)
+- [2026-08-25T13:42:47] src/RdpAudit.Service/Workers/SecurityBackfillWorker.cs (backup v2)
+- [2026-08-25T13:44:45] src/RdpAudit.Service/Workers/SecurityBackfillWorker.cs (backup v3)
+- [2026-08-25T13:46:43] src/RdpAudit.Service/Workers/EventProcessorWorker.cs (backup v8)
+- [2026-08-25T13:52:05] src/RdpAudit.Service/Workers/EventCollectorHostedWorker.cs (backup v1)
+- [2026-08-25T13:52:37] src/RdpAudit.Service/Workers/EventCollectorHostedWorker.cs (backup v2)
+- [2026-08-25T13:52:45] src/RdpAudit.Service/Workers/EventCollectorHostedWorker.cs (backup v3)
+- [2026-08-25T13:53:14] src/RdpAudit.Service/Workers/EventCollectorHostedWorker.cs (backup v4)
+- [2026-08-25T14:08:34] src/RdpAudit.Service/Workers/EventCollectorHostedWorker.cs (backup v5)
+- [2026-08-25T14:08:34] src/RdpAudit.Service/Workers/SecurityBackfillWorker.cs (backup v4)
+- [2026-08-25T14:09:02] src/RdpAudit.Service/Workers/EventCollectorHostedWorker.cs (backup v6)
+- [2026-08-25T14:13:56] tests/RdpAudit.Service.Tests/BookmarkCheckpointLedgerTests.cs
+- [2026-08-25T14:14:42] tests/RdpAudit.Service.Tests/EventProcessorWorkerCompositionGuardTests.cs
+- [2026-08-25T14:15:00] tests/RdpAudit.Service.Tests/BookmarkCheckpointLedgerTests.cs (backup v1)
+- [2026-08-25T14:30:43] src/RdpAudit.Core/Data/AuditDbContextOptions.cs
+- [2026-08-25T14:31:36] src/RdpAudit.Service/Program.cs (backup v8)
+- [2026-08-25T14:31:56] src/RdpAudit.Configurator/Services/ReadOnlyDb.cs (backup v1)
+- [2026-08-25T14:41:37] src/RdpAudit.Service/Ipc/IpcDispatcher.cs (backup v2)
+- [2026-08-25T14:52:08] src/RdpAudit.Service/Workers/MaintenanceWorker.cs (backup v1)
+- [2026-08-25T14:52:16] src/RdpAudit.Service/Workers/MaintenanceWorker.cs (backup v2)
+- [2026-08-25T14:52:21] src/RdpAudit.Service/Workers/MaintenanceWorker.cs (backup v3)
+- [2026-08-25T14:53:29] src/RdpAudit.Service/Workers/MaintenanceWorker.cs (backup v4)
+- [2026-08-25T14:54:04] src/RdpAudit.Service/Ipc/IpcDispatcher.cs (backup v3)
+- [2026-08-25T14:57:36] src/RdpAudit.Service/Workers/RetentionWorker.cs (backup v1)
+- [2026-08-25T14:57:43] src/RdpAudit.Service/Workers/RetentionWorker.cs (backup v2)
+- [2026-08-25T14:57:49] src/RdpAudit.Service/Workers/RetentionWorker.cs (backup v3)
+- [2026-08-25T14:59:35] src/RdpAudit.Service/Workers/MaintenanceWorker.cs (backup v5)
+- [2026-08-25T15:00:48] src/RdpAudit.Service/Ipc/IpcDispatcher.cs (backup v4)
+- [2026-08-25T15:00:56] src/RdpAudit.Service/Ipc/IpcDispatcher.cs (backup v5)
+- [2026-08-25T15:02:46] src/RdpAudit.Service/Services/EnforcementReconciliationService.cs (backup v1)
+- [2026-08-25T15:10:38] src/RdpAudit.Service/Ipc/IpcDispatcher.cs (backup v6)
+- [2026-08-25T15:12:08] src/RdpAudit.Service/Ipc/IpcDispatcher.cs (backup v7)
+- [2026-08-25T15:12:24] src/RdpAudit.Service/Ipc/IpcDispatcher.cs (backup v8)
+- [2026-08-25T15:12:33] src/RdpAudit.Service/Ipc/IpcDispatcher.cs (backup v9)
+- [2026-08-25T15:12:39] src/RdpAudit.Service/Workers/AlertWorker.cs (backup v2) - P4: deterministic ordering already present (OrderBy Id) - no change needed
+- [2026-08-25T15:13:43] src/RdpAudit.Service/Alerts/DbAlertContext.cs (backup v1)
+- [2026-08-25T15:14:03] src/RdpAudit.Service/Services/EnforcementReconciliationService.cs (backup v2)
+- [2026-08-25T15:15:55] src/RdpAudit.Service/Workers/FirewallExpirationWorker.cs (backup v1)
+- [2026-08-25T15:17:46] src/RdpAudit.Configurator/Services/LocalSessionEnrichmentProvider.cs (backup v1)
+- [2026-08-25T15:20:32] src/RdpAudit.Service/Workers/MaintenanceWorker.cs (backup v6)
+- [2026-08-25T15:20:57] src/RdpAudit.Service/Workers/MaintenanceWorker.cs (backup v7)
+- [2026-08-25T15:21:29] src/RdpAudit.Service/Workers/MaintenanceWorker.cs (backup v8)
+- [2026-08-25T15:33:14] tests/RdpAudit.Core.Tests/AuditDbContextWarningPolicyTests.cs
+- [2026-08-25T15:34:10] tests/RdpAudit.Service.Tests/IpcDispatcherPaginationTests.cs
+- [2026-08-25T15:35:52] tests/RdpAudit.Service.Tests/IpcDispatcherPaginationTests.cs (backup v1)
+- [2026-08-25T15:36:14] tests/RdpAudit.Service.Tests/IpcDispatcherPaginationTests.cs (backup v2)
+- [2026-08-25T16:42:53] src/RdpAudit.Service/Workers/EventCollectorHostedWorker.cs (backup v7)
+- [2026-08-25T16:43:03] src/RdpAudit.Configurator/Services/ServiceStartupDiagnosticsRunner.cs (backup v1)
+- [2026-08-25T16:47:56] src/RdpAudit.Configurator/Services/ServiceStartupDiagnosticsRunner.cs (backup v2)
+- [2026-08-25T16:48:08] src/RdpAudit.Configurator/Services/ServiceStartupDiagnosticsRunner.cs (backup v3)
+- [2026-08-25T17:04:39] src/RdpAudit.Configurator/Services/ServiceStartupDiagnosticsRunner.cs (backup v4)
+- [2026-08-25T17:06:01] src/RdpAudit.Service/Program.cs (backup v9)
+- [2026-08-25T17:13:03] src/RdpAudit.Service/Infrastructure/UtcTimestampEnricher.cs
+- [2026-08-25T17:29:50] src/RdpAudit.Configurator/Services/DiagnosticsExtrasCollector.cs (backup v1)
+- [2026-08-25T17:30:05] src/RdpAudit.Configurator/Services/DiagnosticsExtrasCollector.cs (backup v2)
+- [2026-08-25T17:30:42] src/RdpAudit.Configurator/Forms/SettingsPage.cs (backup v1)
+- [2026-08-25T17:30:48] src/RdpAudit.Configurator/Services/ServiceStartupDiagnosticsRunner.cs (backup v5)
+- [2026-08-25T17:30:54] src/RdpAudit.Core/Util/ServiceDiagnosticsReport.cs (backup v1)
+- [2026-08-25T17:31:09] src/RdpAudit.Core/Util/ServiceDiagnosticsReport.cs (backup v2)
+- [2026-08-25T17:38:45] publish.ps1 (backup v1)
+- [2026-08-25T17:43:30] src/RdpAudit.Service/Infrastructure/UtcTimestampEnricher.cs (backup v1)
+- [2026-08-25T17:44:48] src/RdpAudit.Service/Program.cs (backup v10)
+- [2026-08-25T17:52:40] src/RdpAudit.Service/Workers/EventCollectorHostedWorker.cs (backup v8)
+- [2026-08-25T17:53:02] tests/RdpAudit.Service.Tests/UtcTimestampEnricherTests.cs
+- [2026-08-25T17:57:35] tests/RdpAudit.Service.Tests/UtcTimestampEnricherTests.cs (backup v1)
+- [2026-08-25T18:16:49] PROJECT_MAP.md (backup v12)
+- [2026-08-25T18:17:34] PROJECT_MAP.md (backup v13)
+- [2026-08-25T18:19:10] src/RdpAudit.Configurator/Services/DefaultAppSettings.cs (backup v2)
+- [2026-08-25T18:19:46] docs/40-alert-rules.md (backup v3)
+- [2026-08-25T18:19:57] docs/40-alert-rules.md (backup v4)
+- [2026-08-25T18:20:28] docs/60-debug-mode.md (backup v3)
+- [2026-08-25T18:21:09] docs/70-publish.md (backup v3)
+- [2026-08-25T18:21:16] docs/70-publish.md (backup v4)
+- [2026-08-25T18:22:10] PROJECT_MAP.md (backup v14)
+- [2026-08-25T18:28:31] PROJECT_MAP.md (backup v15)
+- [2026-08-25T21:06:20] src/RdpAudit.Service/Collectors/BookmarkSerializer.cs (backup v1)
+- [2026-08-25T21:08:39] src/RdpAudit.Service/Workers/EventProcessorWorker.cs (backup v9)
+- [2026-08-25T21:14:54] src/RdpAudit.Core/Events/BookmarkStore.cs (backup v1)
+- [2026-08-25T21:16:37] src/RdpAudit.Core/Events/BookmarkRecordIdParser.cs
+- [2026-08-25T21:17:10] src/RdpAudit.Service/EventSources/EventLogWatcherEventSource.cs (backup v1)
+- [2026-08-25T21:17:36] src/RdpAudit.Service/Workers/EventCollectorHostedWorker.cs (backup v9)
+- [2026-08-25T21:17:58] src/RdpAudit.Service/Workers/EventCollectorHostedWorker.cs (backup v10)
+- [2026-08-25T21:18:20] src/RdpAudit.Core/Events/RawEventDto.cs (backup v1)
+- [2026-08-25T21:21:58] src/RdpAudit.Service/Workers/EventProcessorWorker.cs (backup v10)
+- [2026-08-25T21:35:55] src/RdpAudit.Service/Workers/EventProcessorWorker.cs (backup v11)
+- [2026-08-25T21:38:18] src/RdpAudit.Service/Workers/EventCollectorHostedWorker.cs (backup v11)
+- [2026-08-25T21:39:07] src/RdpAudit.Service/Workers/EventCollectorHostedWorker.cs (backup v12)
+- [2026-08-25T21:54:24] .dev_agent/RDPAudIT_DEFECT_ROUND4_FINAL_PROMPT.md
+- [2026-08-25T21:56:24] .dev_agent/RDPAudIT_DEFECT_ROUND4_FINAL_PROMPT.md (backup v1)
+- [2026-08-25T22:16:56] src/RdpAudit.Core/Util/RdpAuditPaths.cs
+- [2026-08-25T22:17:10] src/RdpAudit.Core/Util/ServiceLayout.cs (backup v1)
+- [2026-08-25T22:17:45] src/RdpAudit.Core/Config/StorageOptions.cs (backup v1)
+- [2026-08-25T22:17:55] src/RdpAudit.Core/Config/StorageOptions.cs (backup v2)
+- [2026-08-25T22:17:55] src/RdpAudit.Core/Config/ShardingOptions.cs (backup v1)
+- [2026-08-25T22:18:01] src/RdpAudit.Core/Config/ShardingOptions.cs (backup v2)
+- [2026-08-25T22:18:01] src/RdpAudit.Core/Data/AuditDbInitializer.cs (backup v1)
+- [2026-08-25T22:18:06] src/RdpAudit.Core/Data/AuditDbInitializer.cs (backup v2)
+- [2026-08-25T22:18:23] src/RdpAudit.Service/Services/CrashGuard.cs (backup v1)
+- [2026-08-25T22:18:23] src/RdpAudit.Configurator/Services/LocalRdpConfigurationWriter.cs (backup v1)
+- [2026-08-25T22:18:33] src/RdpAudit.Service/Services/CrashGuard.cs (backup v2)
+- [2026-08-25T22:18:41] src/RdpAudit.Service/Services/ShadowPolicyManager.cs (backup v1)
+- [2026-08-25T22:18:47] src/RdpAudit.Service/Services/SettingsManager.cs (backup v1)
+- [2026-08-25T22:19:02] src/RdpAudit.Service/Workers/IpcServerWorker.cs (backup v14)
+- [2026-08-25T22:19:20] src/RdpAudit.Service/Workers/IpcServerWorker.cs (backup v15)
+- [2026-08-25T22:19:29] src/RdpAudit.Service/Program.cs (backup v11)
+- [2026-08-25T22:20:20] src/RdpAudit.Service/Program.cs (backup v12)
+- [2026-08-25T22:21:00] src/RdpAudit.Service/Program.cs (backup v13)
+- [2026-08-25T22:21:06] src/RdpAudit.Service/Program.cs (backup v14)
+- [2026-08-25T22:22:35] src/RdpAudit.Configurator/Services/ReadOnlyDb.cs (backup v2)
+- [2026-08-25T22:22:35] src/RdpAudit.Configurator/Services/ReadOnlyDb.cs (backup v3)
+- [2026-08-25T22:22:35] src/RdpAudit.Configurator/Forms/DiagnosticsPage.cs (backup v1)
+- [2026-08-25T22:22:35] src/RdpAudit.Configurator/Services/PrerequisiteChecker.cs (backup v1)
+- [2026-08-25T22:22:43] src/RdpAudit.Configurator/Forms/SettingsPage.cs (backup v2)
+- [2026-08-25T22:23:30] src/RdpAudit.Core/Data/AuditDbInitializer.cs (backup v3)
+- [2026-08-25T22:23:50] src/RdpAudit.Core/Util/RdpAuditPaths.cs (backup v1)
+- [2026-08-25T22:32:06] src/RdpAudit.Configurator/Forms/DiagnosticsPage.cs (backup v2)
+- [2026-08-25T23:04:07] src/RdpAudit.Configurator/Forms/DiagnosticsPage.cs (backup v3)
+- [2026-08-25T23:12:55] src/RdpAudit.Configurator/Services/DiagnosticsExtrasCollector.cs (backup v3)
+- [2026-08-25T23:13:39] src/RdpAudit.Configurator/Services/DatabaseResetService.cs (backup v1)
+- [2026-08-25T23:13:44] src/RdpAudit.Core/Data/DatabaseMigrationFailureMarker.cs (backup v1)
+- [2026-08-25T23:13:57] src/RdpAudit.Core/Data/DatabaseMigrationFailureMarker.cs (backup v2)
+- [2026-08-25T23:15:26] src/RdpAudit.Core/Backup/BackupLayout.cs (backup v1)
+- [2026-08-25T23:18:59] src/RdpAudit.Core/Storage/Sharding/ShardPath.cs (backup v1)
+- [2026-08-25T23:19:24] src/RdpAudit.Service/Program.cs (backup v15)
+- [2026-08-25T23:19:31] src/RdpAudit.Service/Workers/MaintenanceWorker.cs (backup v9)
+- [2026-08-25T23:21:55] src/RdpAudit.Configurator/Services/InstallUpdateLogger.cs (backup v1)
+- [2026-08-25T23:32:26] src/RdpAudit.Service/Workers/IpcServerWorker.cs (backup v16)
+- [2026-08-25T23:33:16] src/RdpAudit.Service/Workers/IpcServerWorker.cs (backup v17)
+- [2026-08-25T23:34:29] src/RdpAudit.Service/Program.cs (backup v16)
+- [2026-08-25T23:34:58] src/RdpAudit.Service/Program.cs (backup v17)
+- [2026-08-25T23:35:17] src/RdpAudit.Service/Program.cs (backup v18)
+- [2026-08-25T23:35:52] src/RdpAudit.Service/Program.cs (backup v19)
+- [2026-08-25T23:36:22] src/RdpAudit.Service/Program.cs (backup v20)
+- [2026-08-25T23:38:40] src/RdpAudit.Service/Services/CrashGuard.cs (backup v3)
+- [2026-08-25T23:39:21] src/RdpAudit.Service/Services/CrashGuard.cs (backup v4)
+- [2026-08-25T23:39:43] src/RdpAudit.Configurator/Services/ServiceControlRunner.cs (backup v1)
+- [2026-08-26T01:01:40] tests/RdpAudit.Core.Tests/RdpAuditPathsTests.cs
+- [2026-08-26T01:02:10] tests/RdpAudit.Core.Tests/RdpAuditPathsTests.cs (backup v1)
+- [2026-08-26T01:12:12] src/RdpAudit.Core/Util/ServiceDiagnosticsReport.cs (backup v3)
+- [2026-08-26T01:12:27] src/RdpAudit.Configurator/Forms/ServicePage.cs (backup v1)
+- [2026-08-26T01:13:03] tests/RdpAudit.Core.Tests/ServiceDiagnosticsReportBuilderTests.cs (backup v1)
+- [2026-08-26T01:20:09] tests/RdpAudit.Core.Tests/ServiceDiagnosticsReportBuilderTests.cs (backup v2)
+- [2026-08-26T01:20:56] src/RdpAudit.Configurator/Forms/ServicePage.cs (backup v2)
+- [2026-08-26T01:27:52] src/RdpAudit.Service/Workers/SessionCorrelationHydrationWorker.cs (backup v1)
+- [2026-08-26T01:29:30] src/RdpAudit.Service/Workers/AbuseIpDbReportWorker.cs (backup v1)
+- [2026-08-26T01:30:30] src/RdpAudit.Core/Data/DesignTimeAuditDbContextFactory.cs (backup v1)
+- [2026-08-26T01:32:39] tests/RdpAudit.Core.Tests/AuditDbContextWarningPolicyTests.cs (backup v1)
+- [2026-08-26T01:32:47] tests/RdpAudit.Core.Tests/AuditDbContextWarningPolicyTests.cs (backup v2)
+- [2026-08-26T01:54:52] src/RdpAudit.Core/Events/AuditPolicyManager.cs (backup v1)
+- [2026-08-26T01:56:36] tests/RdpAudit.Core.Tests/Events/AuditBaselineTests.cs
+- [2026-08-26T01:57:05] src/RdpAudit.Configurator/Services/PrerequisiteChecker.cs (backup v2)
+- [2026-08-26T01:57:15] src/RdpAudit.Configurator/Services/PrerequisiteChecker.cs (backup v3)
+- [2026-08-26T01:57:35] src/RdpAudit.Configurator/Services/PrerequisiteChecker.cs (backup v4)
+- [2026-08-26T01:59:22] src/RdpAudit.Core/Events/AuditPolicyManager.cs (backup v2)
+- [2026-08-26T02:00:01] tests/RdpAudit.Core.Tests/AuditPolicyParserTests.cs (backup v1)
+- [2026-08-26T02:13:10] src/RdpAudit.Core/Events/EventChannelHealth.cs
+- [2026-08-26T02:13:57] src/RdpAudit.Configurator/Services/PrerequisiteChecker.cs (backup v5)
+- [2026-08-26T02:14:34] src/RdpAudit.Configurator/Services/PrerequisiteChecker.cs (backup v6)
+- [2026-08-26T02:15:43] tests/RdpAudit.Core.Tests/EventChannelClassifierTests.cs
+- [2026-08-26T02:16:00] tests/RdpAudit.Core.Tests/EventChannelClassifierTests.cs (backup v1)
+- [2026-08-26T02:16:25] src/RdpAudit.Configurator/Services/PrerequisiteChecker.cs (backup v7)
+- [2026-08-26T02:51:10] docs/30-configurator.md (backup v3)
+- [2026-08-26T02:51:28] PROJECT_MAP.md (backup v16)
+- [2026-08-26T02:51:38] PROJECT_MAP.md (backup v17)
+- [2026-08-26T02:51:58] README.md (backup v8)
+- [2026-08-26T02:52:06] README.ru.md (backup v7)
+- [2026-08-26T03:46:13] .gitignore (backup v1)
+- [2026-09-11T18:51:04] src/RdpAudit.Core/Config/DecimationOptions.cs
+- [2026-09-11T18:51:12] src/RdpAudit.Core/Config/StorageOptions.cs (backup v3)
+- [2026-09-11T18:51:34] tests/RdpAudit.Core.Tests/DecimationOptionsTests.cs
+- [2026-09-11T18:52:18] src/RdpAudit.Service/AppSettingsTemplate.cs (backup v4)
+- [2026-09-11T18:52:35] src/RdpAudit.Configurator/Services/DefaultAppSettings.cs (backup v3)
+- [2026-09-11T19:12:04] src/RdpAudit.Core/Storage/RawEventDecimationEngine.cs
+- [2026-09-11T19:15:44] src/RdpAudit.Core/Storage/RawEventDecimationEngine.cs (backup v1)
+- [2026-09-11T19:17:14] tests/RdpAudit.Core.Tests/RawEventDecimationEngineTests.cs
+- [2026-09-11T19:17:33] src/RdpAudit.Core/Storage/RawEventDecimationEngine.cs (backup v2)
+- [2026-09-11T19:17:44] src/RdpAudit.Core/Storage/RawEventDecimationEngine.cs (backup v3)
+- [2026-09-11T19:21:51] src/RdpAudit.Core/Storage/RawEventDecimationEngine.cs (backup v4)
+- [2026-09-11T19:23:04] tests/RdpAudit.Core.Tests/RawEventDecimationEngineTests.cs (backup v1)
+- [2026-09-11T19:24:18] tests/RdpAudit.Core.Tests/RawEventDecimationEngineTests.cs (backup v2)
+- [2026-09-11T19:26:26] tests/RdpAudit.Core.Tests/RawEventDecimationEngineTests.cs (backup v3)
+- [2026-09-11T19:26:31] tests/RdpAudit.Core.Tests/RawEventDecimationEngineTests.cs (backup v4)
+- [2026-09-11T19:27:03] tests/RdpAudit.Core.Tests/RawEventDecimationEngineTests.cs (backup v5)
+- [2026-09-11T19:28:16] src/RdpAudit.Service/Workers/RetentionWorker.cs (backup v4)
+- [2026-09-11T19:29:18] src/RdpAudit.Service/Workers/RetentionWorker.cs (backup v5)
+- [2026-09-11T19:30:32] tests/RdpAudit.Service.Tests/RetentionWorkerDecimationTests.cs
+- [2026-09-11T19:31:38] tests/RdpAudit.Service.Tests/RetentionWorkerDecimationTests.cs (backup v1)
+- [2026-09-11T19:36:38] tests/RdpAudit.Service.Tests/Scenarios/RetentionDecimationScenarioTests.cs
+- [2026-09-11T19:37:48] tests/RdpAudit.Service.Tests/Scenarios/RetentionDecimationScenarioTests.cs (backup v1)
+- [2026-09-11T19:38:23] tests/RdpAudit.Service.Tests/Scenarios/RetentionDecimationScenarioTests.cs (backup v2)
+- [2026-09-11T19:44:50] docs/40-options.md (backup v4)
+- [2026-09-11T19:46:25] docs/20-service.md (backup v7)
+- [2026-09-11T19:46:48] docs/20-service.md (backup v8)
+- [2026-09-11T19:47:35] docs/80-roadmap.md (backup v3)
+- [2026-09-11T19:50:00] Backlog #2 - frequency-oriented retention decimation (Storage.Decimation): DecimationOptions (Core/Config), RawEventDecimationEngine (Core/Storage, pure SQL over shared DbContext), RetentionWorker integration after prune, config templates updated. Tests: DecimationOptionsTests (43), RawEventDecimationEngineTests (9), RetentionWorkerDecimationTests (3), RetentionDecimationScenarioTests (3). Full regression: 2452 passed, 0 failed; build 0 warnings / 0 errors. No DB migration.
+- [2026-09-11T19:48:10] CHANGELOG.md (backup v4)
+- [2026-09-11T20:37:54] docs/80-roadmap.md (backup v4)
+- [2026-09-11T21:27:21] docs/80-roadmap.md (backup v5)
+- [2026-09-11T21:46:37] PROJECT_MAP.md (backup v18)
+- [2026-09-11T21:46:47] PROJECT_MAP.md (backup v19)
+- [2026-09-11T21:47:15] PROJECT_MAP.md (backup v20)
+- [2026-09-11T21:48:13] PROJECT_MAP.md (backup v21)
+- [2026-09-11T21:48:29] PROJECT_MAP.md (backup v22)
+- [2026-09-11T21:48:46] docs/80-roadmap.md (backup v6)
+- [2026-09-11T21:48:54] PROJECT_MAP.md (backup v23)
+- [2026-09-11T21:49:14] PROJECT_MAP.md (backup v24)
+- [2026-09-11T21:50:20] PROJECT_MAP.md (backup v25)
+- [2026-09-11T21:51:12] docs/80-roadmap.md (backup v7)
+- [2026-09-11T22:27:23] src/RdpAudit.Core/Config/ApiOptions.cs
+- [2026-09-11T22:27:35] src/RdpAudit.Core/Config/RdpAuditOptions.cs (backup v1)
+- [2026-09-11T22:27:51] tests/RdpAudit.Core.Tests/ApiOptionsTests.cs
+- [2026-09-11T22:29:13] src/RdpAudit.Service/AppSettingsTemplate.cs (backup v5)
+- [2026-09-11T22:29:24] src/RdpAudit.Service/AppSettingsTemplate.cs (backup v6)
+- [2026-09-11T22:29:30] src/RdpAudit.Configurator/Services/DefaultAppSettings.cs (backup v4)
+- [2026-09-11T22:33:31] src/RdpAudit.Service/Services/SettingsManager.cs (backup v2)
+- [2026-09-11T22:35:35] src/RdpAudit.Service/Ipc/IpcDispatcher.cs (backup v10)
+- [2026-09-11T22:36:06] tests/RdpAudit.Service.Tests/SettingsManagerSecretsTests.cs (backup v1)
+- [2026-09-11T22:36:37] tests/RdpAudit.Service.Tests/IpcDispatcherStage8Tests.cs (backup v1)
+- [2026-09-11T22:58:47] src/RdpAudit.Service/RdpAudit.Service.csproj (backup v1)
+- [2026-09-11T22:59:37] src/RdpAudit.Service/Program.cs (backup v21)
+- [2026-09-11T23:00:15] src/RdpAudit.Service/Program.cs (backup v22)
+- [2026-09-11T23:25:03] src/RdpAudit.Service/RestApi/ApiTokenResolver.cs
+- [2026-09-11T23:28:43] src/RdpAudit.Service/RestApi/RestApiPlan.cs
+- [2026-09-11T23:28:55] src/RdpAudit.Service/RestApi/RestApiSecurityHeadersMiddleware.cs
+- [2026-09-11T23:29:10] src/RdpAudit.Service/RestApi/RestApiBearerAuthMiddleware.cs
+- [2026-09-11T23:29:22] src/RdpAudit.Service/RestApi/RestApiHealthService.cs
+- [2026-09-11T23:35:55] src/RdpAudit.Service/RestApi/RestApiCertificateResolver.cs
+- [2026-09-11T23:36:01] src/RdpAudit.Service/RestApi/IRestApiCertificateResolver.cs
+- [2026-09-11T23:39:38] src/RdpAudit.Service/RestApi/RestApiPlanBuildResult.cs
+- [2026-09-11T23:40:00] src/RdpAudit.Service/RestApi/RestApiPlanBuilder.cs
+- [2026-09-11T23:40:07] src/RdpAudit.Service/RestApi/RestApiLogForwarder.cs
+- [2026-09-11T23:41:34] src/RdpAudit.Service/RestApi/RestApiHostedService.cs
+- [2026-09-11T23:43:38] src/RdpAudit.Service/Program.cs (backup v23)
+- [2026-09-11T23:43:47] src/RdpAudit.Service/Program.cs (backup v24)
+- [2026-09-11T23:43:53] src/RdpAudit.Service/Program.cs (backup v25)
+- [2026-09-11T23:43:59] src/RdpAudit.Service/Program.cs (backup v26)
+- [2026-09-11T23:44:06] src/RdpAudit.Service/Program.cs (backup v27)
+- [2026-09-11T23:44:15] src/RdpAudit.Service/Program.cs (backup v28)
+- [2026-09-11T23:46:27] .dev_agent/scratch/serverprobe/serverprobe.csproj
+- [2026-09-11T23:46:51] .dev_agent/scratch/serverprobe/Program.cs
+- [2026-09-11T23:47:14] .dev_agent/scratch/serverprobe/Program.cs (backup v1)
+- [2026-09-11T23:50:13] src/RdpAudit.Service/Infrastructure/InertWebServer.cs
+- [2026-09-11T23:50:20] src/RdpAudit.Service/Program.cs (backup v29)
+- [2026-09-11T23:50:52] src/RdpAudit.Service/RestApi/RestApiHealthService.cs (backup v1)
+- [2026-09-12T00:08:18] tests/RdpAudit.Service.Tests/RdpAudit.Service.Tests.csproj (backup v1)
+- [2026-09-12T00:11:30] tests/RdpAudit.Service.Tests/RestApiTestFakes.cs
+- [2026-09-12T00:16:04] tests/RdpAudit.Service.Tests/RestApiTestFakes.cs (backup v1)
+- [2026-09-12T00:19:28] tests/RdpAudit.Service.Tests/ApiTokenResolverTests.cs
+- [2026-09-12T00:19:43] tests/RdpAudit.Service.Tests/RestApiSecurityHeadersTests.cs
+- [2026-09-12T00:20:00] tests/RdpAudit.Service.Tests/RestApiBearerAuthTests.cs
+- [2026-09-12T00:24:47] tests/RdpAudit.Service.Tests/RestApiTestFakes.cs (backup v2)
+- [2026-09-12T00:26:06] tests/RdpAudit.Service.Tests/RestApiTestFakes.cs (backup v3)
+- [2026-09-12T00:26:22] tests/RdpAudit.Service.Tests/RestApiTestFakes.cs (backup v4)
+- [2026-09-12T00:26:39] tests/RdpAudit.Service.Tests/RestApiTestFakes.cs (backup v5)
+- [2026-09-12T00:26:50] tests/RdpAudit.Service.Tests/RestApiHealthServiceTests.cs
+- [2026-09-12T00:28:24] tests/RdpAudit.Service.Tests/RestApiPlanBuilderTests.cs
+- [2026-09-12T00:28:48] tests/RdpAudit.Service.Tests/RestApiSecurityHeadersTests.cs (backup v1)
+- [2026-09-12T00:29:22] tests/RdpAudit.Service.Tests/ApiTokenResolverTests.cs (backup v1)
+- [2026-09-12T00:29:32] tests/RdpAudit.Service.Tests/RestApiSecurityHeadersTests.cs (backup v2)
+- [2026-09-12T00:30:02] tests/RdpAudit.Service.Tests/RestApiSecurityHeadersTests.cs (backup v3)
+- [2026-09-12T00:59:28] src/RdpAudit.Core/Data/ReadOnlySqlitePragmaInterceptor.cs
+- [2026-09-12T01:09:16] src/RdpAudit.Core/Data/AuditDbContextOptionsFactory.cs
+- [2026-09-12T01:18:50] src/RdpAudit.Core/RestApi/PagedEventsQuery.cs
+- [2026-09-12T01:19:11] src/RdpAudit.Core/RestApi/PagedEventRow.cs
+- [2026-09-12T01:19:18] src/RdpAudit.Core/RestApi/PagedEventPage.cs
+- [2026-09-12T01:19:26] src/RdpAudit.Core/RestApi/IPagedEventReader.cs
+- [2026-09-12T01:19:46] src/RdpAudit.Core/RestApi/IPagedEventReader.cs (backup v1)
+- [2026-09-12T01:20:55] src/RdpAudit.Service/RestApi/PagedEventReader.cs
+- [2026-09-12T01:23:16] src/RdpAudit.Service/RestApi/ReadOnlyAuditDbContextFactory.cs
+- [2026-09-12T01:28:11] src/RdpAudit.Service/RestApi/PagedEventReader.cs (backup v1)
+- [2026-09-12T01:29:36] src/RdpAudit.Service/Program.cs (backup v30)
+- [2026-09-12T01:30:13] src/RdpAudit.Core/Data/ReadOnlySqlitePragmaInterceptor.cs (backup v1)
+- [2026-09-12T01:32:13] src/RdpAudit.Service/RestApi/PagedEventReader.cs (backup v2)
+- [2026-09-12T01:41:57] tests/RdpAudit.Service.Tests/PagedEventReaderTests.cs
+- [2026-09-12T01:42:07] tests/RdpAudit.Service.Tests/PagedEventReaderTests.cs (backup v1)
+- [2026-09-12T01:42:52] tests/RdpAudit.Service.Tests/PagedEventReaderTests.cs (backup v2)
+- [2026-09-12T01:43:02] tests/RdpAudit.Service.Tests/PagedEventReaderTests.cs (backup v3)
+- [2026-09-12T01:44:12] tests/RdpAudit.Service.Tests/PagedEventReaderTests.cs (backup v4)
+- [2026-09-12T01:44:22] tests/RdpAudit.Service.Tests/PagedEventReaderTests.cs (backup v5)
+- [2026-09-12T01:44:28] tests/RdpAudit.Service.Tests/PagedEventReaderTests.cs (backup v6)
+- [2026-09-12T01:44:32] tests/RdpAudit.Service.Tests/PagedEventReaderTests.cs (backup v7)
+- [2026-09-12T01:45:57] tests/RdpAudit.Service.Tests/PagedEventReaderTests.cs (backup v8)
+- [2026-09-12T01:46:29] tests/RdpAudit.Service.Tests/PagedEventReaderTests.cs (backup v9)
+- [2026-09-12T01:51:20] src/RdpAudit.Service/RestApi/PagedEventReader.cs (backup v3)
+- [2026-09-12T01:52:33] src/RdpAudit.Service/RestApi/PagedEventReader.cs (backup v4)
+- [2026-09-12T01:54:39] src/RdpAudit.Service/RestApi/PagedEventReader.cs (backup v5)
+- [2026-09-12T01:55:07] src/RdpAudit.Service/RestApi/PagedEventReader.cs (backup v6)
+- [2026-09-12T03:21:03] src/RdpAudit.Service/RestApi/openapi-v1.json - Committed OpenAPI 3.0.3 descriptor for the read-only REST API; served verbatim by /openapi/v1.json and embedded into RdpAudit.Service.
+- [2026-09-12T03:26:35] src/RdpAudit.Service/RdpAudit.Service.csproj (backup v2)
+- [2026-09-12T03:36:23] src/RdpAudit.Service/RestApi/RestApiEndpoints.cs - New REST mapper for /api/status, /alerts, /sessions, /config, /events and /openapi/v1.json reusing the existing IpcDispatcher read commands.
+- [2026-09-12T03:39:52] src/RdpAudit.Service/RestApi/RestApiEndpoints.cs (backup v1)
+- [2026-09-12T03:40:12] src/RdpAudit.Service/RestApi/RestApiOpenApiDocument.cs - Loader for the embedded OpenAPI descriptor served by /openapi/v1.json.
+- [2026-09-12T03:40:42] src/RdpAudit.Service/RestApi/RestApiEndpoints.cs (backup v2)
+- [2026-09-12T03:40:59] src/RdpAudit.Service/RestApi/RestApiEndpoints.cs (backup v3)
+- [2026-09-12T03:41:05] src/RdpAudit.Service/RestApi/RestApiEndpoints.cs (backup v4)
+- [2026-09-12T03:41:10] src/RdpAudit.Service/RestApi/RestApiEndpoints.cs (backup v5)
+- [2026-09-12T03:41:29] src/RdpAudit.Service/RestApi/RestApiHostedService.cs (backup v1)
+- [2026-09-12T03:45:27] src/RdpAudit.Service/RestApi/RestApiEndpoints.cs (backup v6)
+- [2026-09-12T04:07:37] tests/RdpAudit.Service.Tests/RdpAudit.Service.Tests.csproj (backup v2)
+- [2026-09-12T04:58:39] src/RdpAudit.Service/RestApi/RestApiHostedService.cs (backup v2)
+- [2026-09-12T05:03:12] tests/RdpAudit.Service.Tests/RestApiIntegrationTests.cs - Step 7 verification: TestServer-based integration tests for all REST endpoints.
+- [2026-09-12T05:03:47] tests/RdpAudit.Service.Tests/ApiEventDtoSerializationTests.cs - Step 7 verification: DTO wire-shape serialization tests.
+- [2026-09-12T05:07:07] tests/RdpAudit.Service.Tests/RestApiIntegrationTests.cs (backup v1)
+- [2026-09-12T05:07:11] tests/RdpAudit.Service.Tests/RestApiIntegrationTests.cs (backup v2)
+- [2026-09-12T09:56:10] src/RdpAudit.Service/RestApi/RestApiEndpoints.cs (backup v7)
+- [2026-09-12T09:56:20] src/RdpAudit.Service/RestApi/RestApiEndpoints.cs (backup v8)
+- [2026-09-12T09:56:25] src/RdpAudit.Service/RestApi/RestApiEndpoints.cs (backup v9)
+- [2026-09-12T09:56:38] src/RdpAudit.Service/RestApi/RestApiEndpoints.cs (backup v10)
+- [2026-09-12T09:58:20] tests/RdpAudit.Service.Tests/RestApiIntegrationTests.cs (backup v3)
+- [2026-09-12T09:58:51] tests/RdpAudit.Service.Tests/RestApiIntegrationTests.cs (backup v4)
+- [2026-09-12T09:59:12] tests/RdpAudit.Service.Tests/RestApiIntegrationTests.cs (backup v5)
+- [2026-09-12T09:59:26] tests/RdpAudit.Service.Tests/RestApiIntegrationTests.cs (backup v6)
+- [2026-09-12T10:25:10] src/RdpAudit.Service/RestApi/RestApiProblem.cs
+- [2026-09-12T10:25:17] src/RdpAudit.Service/RestApi/RestApiEndpoints.cs (backup v11)
+- [2026-09-12T10:25:26] src/RdpAudit.Service/RestApi/RestApiEndpoints.cs (backup v12)
+- [2026-09-12T10:28:06] src/RdpAudit.Service/RestApi/RestApiBearerAuthMiddleware.cs (backup v1)
+- [2026-09-12T10:30:53] src/RdpAudit.Service/RestApi/RestApiRateLimitMiddleware.cs
+- [2026-09-12T10:32:26] src/RdpAudit.Service/RestApi/RestApiHostedService.cs (backup v3)
+- [2026-09-12T10:34:34] tests/RdpAudit.Service.Tests/RestApiRateLimitTests.cs
+- [2026-09-12T10:39:41] src/RdpAudit.Service/RestApi/RestApiProblem.cs (backup v1)
+- [2026-09-12T10:39:52] src/RdpAudit.Service/RestApi/RestApiRateLimitMiddleware.cs (backup v1)
+- [2026-09-12T10:40:00] tests/RdpAudit.Service.Tests/RestApiIntegrationTests.cs (backup v7)
+- [2026-09-12T10:40:19] src/RdpAudit.Service/RestApi/RestApiProblem.cs (backup v2)
+- [2026-09-12T10:41:40] tests/RdpAudit.Service.Tests/RestApiIntegrationTests.cs (backup v8)
+- [2026-09-12T10:41:57] tests/RdpAudit.Service.Tests/RestApiIntegrationTests.cs (backup v9)
+- [2026-09-12T10:42:39] tests/RdpAudit.Service.Tests/ApiEventDtoSerializationTests.cs (backup v1)
+- [2026-09-12T10:47:43] src/RdpAudit.Service/RestApi/RestApiProblem.cs (backup v3)
+- [2026-09-12T10:48:52] src/RdpAudit.Service/RestApi/RestApiProblem.cs (backup v4)
+- [2026-09-12T10:49:53] tests/RdpAudit.Service.Tests/ApiEventDtoSerializationTests.cs (backup v2)
+- [2026-09-12T10:49:59] tests/RdpAudit.Service.Tests/ApiEventDtoSerializationTests.cs (backup v3)
+- [2026-09-12T10:57:17] src/RdpAudit.Service/RestApi/openapi-v1.json (backup v1)
+- [2026-09-12T11:19:37] tests/RdpAudit.Service.Tests/Scenarios/RestApiTestApp.cs
+- [2026-09-12T11:23:01] tests/RdpAudit.Service.Tests/Scenarios/RestApiScenarioTests.cs
+- [2026-09-12T11:24:09] tests/RdpAudit.Service.Tests/Scenarios/RestOpenApiDriftScenarioTests.cs
+- [2026-09-12T11:24:35] tests/RdpAudit.Service.Tests/Scenarios/RestApiTestApp.cs (backup v1)
+- [2026-09-12T11:24:48] tests/RdpAudit.Service.Tests/Scenarios/RestApiScenarioTests.cs (backup v1)
+- [2026-09-12T11:45:47] docs/51-rest-api.md
+- [2026-09-12T11:49:44] docs/40-options.md (backup v5)
+- [2026-09-12T11:50:08] docs/40-options.md (backup v6)
+- [2026-09-12T11:50:34] README.md (backup v9)
+- [2026-09-12T11:50:44] README.md (backup v10)
+- [2026-09-12T11:51:15] docs/20-service.md (backup v9)
+- [2026-09-12T11:51:25] docs/20-service.md (backup v10)
+- [2026-09-12T11:52:07] docs/80-roadmap.md (backup v8)
+- [2026-09-12T11:59:55] README.ru.md (backup v8)
+- [2026-09-12T12:09:47] README.ru.md (backup v9)
+- [2026-09-12T12:13:05] README.ru.md (backup v10)
+- [2026-09-12T12:53:44] PROJECT_MAP.md (backup v26)
+- [2026-09-12T12:59:48] PROJECT_MAP.md (backup v27)
+- [2026-09-12T13:00:01] PROJECT_MAP.md (backup v28)
+- [2026-09-12T13:02:04] tests/RdpAudit.Service.Tests/Scenarios/DocumentationDriftScenarioTests.cs
+- [2026-09-12T13:02:29] PROJECT_MAP.md (backup v29)
+- [2026-09-12T14:40:47] src/RdpAudit.Core/Data/AuditDbContext.cs (backup v1)
+- [2026-09-12T14:40:52] src/RdpAudit.Core/Config/RdpAuditOptions.cs (backup v2)
+- [2026-09-12T14:41:21] src/RdpAudit.Core/Ipc/IpcConstants.cs (backup v2)
+- [2026-09-12T14:41:28] src/RdpAudit.Core/Ipc/IpcCommand.cs (backup v1)
+- [2026-09-12T14:47:41] src/RdpAudit.Service/Ipc/IpcDispatcher.cs (backup v11)
+- [2026-09-12T14:47:51] src/RdpAudit.Service/Ipc/IpcDispatcher.cs (backup v12)
+- [2026-09-12T14:49:01] src/RdpAudit.Service/Workers/AlertWorker.cs (backup v3)
+- [2026-09-12T14:49:07] src/RdpAudit.Service/Program.cs (backup v31)
+- [2026-09-12T14:49:44] src/RdpAudit.Service/AppSettingsTemplate.cs (backup v7)
+- [2026-09-12T14:53:41] src/RdpAudit.Configurator/Forms/MainForm.cs (backup v1)
+- [2026-09-12T15:08:28] src/RdpAudit.Configurator/Forms/FirewallPage.cs (backup v1)
+- [2026-09-12T15:08:33] src/RdpAudit.Configurator/Forms/FirewallPage.cs (backup v2)
+- [2026-09-12T15:26:33] RdpAudit.sln (backup v1)
+- [2026-09-12T15:27:38] RdpAudit.sln (backup v2)
+- [2026-09-12T15:33:04] src/RdpAudit.Service/Services/CrashGuard.cs (backup v5)
+- [2026-09-12T16:25:00] SPEC.md (backup v1)
+- [2026-09-12T16:35:16] SPEC.md (backup v2)
+- [2026-09-12T16:40:30] SPEC.md (backup v3)
+- [2026-09-12T16:41:12] ARCHITECTURE.md (backup v1)
+- [2026-09-12T16:41:45] ARCHITECTURE.md (backup v2)
+- [2026-09-12T16:42:26] ARCHITECTURE.md (backup v3)
+- [2026-09-12T16:42:57] SPEC.md (backup v4)
+- [2026-09-12T16:44:18] ARCHITECTURE.md (backup v4)
+- [2026-09-12T16:44:54] SPEC.md (backup v5)
+- [2026-09-12T16:46:14] ARCHITECTURE.md (backup v5)
+- [2026-09-12T16:46:20] ARCHITECTURE.md (backup v6)
+- [2026-09-12T17:09:23] ARCHITECTURE.md (backup v7)
+- [2026-09-12T17:23:30] src/RdpAudit.Service/Collectors/BookmarkSerializer.cs (backup v2)
+- [2026-09-12T17:28:35] tests/RdpAudit.ScenarioTests/RepositoryHygieneScenarioTests.cs (backup v1)
+- [2026-09-12T17:29:23] tests/RdpAudit.ScenarioTests/RepositoryHygieneScenarioTests.cs (backup v2)
+- [2026-09-12T17:31:19] PROJECT_MAP.md (backup v31)
+- [2026-09-12T18:01:07] src/RdpAudit.Core/Siem/SiemEvent.cs
+- [2026-09-12T18:01:48] src/RdpAudit.Core/Siem/SiemEvent.cs (backup v1)
+- [2026-09-12T18:02:09] src/RdpAudit.Core/Siem/SiemEvent.cs (backup v2)
+- [2026-09-12T18:05:18] src/RdpAudit.Core/Ipc/Contracts/AlertEntryDto.cs
+- [2026-09-12T18:06:54] src/RdpAudit.Core/Siem/SiemEventMapper.cs
+- [2026-09-12T18:08:54] tests/RdpAudit.Core.Tests/Siem/SiemEventMapperTests.cs
+- [2026-09-12T18:15:29] src/RdpAudit.Core/Siem/ISiemEventSerializer.cs
+- [2026-09-12T18:16:59] src/RdpAudit.Core/Siem/CefSerializer.cs
+- [2026-09-12T18:18:23] src/RdpAudit.Core/Siem/SiemEscape.cs
+- [2026-09-12T18:18:41] src/RdpAudit.Core/Siem/LeefSerializer.cs
+- [2026-09-12T18:19:31] src/RdpAudit.Core/Siem/SiemJsonSerializer.cs
+- [2026-09-12T18:19:50] src/RdpAudit.Core/Siem/SiemSerializerFactory.cs
+- [2026-09-12T18:21:06] src/RdpAudit.Core/Siem/CefSerializer.cs (backup v1)
+- [2026-09-12T18:22:26] tests/RdpAudit.Core.Tests/Siem/CefSerializerTests.cs
+- [2026-09-12T18:22:43] tests/RdpAudit.Core.Tests/Siem/LeefSerializerTests.cs
+- [2026-09-12T18:26:34] tests/RdpAudit.Core.Tests/Siem/LeefSerializerTests.cs (backup v1)
+- [2026-09-12T18:27:37] tests/RdpAudit.Core.Tests/Siem/SiemEscapeTests.cs
+- [2026-09-12T18:27:54] tests/RdpAudit.Core.Tests/Siem/SiemJsonSerializerTests.cs
+- [2026-09-12T18:28:28] tests/RdpAudit.Core.Tests/Siem/SiemSerializerFactoryTests.cs
+- [2026-09-12T18:31:00] src/RdpAudit.Core/Siem/SiemJsonSerializer.cs (backup v1)
+- [2026-09-12T18:31:04] tests/RdpAudit.Core.Tests/Siem/SiemEscapeTests.cs (backup v1)
+- [2026-09-12T18:37:01] src/RdpAudit.Core/Ipc/Contracts/AlertsForIpRequest.cs
+- [2026-09-12T18:37:13] src/RdpAudit.Core/Ipc/Contracts/AlertsForIpDto.cs
+- [2026-09-12T18:37:19] src/RdpAudit.Core/Ipc/IpcCommand.cs (backup v2)
+- [2026-09-12T18:37:39] src/RdpAudit.Service/Ipc/IpcDispatcher.cs (backup v13)
+- [2026-09-12T18:37:51] src/RdpAudit.Service/Ipc/IpcDispatcher.cs (backup v14)
+- [2026-09-12T18:41:13] src/RdpAudit.Service/Ipc/IpcDispatcher.cs (backup v15)
+- [2026-09-12T18:41:32] tests/RdpAudit.Core.Tests/IpcCommandStabilityTests.cs (backup v1)
+- [2026-09-12T18:42:56] tests/RdpAudit.Service.Tests/IpcDispatcherAlertsForIpTests.cs
+- [2026-09-12T19:04:58] src/RdpAudit.Configurator/Services/SiemExportRunner.cs
+- [2026-09-12T19:06:49] src/RdpAudit.Configurator/Services/SiemExportRunner.cs (backup v1)
+- [2026-09-12T19:07:17] src/RdpAudit.Configurator/Services/SiemExportRunner.cs (backup v2)
+- [2026-09-12T19:07:38] src/RdpAudit.Configurator/Forms/LiveEventsPage.cs (backup v1)
+- [2026-09-12T19:07:45] src/RdpAudit.Configurator/Forms/LiveEventsPage.cs (backup v2)
+- [2026-09-12T19:08:08] src/RdpAudit.Configurator/Forms/LiveEventsPage.cs (backup v3)
+- [2026-09-12T19:10:02] tests/RdpAudit.Configurator.Tests/SiemExportRunnerTests.cs
+- [2026-09-12T19:12:22] tests/RdpAudit.Configurator.Tests/SiemExportRunnerTests.cs (backup v1)
+- [2026-09-12T19:12:57] src/RdpAudit.Configurator/Forms/AttackStatisticsPage.cs (backup v1)
+- [2026-09-12T19:13:14] src/RdpAudit.Configurator/Forms/AttackStatisticsPage.cs (backup v2)
+- [2026-09-12T19:13:22] src/RdpAudit.Configurator/Forms/AttackStatisticsPage.cs (backup v3)
+- [2026-09-12T19:14:43] tests/RdpAudit.Configurator.Tests/SiemExportRunnerTests.cs (backup v2)
+- [2026-09-12T19:57:45] tests/RdpAudit.ScenarioTests/RdpAudit.ScenarioTests.csproj (backup v1)
+- [2026-09-12T20:25:14] src/RdpAudit.Core/Siem/UtcNormalizingDateTimeConverter.cs
+- [2026-09-12T20:28:58] src/RdpAudit.Core/Siem/SiemJsonSerializer.cs (backup v2)
+- [2026-09-12T20:29:20] src/RdpAudit.Core/Siem/CefSerializer.cs (backup v2)
+- [2026-09-12T20:29:35] src/RdpAudit.Core/Siem/CefSerializer.cs (backup v3)
+- [2026-09-12T20:29:39] src/RdpAudit.Core/Siem/LeefSerializer.cs (backup v1)
+- [2026-09-12T20:34:19] src/RdpAudit.Core/Siem/UtcNormalizingDateTimeConverter.cs (backup v1)
+- [2026-09-12T20:53:18] tests/RdpAudit.ScenarioTests/SiemExportScenarioTests.cs
+- [2026-09-12T20:54:23] tests/RdpAudit.ScenarioTests/SiemExportScenarioTests.cs (backup v1)
+- [2026-09-12T20:55:24] tests/RdpAudit.ScenarioTests/SiemExportScenarioTests.cs (backup v2)
+- [2026-09-12T20:55:45] tests/RdpAudit.ScenarioTests/SiemExportScenarioTests.cs (backup v3)
+- [2026-09-12T20:55:50] tests/RdpAudit.ScenarioTests/SiemExportScenarioTests.cs (backup v4)
+- [2026-09-12T20:58:04] tests/RdpAudit.ScenarioTests/SiemExportScenarioTests.cs (backup v5)
+- [2026-09-12T21:04:31] docs/50-ipc.md (backup v6)
+- [2026-09-12T21:04:49] PROJECT_MAP.md (backup v33)
+- [2026-09-12T21:05:35] SPEC.md (backup v7)
+- [2026-09-12T21:06:58] docs/52-siem-export.md
+- [2026-09-12T21:07:42] ARCHITECTURE.md (backup v9)
+- [2026-09-12T21:07:50] ARCHITECTURE.md (backup v10)
+- [2026-09-12T21:08:33] README.md (backup v13)
+- [2026-09-12T21:08:59] README.ru.md (backup v13)
+- [2026-09-12T21:10:22] docs/80-roadmap.md (backup v11)
+- [2026-09-12T21:10:31] docs/80-roadmap.md (backup v12)
+- [2026-09-12T21:11:40] docs/80-roadmap.md (backup v13)
+- [2026-09-12T21:11:45] docs/80-roadmap.md (backup v14)
+- [2026-09-12T21:11:50] docs/80-roadmap.md (backup v15)
+- [2026-09-12T21:13:02] PROJECT_MAP.md (backup v34)
+- [2026-09-12T21:13:07] PROJECT_MAP.md (backup v35)
+- [2026-09-12T21:20:00] Backlog #4 - SIEM export (CEF / LEEF / NDJSON) for one IP: Core/Siem SiemEvent + SiemEventMapper + CefSerializer + LeefSerializer + SiemJsonSerializer + SiemEscape + SiemSerializerFactory; IPC ordinal 70 GetAlertsForIp (AlertsForIpRequest / AlertsForIpDto / AlertEntryDto contracts, dispatcher handler, 1..2000 clamp, newest-first); Configurator Services/SiemExportRunner + Export SIEM Events + Alerts... menu on Live Events / Attack Statistics (SaveFileDialog, UTF-8 without BOM). Tests: SiemEventMapperTests (21), CefSerializerTests (7), LeefSerializerTests (7), SiemJsonSerializerTests (6), SiemEscapeTests (9), SiemSerializerFactoryTests (8), SiemExportRunnerTests (12), IpcDispatcherAlertsForIpTests (6), IpcCommandStabilityTests 73/73 through ordinal 70, SiemExportScenarioTests (Tier-3). Full regression: Core.Tests 1722, Mikrotik.Tests 34, Configurator.Tests 12, Service.Tests 1026, ScenarioTests 13/13; build 0 warnings / 0 errors. Docs: docs/52-siem-export.md, docs/50-ipc.md, SPEC.md, ARCHITECTURE.md, README.md, README.ru.md, PROJECT_MAP.md, docs/80-roadmap.md.- [2026-09-12T21:15:14] CHANGELOG.md (backup v7)
+- [2026-09-12T21:35:38] src/RdpAudit.Core/ThreatIntel/IThreatIntelligenceClient.cs
+- [2026-09-12T21:36:01] src/RdpAudit.Core/ThreatIntel/ThreatIntelLookupResult.cs
+- [2026-09-12T21:36:21] src/RdpAudit.Core/ThreatIntel/ThreatIntelClassifier.cs
+- [2026-09-12T21:37:00] tests/RdpAudit.Core.Tests/ThreatIntelClassifierTests.cs
+- [2026-09-12T21:38:31] src/RdpAudit.Core/Config/AbuseIpDbOptions.cs (backup v1)
+- [2026-09-12T21:39:08] src/RdpAudit.Core/ThreatIntel/ThreatIntelLimits.cs
+- [2026-09-12T21:39:19] src/RdpAudit.Service/AppSettingsTemplate.cs (backup v8)
+- [2026-09-12T21:39:36] tests/RdpAudit.Core.Tests/ThreatIntelLimitsTests.cs
+- [2026-09-12T21:42:52] src/RdpAudit.Core/Models/ThreatIntelLookup.cs
+- [2026-09-12T21:42:57] src/RdpAudit.Core/Models/ThreatIntelUsageCounter.cs
+- [2026-09-12T21:43:04] src/RdpAudit.Core/Data/Configurations/ThreatIntelLookupConfiguration.cs
+- [2026-09-12T21:43:09] src/RdpAudit.Core/Data/Configurations/ThreatIntelUsageCounterConfiguration.cs
+- [2026-09-12T21:43:13] src/RdpAudit.Core/Data/AuditDbContext.cs (backup v2)
+- [2026-09-12T21:43:30] src/RdpAudit.Core/Data/Migrations/20260912100312_Stage15ThreatIntel.cs
+- [2026-09-12T21:50:29] src/RdpAudit.Core/Data/Migrations/20260911132850_Stage14ChainAlertLinking.cs
+- [2026-09-12T22:00:05] tests/RdpAudit.Core.Tests/Stage15ThreatIntelSchemaTests.cs
+- [2026-09-12T22:04:42] src/RdpAudit.Service/ThreatIntel/AbuseIpDbThreatIntelClient.cs
+- [2026-09-12T22:06:13] tests/RdpAudit.Service.Tests/AbuseIpDbThreatIntelClientTests.cs
+- [2026-09-12T22:06:26] src/RdpAudit.Service/ThreatIntel/AbuseIpDbThreatIntelClient.cs (backup v1)
+- [2026-09-12T22:09:39] src/RdpAudit.Service/ThreatIntel/ThreatIntelRateLimiter.cs
+- [2026-09-12T22:10:17] src/RdpAudit.Service/ThreatIntel/ThreatIntelLookupStore.cs
+- [2026-09-12T22:11:04] tests/RdpAudit.Service.Tests/ThreatIntelRateLimiterTests.cs
+- [2026-09-12T22:11:24] tests/RdpAudit.Service.Tests/ThreatIntelLookupStoreTests.cs
+- [2026-09-12T22:11:51] tests/RdpAudit.Service.Tests/ThreatIntelLookupStoreTests.cs (backup v1)
+- [2026-09-12T22:19:22] src/RdpAudit.Service/Workers/ThreatIntelEnrichmentWorker.cs
+- [2026-09-12T22:19:34] src/RdpAudit.Service/Program.cs (backup v32)
+- [2026-09-12T22:19:42] src/RdpAudit.Service/Program.cs (backup v33)
+- [2026-09-12T22:19:48] src/RdpAudit.Service/Program.cs (backup v34)
+- [2026-09-12T22:19:58] src/RdpAudit.Service/Program.cs (backup v35)
+- [2026-09-12T22:21:43] tests/RdpAudit.Service.Tests/ThreatIntelEnrichmentWorkerTests.cs
+- [2026-09-12T22:30:16] tests/RdpAudit.Service.Tests/ThreatIntelEnrichmentWorkerTests.cs (backup v1)
+- [2026-09-12T22:30:21] tests/RdpAudit.Service.Tests/ThreatIntelEnrichmentWorkerTests.cs (backup v2)
+- [2026-09-12T22:30:44] tests/RdpAudit.Service.Tests/ThreatIntelEnrichmentWorkerTests.cs (backup v3)
+- [2026-09-12T22:32:19] src/RdpAudit.Service/Workers/ThreatIntelEnrichmentWorker.cs (backup v1)
+- [2026-09-12T22:32:24] tests/RdpAudit.Service.Tests/ThreatIntelEnrichmentWorkerTests.cs (backup v4)
+- [2026-09-12T22:32:53] src/RdpAudit.Service/Program.cs (backup v36)
+- [2026-09-12T22:33:48] src/RdpAudit.Core/Ipc/IpcCommand.cs (backup v3)
+- [2026-09-12T22:43:08] src/RdpAudit.Core/Ipc/Contracts/ThreatIntelStatusDto.cs
+- [2026-09-12T22:47:42] tests/RdpAudit.Core.Tests/IpcCommandStabilityTests.cs (backup v2)
+- [2026-09-12T22:51:14] src/RdpAudit.Core/Ipc/Contracts/RecentEventDto.cs
+- [2026-09-12T22:58:40] src/RdpAudit.Core/Ipc/Contracts/AttackStatEntryDto.cs (backup v1)
+- [2026-09-12T22:58:44] src/RdpAudit.Core/Ipc/Contracts/ConnectionFactDto.cs (backup v1)
+- [2026-09-12T23:01:11] src/RdpAudit.Service/ThreatIntel/ThreatIntelPassTelemetry.cs
+- [2026-09-12T23:01:37] src/RdpAudit.Service/Workers/ThreatIntelEnrichmentWorker.cs (backup v2)
+- [2026-09-12T23:03:53] src/RdpAudit.Service/Workers/ThreatIntelEnrichmentWorker.cs (backup v3)
+- [2026-09-12T23:06:31] src/RdpAudit.Service/ThreatIntel/ThreatIntelLookupStore.cs (backup v1)
+- [2026-09-12T23:06:43] src/RdpAudit.Service/ThreatIntel/ThreatIntelLookupStore.cs (backup v2)
+- [2026-09-12T23:07:00] src/RdpAudit.Service/ThreatIntel/ThreatIntelRichness.cs
+- [2026-09-12T23:14:16] src/RdpAudit.Service/ThreatIntel/ThreatIntelLookupStore.cs (backup v3)
+- [2026-09-12T23:14:24] src/RdpAudit.Service/ThreatIntel/ThreatIntelLookupStore.cs (backup v4)
+- [2026-09-12T23:18:50] src/RdpAudit.Core/Ipc/Contracts/ThreatIntelStatusDto.cs (backup v1)
+- [2026-09-12T23:32:15] src/RdpAudit.Service/ThreatIntel/ThreatIntelLookupStore.cs (backup v5)
+- [2026-09-12T23:33:35] src/RdpAudit.Service/Ipc/IpcDispatcher.cs (backup v16)
+- [2026-09-12T23:33:42] src/RdpAudit.Service/Ipc/IpcDispatcher.cs (backup v17)
+- [2026-09-12T23:35:27] src/RdpAudit.Service/Ipc/IpcDispatcher.cs (backup v18)
+- [2026-09-12T23:37:29] src/RdpAudit.Service/Ipc/IpcDispatcher.cs (backup v19)
+- [2026-09-12T23:37:42] src/RdpAudit.Service/Ipc/IpcDispatcher.cs (backup v20)
+- [2026-09-12T23:37:58] src/RdpAudit.Service/Ipc/IpcDispatcher.cs (backup v21)
+- [2026-09-12T23:44:21] tests/RdpAudit.Service.Tests/IpcDispatcherStage15ThreatIntelTests.cs
+- [2026-09-12T23:50:39] src/RdpAudit.Configurator/Forms/AttackStatisticsPage.cs (backup v4) - Configurator AttackStatisticsPage: insert Stage 15 High-risk column before Total Events.
+- [2026-09-12T23:50:50] src/RdpAudit.Configurator/Forms/AttackStatisticsPage.cs (backup v5)
+- [2026-09-12T23:51:00] src/RdpAudit.Configurator/Forms/AttackStatisticsPage.cs (backup v6)
+- [2026-09-12T23:51:08] src/RdpAudit.Configurator/Forms/LiveEventsPage.cs (backup v4)
+- [2026-09-12T23:51:17] src/RdpAudit.Configurator/Forms/LiveEventsPage.cs (backup v5)
+- [2026-09-12T23:51:39] src/RdpAudit.Configurator/Forms/AttackStatisticsPage.cs (backup v7) - Sort the High risk column by numeric confidence score.
+- [2026-09-12T23:51:46] src/RdpAudit.Configurator/Forms/AttackStatisticsPage.cs (backup v8)
+- [2026-09-12T23:51:53] src/RdpAudit.Configurator/Forms/AttackStatisticsPage.cs (backup v9)
+- [2026-09-13T00:00:33] tests/RdpAudit.ScenarioTests/ThreatIntelHighRiskScenarioTests.cs
+- [2026-09-13T00:01:15] tests/RdpAudit.ScenarioTests/ThreatIntelHighRiskScenarioTests.cs (backup v1)
+- [2026-09-13T00:01:41] tests/RdpAudit.Configurator.Tests/ThreatIntelGridContractTests.cs
+- [2026-09-13T00:08:57] docs/50-ipc.md (backup v7)
+- [2026-09-13T00:09:46] PROJECT_MAP.md (backup v36)
+- [2026-09-13T00:30:00] src/RdpAudit.Core/Sessions/SessionTimelineModels.cs
+- [2026-09-13T00:30:07] src/RdpAudit.Core/Sessions/SessionTimelineEventClassifier.cs
+- [2026-09-13T00:32:34] src/RdpAudit.Core/Sessions/SessionTimelineBuilder.cs
+- [2026-09-13T00:33:27] tests/RdpAudit.Core.Tests/SessionTimelineCoreTests.cs
+- [2026-09-13T00:35:06] src/RdpAudit.Core/Ipc/Contracts/SessionTimelineDto.cs
+- [2026-09-13T12:55:44] src/RdpAudit.Service/Sessions/SessionTimelineQueryService.cs
+- [2026-09-13T12:56:18] src/RdpAudit.Service/Sessions/SessionTimelineQueryService.cs (backup v1)
+- [2026-09-13T12:57:44] src/RdpAudit.Service/Sessions/SessionTimelineQueryService.cs (backup v2)
+- [2026-09-13T12:58:27] tests/RdpAudit.Service.Tests/SessionTimelineQueryServiceTests.cs
+- [2026-09-13T12:58:57] tests/RdpAudit.Service.Tests/SessionTimelineQueryServiceTests.cs (backup v1)
+- [2026-09-13T12:59:09] tests/RdpAudit.Service.Tests/SessionTimelineQueryServiceTests.cs (backup v2)
+- [2026-09-13T13:00:51] src/RdpAudit.Core/Ipc/IpcCommand.cs (backup v4)
+- [2026-09-13T13:00:57] src/RdpAudit.Core/Ipc/Contracts/IpcResultStatus.cs (backup v1)
+- [2026-09-13T13:01:27] src/RdpAudit.Service/Ipc/IpcDispatcher.cs (backup v22)
+- [2026-09-13T13:01:35] src/RdpAudit.Service/Ipc/IpcDispatcher.cs (backup v23)
+- [2026-09-13T13:01:43] src/RdpAudit.Service/Ipc/IpcDispatcher.cs (backup v24)
+- [2026-09-13T13:01:55] src/RdpAudit.Service/Ipc/IpcDispatcher.cs (backup v25)
+- [2026-09-13T13:03:51] src/RdpAudit.Service/Ipc/IpcDispatcher.cs (backup v26)
+- [2026-09-13T13:04:11] src/RdpAudit.Service/Ipc/IpcDispatcher.cs (backup v27)
+- [2026-09-13T13:04:31] src/RdpAudit.Service/Ipc/IpcDispatcher.cs (backup v28)
+- [2026-09-13T13:04:42] src/RdpAudit.Service/Ipc/IpcDispatcher.cs (backup v29)
+- [2026-09-13T13:04:57] src/RdpAudit.Service/Program.cs (backup v37)
+- [2026-09-13T13:05:15] src/RdpAudit.Service/Program.cs (backup v38)
+- [2026-09-13T13:05:25] tests/RdpAudit.Core.Tests/IpcCommandStabilityTests.cs (backup v3)
+- [2026-09-13T13:06:08] tests/RdpAudit.Service.Tests/IpcDispatcherSessionTimelineTests.cs
+- [2026-09-13T13:07:03] tests/RdpAudit.Service.Tests/IpcDispatcherSessionTimelineTests.cs (backup v1)
+- [2026-09-13T13:07:26] tests/RdpAudit.Service.Tests/SessionTimelineQueryServiceTests.cs (backup v3)
+- [2026-09-13T13:07:45] tests/RdpAudit.Service.Tests/SessionTimelineQueryServiceTests.cs (backup v4)
+- [2026-09-13T13:10:20] src/RdpAudit.Configurator/Controls/SessionGanttPanel.cs
+- [2026-09-13T13:10:58] src/RdpAudit.Configurator/Forms/SessionMapPage.cs
+- [2026-09-13T13:11:09] src/RdpAudit.Configurator/Forms/MainForm.cs (backup v2)
+- [2026-09-13T13:11:36] src/RdpAudit.Configurator/Forms/SessionMapPage.cs (backup v1)
+- [2026-09-13T13:11:44] src/RdpAudit.Configurator/Forms/SessionMapPage.cs (backup v2)
+- [2026-09-13T13:12:13] src/RdpAudit.Configurator/Controls/SessionGanttPanel.cs (backup v1)
+- [2026-09-13T13:12:23] src/RdpAudit.Configurator/Forms/SessionMapPage.cs (backup v3)
+- [2026-09-13T13:14:30] tests/RdpAudit.ScenarioTests/SessionTimelineScenarioTests.cs
+- [2026-09-13T13:14:42] tests/RdpAudit.ScenarioTests/SessionTimelineScenarioTests.cs (backup v1)
+- [2026-09-13T13:15:01] tests/RdpAudit.ScenarioTests/SessionTimelineScenarioTests.cs (backup v2)
+- [2026-09-13T13:17:10] tests/RdpAudit.Configurator.Tests/MainFormTabOrderTests.cs (backup v1)
+- [2026-09-13T13:17:28] tests/RdpAudit.Configurator.Tests/MainFormTabOrderTests.cs (backup v2)
+- [2026-09-13T13:22:18] docs/50-ipc.md (backup v8)
+- [2026-09-13T13:22:27] docs/50-ipc.md (backup v9)
+- [2026-09-13T13:23:33] docs/54-session-map.md
+- [2026-09-13T13:24:04] SPEC.md (backup v8)
+- [2026-09-13T13:26:27] PROJECT_MAP.md (backup v37)
+- [2026-09-13T13:26:39] PROJECT_MAP.md (backup v38)
+- [2026-09-13T13:27:21] ARCHITECTURE.md (backup v11)
+- [2026-09-13T13:28:22] docs/80-roadmap.md (backup v16)
+- [2026-09-13T13:29:15] README.md (backup v14)
+- [2026-09-13T13:30:06] README.ru.md (backup v14)
+- [2026-09-13T14:12:00] ARCHITECTURE.md (backup v12)
+- [2026-09-13T14:12:23] ARCHITECTURE.md (backup v13)
+- [2026-09-13T14:12:36] ARCHITECTURE.md (backup v14)
+- [2026-09-13T14:12:47] ARCHITECTURE.md (backup v15)
+- [2026-09-13T14:12:54] ARCHITECTURE.md (backup v16)
+- [2026-09-13T14:13:02] ARCHITECTURE.md (backup v17)
+- [2026-09-13T14:14:20] SPEC.md (backup v9)
+- [2026-09-13T14:17:32] SPEC.md (backup v10)
+- [2026-09-13T14:21:35] README.md (backup v15)
+- [2026-09-13T14:21:40] README.md (backup v16)
+- [2026-09-13T14:21:58] README.md (backup v17)
+- [2026-09-13T14:22:20] README.md (backup v18)
+- [2026-09-13T14:22:44] README.md (backup v19)
+- [2026-09-13T14:24:54] README.md (backup v20)
+- [2026-09-13T14:27:06] README.ru.md (backup v15)
+- [2026-09-13T14:27:12] README.ru.md (backup v16)
+- [2026-09-13T14:27:17] README.ru.md (backup v17)
+- [2026-09-13T14:27:34] README.ru.md (backup v18)
+- [2026-09-13T14:27:50] README.ru.md (backup v19)
+- [2026-09-13T14:28:04] README.ru.md (backup v20)
+- [2026-09-13T14:28:21] README.ru.md (backup v21)
+- [2026-09-13T15:27:34] src/RdpAudit.Core/Models/KnownProcess.cs
+- [2026-09-13T15:27:51] src/RdpAudit.Core/Models/ProcessAlertResponse.cs
+- [2026-09-13T15:28:05] src/RdpAudit.Core/Models/ProcessObservationRecord.cs
+- [2026-09-13T15:28:21] src/RdpAudit.Core/ProcessMonitoring/ProcessClassification.cs
+- [2026-09-13T15:28:49] src/RdpAudit.Core/Config/ProcessMonitoringOptions.cs
+- [2026-09-13T15:29:03] src/RdpAudit.Core/Data/Configurations/KnownProcessConfiguration.cs
+- [2026-09-13T15:29:16] src/RdpAudit.Core/Models/KnownProcess.cs (backup v1)
+- [2026-09-13T15:29:29] src/RdpAudit.Core/Data/Configurations/KnownProcessConfiguration.cs (backup v1)
+- [2026-09-13T15:29:34] src/RdpAudit.Core/Data/Configurations/ProcessAlertResponseConfiguration.cs
+- [2026-09-13T15:29:48] src/RdpAudit.Core/Data/Configurations/ProcessObservationRecordConfiguration.cs
+- [2026-09-13T15:29:57] src/RdpAudit.Core/Data/AuditDbContext.cs (backup v3)
+- [2026-09-13T15:30:29] src/RdpAudit.Core/Config/RdpAuditOptions.cs (backup v3)
+- [2026-09-13T15:33:13] src/RdpAudit.Core/Data/AuditDbContextDesignTimeFactory.cs
+- [2026-09-13T15:51:29] src/RdpAudit.Core/ProcessMonitoring/KnownProcessKey.cs
+- [2026-09-13T15:52:37] src/RdpAudit.Core/Ipc/Contracts/ProcessAlertDto.cs
+- [2026-09-13T15:52:48] src/RdpAudit.Core/Ipc/Contracts/ProcessObservationRequest.cs
+- [2026-09-13T15:53:19] src/RdpAudit.Core/Ipc/Contracts/ProcessAlertListDto.cs
+- [2026-09-13T15:53:38] src/RdpAudit.Core/Ipc/Contracts/ProcessAlertDetailsDto.cs
+- [2026-09-13T15:53:52] src/RdpAudit.Core/Ipc/Contracts/SetProcessAutoCloseRequest.cs
+- [2026-09-13T15:54:04] src/RdpAudit.Core/Ipc/Contracts/ProcessMonitoringStatusDto.cs
+- [2026-09-13T15:54:18] src/RdpAudit.Core/Ipc/IpcCommand.cs (backup v5)
+- [2026-09-13T15:54:23] tests/RdpAudit.Core.Tests/IpcCommandStabilityTests.cs (backup v4)
+- [2026-09-13T15:54:41] tests/RdpAudit.Core.Tests/ProcessMonitoring/ProcessClassificationTests.cs
+- [2026-09-13T16:36:21] src/RdpAudit.Service/ProcessMonitoring/KnownProcessStore.cs - KnownProcessStore part 1: baseline upsert, observation journal, status counts
+- [2026-09-13T16:37:48] src/RdpAudit.Service/ProcessMonitoring/KnownProcessStore.cs (backup v1)
+- [2026-09-13T16:39:04] src/RdpAudit.Service/ProcessMonitoring/KnownProcessStoreAlerts.cs - KnownProcessStore part 2: alert reads + auto-close lifecycle
+- [2026-09-13T16:39:20] src/RdpAudit.Service/ProcessMonitoring/KnownProcessStore.cs (backup v2)
+- [2026-09-13T16:39:36] src/RdpAudit.Service/Program.cs (backup v39)
+- [2026-09-13T16:40:05] src/RdpAudit.Service/Program.cs (backup v40)
+- [2026-09-13T16:40:17] src/RdpAudit.Service/Program.cs (backup v41)
+- [2026-09-13T16:43:38] tests/RdpAudit.Service.Tests/KnownProcessStoreTests.cs - KnownProcessStore unit tests (in-memory SQLite, Stage16 schema)
+- [2026-09-13T16:44:28] tests/RdpAudit.Service.Tests/KnownProcessStoreTests.cs (backup v1)
+- [2026-09-13T16:53:35] src/RdpAudit.Service/Alerts/NewProcessRule.cs - PROCESS_NEW alert rule with DB-backed baseline recording
+- [2026-09-13T16:53:40] src/RdpAudit.Service/Alerts/AlertRuleRegistration.cs (backup v1)
+- [2026-09-13T16:53:45] src/RdpAudit.Service/Alerts/AlertRuleRegistration.cs (backup v2)
+- [2026-09-13T16:54:09] tests/RdpAudit.Service.Tests/NewProcessRuleTests.cs - NewProcessRule unit tests
+- [2026-09-13T16:55:12] src/RdpAudit.Service/Alerts/NewProcessRule.cs (backup v1)
+- [2026-09-13T16:55:25] tests/RdpAudit.Service.Tests/NewProcessRuleTests.cs (backup v1)
+- [2026-09-13T16:56:03] tests/RdpAudit.Service.Tests/NewProcessRuleTests.cs (backup v2)
+- [2026-09-13T17:46:10] src/RdpAudit.Service/Workers/ProcessAlertAutoResponder.cs
+- [2026-09-13T17:46:39] src/RdpAudit.Service/Workers/ProcessAlertAutoResponder.cs (backup v1)
+- [2026-09-13T17:46:48] src/RdpAudit.Service/Workers/ProcessAlertAutoResponder.cs (backup v2)
+- [2026-09-13T17:47:17] src/RdpAudit.Service/Program.cs (backup v42)
+- [2026-09-13T17:48:16] src/RdpAudit.Service/Workers/ProcessAlertAutoResponder.cs (backup v3)
+- [2026-09-13T17:50:02] tests/RdpAudit.Service.Tests/ProcessAlertAutoResponderTests.cs
+- [2026-09-13T17:50:48] tests/RdpAudit.Service.Tests/ProcessAlertAutoResponderTests.cs (backup v1)
+- [2026-09-13T17:51:59] tests/RdpAudit.Service.Tests/ProcessAlertAutoResponderTests.cs (backup v2)
+- [2026-09-13T17:52:10] tests/RdpAudit.Service.Tests/ProcessAlertAutoResponderTests.cs (backup v3)
+- [2026-09-13T18:02:52] src/RdpAudit.Service/Ipc/IpcDispatcher.cs (backup v30)
+- [2026-09-13T18:04:13] src/RdpAudit.Service/Ipc/IpcDispatcher.cs (backup v31)
+- [2026-09-13T18:04:29] src/RdpAudit.Service/Ipc/IpcDispatcher.cs (backup v32)
+- [2026-09-13T18:04:38] src/RdpAudit.Service/Ipc/IpcDispatcher.cs (backup v33)
+- [2026-09-13T18:46:04] src/RdpAudit.Service/Ipc/IpcDispatcher.ProcessMonitoring.cs - Step 6: IPC handlers for ordinals 73..77 in a dedicated partial file.
+- [2026-09-13T18:53:28] src/RdpAudit.Service/Ipc/IpcDispatcher.ProcessMonitoring.cs (backup v1)
+- [2026-09-13T18:57:19] tests/RdpAudit.Service.Tests/ProcessMonitoringIpcTests.cs - Step 6: integration tests for the five new process-monitoring IPC handlers (73..77).
+- [2026-09-13T18:58:17] tests/RdpAudit.Service.Tests/ProcessMonitoringIpcTests.cs (backup v1)
+- [2026-09-13T18:58:51] tests/RdpAudit.Service.Tests/ProcessMonitoringIpcTests.cs (backup v2)
+- [2026-09-13T18:59:51] src/RdpAudit.Service/Ipc/IpcDispatcher.ProcessMonitoring.cs (backup v2)
+- [2026-09-13T19:48:46] src/RdpAudit.Core/Ipc/Contracts/RecentEventDto.cs (backup v1)
+- [2026-09-13T19:49:00] src/RdpAudit.Service/Ipc/IpcDispatcher.cs (backup v34)
+- [2026-09-13T19:49:58] src/RdpAudit.Service/Ipc/IpcDispatcher.cs (backup v35)
+- [2026-09-13T19:50:09] src/RdpAudit.Service/Ipc/IpcDispatcher.cs (backup v36)
+- [2026-09-13T19:50:16] src/RdpAudit.Service/AppSettingsTemplate.cs (backup v9)
+- [2026-09-13T19:50:23] src/RdpAudit.Configurator/Services/DefaultAppSettings.cs (backup v5)
+- [2026-09-13T19:56:01] src/RdpAudit.Configurator/Forms/LiveEventsPage.cs (backup v6)
+- [2026-09-13T19:58:54] src/RdpAudit.Configurator/Forms/ProcessAlertsPage.cs - New Process Alerts page: list + details + auto-close controls over IPC commands 74/75/76.
+- [2026-09-13T20:01:52] src/RdpAudit.Configurator/Forms/ProcessAlertsPage.cs (backup v1) - Clean rewrite of ProcessAlertsPage: fixed stray tokens, removed Service-assembly dependency, added theming import.
+- [2026-09-13T20:02:06] src/RdpAudit.Configurator/Forms/MainForm.cs (backup v3)
+- [2026-09-13T20:04:05] src/RdpAudit.Configurator/Forms/ProcessAlertsPage.cs (backup v2)
+- [2026-09-13T20:04:40] src/RdpAudit.Configurator/Forms/ProcessAlertsPage.cs (backup v3)
+- [2026-09-13T20:05:51] src/RdpAudit.Configurator/Forms/ProcessObservationDialog.cs - New DEBUG-panel dialog for the ReportProcessObservation IPC command (ordinal 73).
+- [2026-09-13T20:06:03] src/RdpAudit.Configurator/Forms/DiagnosticsPage.cs (backup v4)
+- [2026-09-13T20:06:19] src/RdpAudit.Configurator/Forms/DiagnosticsPage.cs (backup v5)
+- [2026-09-13T20:07:24] src/RdpAudit.Configurator/Forms/DiagnosticsPage.cs (backup v6)
+- [2026-09-13T20:08:14] src/RdpAudit.Configurator/Forms/ProcessObservationDialog.cs (backup v1)
+- [2026-09-13T20:08:14] src/RdpAudit.Configurator/Forms/LiveEventsPage.cs (backup v7)
+- [2026-09-13T20:09:08] tests/RdpAudit.Configurator.Tests/MainFormTabOrderTests.cs (backup v3)
+- [2026-09-13T20:42:16] tests/RdpAudit.ScenarioTests/ProcessMonitoringScenarioTests.cs
+- [2026-09-13T20:42:47] src/RdpAudit.Service/Ipc/IpcDispatcher.cs (backup v37)
+- [2026-09-13T20:44:42] tests/RdpAudit.ScenarioTests/ProcessMonitoringScenarioTests.cs (backup v1)
+- [2026-09-13T20:45:12] tests/RdpAudit.ScenarioTests/ProcessMonitoringScenarioTests.cs (backup v2)
+- [2026-09-13T20:45:50] tests/RdpAudit.ScenarioTests/ProcessMonitoringScenarioTests.cs (backup v3)
+- [2026-09-13T20:46:16] tests/RdpAudit.ScenarioTests/ProcessMonitoringScenarioTests.cs (backup v4)
+- [2026-09-13T20:47:17] tests/RdpAudit.ScenarioTests/ProcessMonitoringScenarioTests.cs (backup v5)
+- [2026-09-13T20:52:11] docs/50-ipc.md (backup v10)
+- [2026-09-13T20:52:17] docs/50-ipc.md (backup v11)
+- [2026-09-13T20:52:23] docs/50-ipc.md (backup v12)
+- [2026-09-13T20:52:29] docs/50-ipc.md (backup v13)
+- [2026-09-13T20:52:44] docs/50-ipc.md (backup v14)
+- [2026-09-13T20:53:27] PROJECT_MAP.md (backup v39)
+- [2026-09-13T20:53:35] PROJECT_MAP.md (backup v40)
+- [2026-09-13T20:53:46] PROJECT_MAP.md (backup v41)
+- [2026-09-13T22:38:25] src/RdpAudit.Core/Config/NotificationOptions.cs
+- [2026-09-13T22:38:34] src/RdpAudit.Core/Config/NotificationOptions.cs (backup v1)
+- [2026-09-13T22:41:18] src/RdpAudit.Core/Config/NotificationOptions.cs (backup v2)
+- [2026-09-13T22:41:25] src/RdpAudit.Core/Config/NotificationOptions.cs (backup v3)
+- [2026-09-13T22:41:33] src/RdpAudit.Core/Config/RdpAuditOptions.cs (backup v4)
+- [2026-09-13T22:42:31] src/RdpAudit.Configurator/Services/DefaultAppSettings.cs (backup v6)
+- [2026-09-13T22:42:36] src/RdpAudit.Configurator/Services/DefaultAppSettings.cs (backup v7)
+- [2026-09-13T22:42:59] tests/RdpAudit.Core.Tests/NotificationOptionsTests.cs
+- [2026-09-13T22:43:03] tests/RdpAudit.Core.Tests/NotificationOptionsTests.cs (backup v1)
+- [2026-09-13T22:43:10] tests/RdpAudit.Core.Tests/NotificationOptionsTests.cs (backup v2)
+- [2026-09-13T22:46:08] src/RdpAudit.Core/Ipc/IpcCommand.cs (backup v6)
+- [2026-09-13T22:46:12] src/RdpAudit.Service/Ipc/IpcDispatcher.cs (backup v38)
+- [2026-09-13T22:47:30] tests/RdpAudit.Core.Tests/IpcCommandStabilityTests.cs (backup v5)
+- [2026-09-13T22:48:25] src/RdpAudit.Core/Ipc/Contracts/NotificationSettingsDto.cs
+- [2026-09-13T22:48:34] src/RdpAudit.Core/Ipc/Contracts/NotificationSettingsDto.cs (backup v1)
+- [2026-09-13T23:01:30] src/RdpAudit.Service/Ipc/IpcDispatcher.Notifications.cs
+- [2026-09-13T23:02:37] src/RdpAudit.Service/Ipc/IpcDispatcher.Notifications.cs (backup v1)
+- [2026-09-13T23:02:44] src/RdpAudit.Service/Ipc/IpcDispatcher.cs (backup v39)
+- [2026-09-13T23:02:48] src/RdpAudit.Service/Ipc/IpcDispatcher.Notifications.cs (backup v2)
+- [2026-09-13T23:03:20] tests/RdpAudit.Service.Tests/IpcDispatcherNotificationSettingsTests.cs
+- [2026-09-13T23:04:04] tests/RdpAudit.Service.Tests/IpcDispatcherNotificationSettingsTests.cs (backup v1)
+- [2026-09-13T23:04:37] tests/RdpAudit.Service.Tests/IpcDispatcherNotificationSettingsTests.cs (backup v2)
+- [2026-09-13T23:04:47] tests/RdpAudit.Service.Tests/IpcDispatcherNotificationSettingsTests.cs (backup v3)
+- [2026-09-13T23:05:22] tests/RdpAudit.Service.Tests/IpcDispatcherNotificationSettingsTests.cs (backup v4)
+- [2026-09-13T23:05:34] tests/RdpAudit.Service.Tests/IpcDispatcherNotificationSettingsTests.cs (backup v5)
+- [2026-09-13T23:06:40] tests/RdpAudit.Service.Tests/IpcDispatcherNotificationSettingsTests.cs (backup v6)
+- [2026-09-13T23:09:13] src/RdpAudit.Notifier/RdpAudit.Notifier.csproj
+- [2026-09-13T23:09:28] src/RdpAudit.Notifier/app.manifest
+- [2026-09-13T23:12:11] tests/RdpAudit.Notifier.Tests/RdpAudit.Notifier.Tests.csproj
+- [2026-09-13T23:13:19] src/RdpAudit.Notifier/Ipc/IAlertSource.cs
+- [2026-09-13T23:13:31] src/RdpAudit.Notifier/Ipc/IpcAlertSource.cs
+- [2026-09-13T23:14:46] src/RdpAudit.Notifier/Notifications/NotificationPolicy.cs
+- [2026-09-13T23:14:53] src/RdpAudit.Notifier/Notifications/NotificationFilter.cs
+- [2026-09-13T23:15:05] src/RdpAudit.Notifier/Notifications/ToastBudget.cs
+- [2026-09-13T23:15:10] src/RdpAudit.Notifier/Notifications/INotificationSink.cs
+- [2026-09-13T23:15:17] src/RdpAudit.Notifier/Notifications/NotificationPoller.cs
+- [2026-09-13T23:16:23] src/RdpAudit.Notifier/Program.cs
+- [2026-09-13T23:16:32] src/RdpAudit.Notifier/Forms/TrayApplicationContext.cs
+- [2026-09-13T23:16:35] src/RdpAudit.Notifier/Notifications/NotificationPoller.cs (backup v1)
+- [2026-09-13T23:16:43] src/RdpAudit.Notifier/Forms/TrayApplicationContext.cs (backup v1)
+- [2026-09-13T23:16:52] src/RdpAudit.Notifier/Forms/TrayApplicationContext.cs (backup v2)
+- [2026-09-13T23:16:58] src/RdpAudit.Notifier/Notifications/TrayNotificationSink.cs
+- [2026-09-13T23:17:07] RdpAudit.sln (backup v3)
+- [2026-09-13T23:17:24] src/RdpAudit.Notifier/Notifications/ToastBudget.cs (backup v1)
+- [2026-09-13T23:17:28] src/RdpAudit.Notifier/Notifications/NotificationPoller.cs (backup v2)
+- [2026-09-13T23:18:12] tests/RdpAudit.Notifier.Tests/NotificationPolicyTests.cs
+- [2026-09-13T23:18:19] tests/RdpAudit.Notifier.Tests/NotificationFilterTests.cs
+- [2026-09-13T23:18:28] src/RdpAudit.Notifier/Notifications/NotificationPolicy.cs (backup v1)
+- [2026-09-13T23:19:00] tests/RdpAudit.Notifier.Tests/ToastBudgetTests.cs
+- [2026-09-13T23:19:30] tests/RdpAudit.Notifier.Tests/NotificationPollerTests.cs
+- [2026-09-13T23:31:32] src/RdpAudit.Configurator/Forms/NotificationsPage.cs
+- [2026-09-13T23:32:29] src/RdpAudit.Configurator/Forms/NotificationsPage.cs (backup v1)
+- [2026-09-13T23:35:48] src/RdpAudit.Configurator/Forms/NotificationsPage.cs (backup v2)
+- [2026-09-13T23:36:00] src/RdpAudit.Configurator/Forms/NotificationsPage.cs (backup v3)
+- [2026-09-13T23:36:15] src/RdpAudit.Configurator/Forms/NotificationsPage.cs (backup v4)
+- [2026-09-13T23:36:19] src/RdpAudit.Configurator/Forms/NotificationsPage.cs (backup v5)
+- [2026-09-13T23:36:25] src/RdpAudit.Configurator/Forms/NotificationsPage.cs (backup v6)
+- [2026-09-13T23:36:27] src/RdpAudit.Configurator/Forms/NotificationsPage.cs (backup v7)
+- [2026-09-13T23:36:31] src/RdpAudit.Configurator/Forms/NotificationsPage.cs (backup v8)
+- [2026-09-13T23:36:35] src/RdpAudit.Configurator/Forms/NotificationsPage.cs (backup v9)
+- [2026-09-13T23:36:38] src/RdpAudit.Configurator/Forms/NotificationsPage.cs (backup v10)
+- [2026-09-13T23:41:16] src/RdpAudit.Configurator/Forms/NotificationsPage.cs (backup v11)
+- [2026-09-13T23:44:12] src/RdpAudit.Configurator/Forms/NotificationsPage.cs (backup v12)
+- [2026-09-13T23:54:51] src/RdpAudit.Configurator/Forms/NotificationsPage.cs (backup v13)
+- [2026-09-13T23:54:56] src/RdpAudit.Configurator/Forms/NotificationsPage.cs (backup v14)
+- [2026-09-13T23:58:06] src/RdpAudit.Configurator/Forms/NotificationsPage.cs (backup v15)
+- [2026-09-13T23:58:48] src/RdpAudit.Configurator/Forms/NotificationsPage.cs (backup v16)
+- [2026-09-13T23:59:15] src/RdpAudit.Configurator/Forms/NotificationsPage.cs (backup v17) - Rewrite NotificationsPage with complete tab implementation
+- [2026-09-13T23:59:26] src/RdpAudit.Configurator/Forms/NotificationsPage.cs (backup v18)
+- [2026-09-13T23:59:36] src/RdpAudit.Configurator/Forms/NotificationsPage.cs (backup v19)
+- [2026-09-13T23:59:55] src/RdpAudit.Configurator/Forms/NotificationsPage.cs (backup v20)
+- [2026-09-14T00:03:46] src/RdpAudit.Configurator/Services/NotificationCatalogInfo.cs
+- [2026-09-14T00:03:57] src/RdpAudit.Configurator/Forms/NotificationsPage.cs (backup v21)
+- [2026-09-14T00:04:02] src/RdpAudit.Configurator/Forms/NotificationsPage.cs (backup v22)
+- [2026-09-14T00:04:07] src/RdpAudit.Configurator/Forms/NotificationsPage.cs (backup v23)
+- [2026-09-14T00:04:46] src/RdpAudit.Configurator/RdpAudit.Configurator.csproj (backup v1)
+- [2026-09-14T00:04:58] src/RdpAudit.Configurator/Services/NotificationSettingsGateway.cs
+- [2026-09-14T00:05:47] src/RdpAudit.Configurator/Forms/NotificationsPage.cs (backup v24)
+- [2026-09-14T00:06:19] src/RdpAudit.Configurator/Forms/NotificationsPage.cs (backup v25)
+- [2026-09-14T00:09:35] src/RdpAudit.Configurator/Forms/NotificationsPage.cs (backup v26)
+- [2026-09-14T00:11:15] src/RdpAudit.Configurator/Forms/NotificationsPage.cs (backup v27)
+- [2026-09-14T00:12:53] tests/RdpAudit.Configurator.Tests/NotificationsPageTests.cs
+- [2026-09-14T00:13:05] src/RdpAudit.Configurator/Forms/NotificationsPage.cs (backup v28)
+- [2026-09-14T00:13:20] tests/RdpAudit.Configurator.Tests/NotificationsPageTests.cs (backup v1)
+- [2026-09-14T00:14:09] src/RdpAudit.Configurator/Forms/MainForm.cs (backup v4)
+- [2026-09-14T00:14:15] src/RdpAudit.Configurator/Forms/MainForm.cs (backup v5)
+- [2026-09-14T00:14:19] src/RdpAudit.Configurator/Forms/MainForm.cs (backup v6)
+- [2026-09-14T00:14:38] tests/RdpAudit.Configurator.Tests/MainFormTabOrderTests.cs (backup v4)
+- [2026-09-14T00:19:09] src/RdpAudit.Configurator/Services/INotifierAutostartService.cs
+- [2026-09-14T00:19:32] src/RdpAudit.Configurator/Services/NotifierAutostartService.cs
+- [2026-09-14T00:21:22] src/RdpAudit.Configurator/Services/NotifierAutostartService.cs (backup v1)
+- [2026-09-14T00:21:39] src/RdpAudit.Configurator/Forms/NotificationsPage.cs (backup v29)
+- [2026-09-14T00:21:44] src/RdpAudit.Configurator/Forms/NotificationsPage.cs (backup v30)
+- [2026-09-14T00:21:48] src/RdpAudit.Configurator/Forms/NotificationsPage.cs (backup v31)
+- [2026-09-14T00:21:52] src/RdpAudit.Configurator/Forms/NotificationsPage.cs (backup v32)
+- [2026-09-14T00:21:58] src/RdpAudit.Configurator/Forms/MainForm.cs (backup v7)
+- [2026-09-14T00:22:15] tests/RdpAudit.Configurator.Tests/NotifierAutostartServiceTests.cs
+- [2026-09-14T00:22:28] tests/RdpAudit.Configurator.Tests/NotificationsPageTests.cs (backup v2)
+- [2026-09-14T00:24:47] publish.ps1 (backup v2)
+- [2026-09-14T00:24:51] publish.ps1 (backup v3)
+- [2026-09-14T00:25:00] publish.ps1 (backup v4)
+- [2026-09-14T00:25:24] install.ps1 (backup v1)
+- [2026-09-14T00:25:35] install.ps1 (backup v2)
+- [2026-09-14T00:25:53] publish.ps1 (backup v5)
+- [2026-09-14T00:27:03] publish.ps1 (backup v6)
+- [2026-09-14T00:28:23] install.ps1 (backup v3)
+- [2026-09-14T00:39:11] src/RdpAudit.Notifier/RdpAudit.Notifier.csproj (backup v1)
+- [2026-09-14T00:39:14] tests/RdpAudit.Notifier.Tests/RdpAudit.Notifier.Tests.csproj (backup v1)
+- [2026-09-14T00:41:24] src/RdpAudit.Notifier/Notifications/AlertTextFormatter.cs
+- [2026-09-14T00:41:30] src/RdpAudit.Notifier/Notifications/ToastXmlBuilder.cs
+- [2026-09-14T01:05:25] src/RdpAudit.Notifier/Notifications/ToastXmlBuilder.cs (backup v1)
+- [2026-09-14T01:06:27] src/RdpAudit.Notifier/Notifications/IToastRenderer.cs
+- [2026-09-14T01:06:38] src/RdpAudit.Notifier/Notifications/ToastAppRegistration.cs
+- [2026-09-14T01:07:40] src/RdpAudit.Notifier/Notifications/ToastAppRegistration.cs (backup v1)
+- [2026-09-14T01:08:16] src/RdpAudit.Notifier/Notifications/NativeToastSender.cs
+- [2026-09-14T01:09:09] src/RdpAudit.Notifier/Notifications/ToastRouter.cs
+- [2026-09-14T01:09:18] src/RdpAudit.Notifier/Notifications/INotificationSink.cs (backup v1)
+- [2026-09-14T01:09:34] src/RdpAudit.Notifier/Notifications/NotificationPolicy.cs (backup v2)
+- [2026-09-14T01:10:01] src/RdpAudit.Notifier/Notifications/NotificationPoller.cs (backup v3)
+- [2026-09-14T01:10:54] tests/RdpAudit.Notifier.Tests/NotificationPollerTests.cs (backup v1)
+- [2026-09-14T01:11:02] tests/RdpAudit.Notifier.Tests/NotificationPollerTests.cs (backup v2)
+- [2026-09-14T01:11:06] tests/RdpAudit.Notifier.Tests/NotificationPollerTests.cs (backup v3)
+- [2026-09-14T01:12:44] src/RdpAudit.Notifier/Notifications/TrayNotificationSink.cs (backup v1)
+- [2026-09-14T01:13:19] src/RdpAudit.Notifier/Forms/TrayApplicationContext.cs (backup v3)
+- [2026-09-14T01:13:38] src/RdpAudit.Notifier/Forms/TrayApplicationContext.cs (backup v4)
+- [2026-09-14T01:13:57] src/RdpAudit.Notifier/Forms/TrayApplicationContext.cs (backup v5)
+- [2026-09-14T01:14:49] src/RdpAudit.Notifier/Forms/TrayApplicationContext.cs (backup v6)
+- [2026-09-14T01:15:49] src/RdpAudit.Notifier/Program.cs (backup v1)
+- [2026-09-14T01:17:50] tests/RdpAudit.Notifier.Tests/TestDoubles.cs
+- [2026-09-14T01:18:13] tests/RdpAudit.Notifier.Tests/NotificationPolicyTests.cs (backup v1)
+- [2026-09-14T01:18:40] tests/RdpAudit.Notifier.Tests/ToastRouterTests.cs
+- [2026-09-14T01:18:49] tests/RdpAudit.Notifier.Tests/ToastXmlBuilderTests.cs
+- [2026-09-14T01:19:09] tests/RdpAudit.Notifier.Tests/ToastRouterTests.cs (backup v1)
+- [2026-09-14T01:19:27] tests/RdpAudit.Notifier.Tests/ToastXmlBuilderTests.cs (backup v1)
+- [2026-09-14T01:21:58] tests/RdpAudit.Notifier.Tests/ToastXmlBuilderTests.cs (backup v2)
+- [2026-09-14T01:26:28] src/RdpAudit.Notifier/Notifications/PollBackoffPolicy.cs
+- [2026-09-14T01:26:47] src/RdpAudit.Notifier/Notifications/NotificationPoller.cs (backup v4)
+- [2026-09-14T01:26:56] src/RdpAudit.Notifier/Notifications/NotificationPoller.cs (backup v5)
+- [2026-09-14T01:27:06] src/RdpAudit.Notifier/Notifications/TrayStatusText.cs
+- [2026-09-14T01:27:18] src/RdpAudit.Notifier/Forms/TrayApplicationContext.cs (backup v7)
+- [2026-09-14T01:28:02] src/RdpAudit.Notifier/Forms/TrayApplicationContext.cs (backup v8)
+- [2026-09-14T01:28:19] src/RdpAudit.Notifier/Forms/TrayApplicationContext.cs (backup v9)
+- [2026-09-14T01:28:22] src/RdpAudit.Notifier/Forms/TrayApplicationContext.cs (backup v10)
+- [2026-09-14T01:28:39] src/RdpAudit.Notifier/Forms/TrayApplicationContext.cs (backup v11)
+- [2026-09-14T01:28:52] src/RdpAudit.Notifier/Forms/TrayApplicationContext.cs (backup v12)
+- [2026-09-14T01:29:45] src/RdpAudit.Notifier/Forms/TrayApplicationContext.cs (backup v13)
+- [2026-09-14T01:29:50] src/RdpAudit.Notifier/Forms/TrayApplicationContext.cs (backup v14)
+- [2026-09-14T01:30:05] src/RdpAudit.Notifier/Forms/TrayApplicationContext.cs (backup v15)
+- [2026-09-14T01:30:25] tests/RdpAudit.Notifier.Tests/PollBackoffPolicyTests.cs
+- [2026-09-14T01:30:28] tests/RdpAudit.Notifier.Tests/TrayStatusTextTests.cs
+- [2026-09-14T01:30:38] tests/RdpAudit.Notifier.Tests/NotificationPollerTests.cs (backup v4)
+- [2026-09-14T01:44:56] tests/RdpAudit.ScenarioTests/RdpAudit.ScenarioTests.csproj (backup v2)
+- [2026-09-14T01:46:52] tests/RdpAudit.ScenarioTests/NotificationScenarioTests.cs
+- [2026-09-14T01:47:51] tests/RdpAudit.ScenarioTests/NotificationScenarioTests.cs (backup v1)
+- [2026-09-14T01:49:09] tests/RdpAudit.ScenarioTests/NotificationScenarioTests.cs (backup v2)
+- [2026-09-14T01:49:16] tests/RdpAudit.ScenarioTests/NotificationScenarioTests.cs (backup v3)
+- [2026-09-14T01:50:18] tests/RdpAudit.ScenarioTests/NotificationScenarioTests.cs (backup v4)
+- [2026-09-14T01:52:55] tests/RdpAudit.ScenarioTests/NotificationScenarioTests.cs (backup v5)
+- [2026-09-14T01:53:29] tests/RdpAudit.ScenarioTests/NotificationScenarioTests.cs (backup v6)
+- [2026-09-14T01:54:02] tests/RdpAudit.ScenarioTests/NotificationScenarioTests.cs (backup v7)
+- [2026-09-14T01:54:18] tests/RdpAudit.ScenarioTests/NotificationScenarioTests.cs (backup v8)
+- [2026-09-14T01:54:36] tests/RdpAudit.ScenarioTests/NotificationScenarioTests.cs (backup v9)
+- [2026-09-14T01:55:16] tests/RdpAudit.ScenarioTests/NotificationScenarioTests.cs (backup v10)
+- [2026-09-14T01:58:38] PROJECT_MAP.md (backup v42)
+- [2026-09-14T01:59:05] PROJECT_MAP.md (backup v43)
+- [2026-09-14T01:59:17] PROJECT_MAP.md (backup v44)
+- [2026-09-14T01:59:21] PROJECT_MAP.md (backup v45)
+- [2026-09-14T01:59:36] PROJECT_MAP.md (backup v46)
+- [2026-09-14T02:00:03] PROJECT_MAP.md (backup v47)
+- [2026-09-14T02:00:15] PROJECT_MAP.md (backup v48)
+- [2026-09-14T02:00:43] docs/50-ipc.md (backup v15)
+- [2026-09-14T02:04:11] README.md (backup v21)
+- [2026-09-14T02:04:17] README.md (backup v22)
+- [2026-09-14T02:05:28] ARCHITECTURE.md (backup v18)
+- [2026-09-14T02:05:34] ARCHITECTURE.md (backup v19)
+- [2026-09-14T02:05:38] ARCHITECTURE.md (backup v20)
+- [2026-09-14T02:07:24] README.ru.md (backup v22)
+- [2026-09-14T02:07:30] README.ru.md (backup v23)
+- [2026-09-14T03:09:30] docs/30-configurator.md (backup v6)
+- [2026-09-14T03:11:40] SPEC.md (backup v11)
+- [2026-09-14T03:11:44] SPEC.md (backup v12)
+- [2026-09-14T03:11:50] SPEC.md (backup v13)
+- [2026-09-14T03:12:40] ARCHITECTURE.md (backup v21)
+- [2026-09-14T03:13:07] ARCHITECTURE.md (backup v22)
+- [2026-09-14T03:13:11] ARCHITECTURE.md (backup v23)
+- [2026-09-14T03:13:27] ARCHITECTURE.md (backup v24)
+- [2026-09-14T03:13:29] ARCHITECTURE.md (backup v25)
+- [2026-09-14T03:13:42] ARCHITECTURE.md (backup v26)
+- [2026-09-14T03:13:55] ARCHITECTURE.md (backup v27)
+- [2026-09-14T03:14:18] ARCHITECTURE.md (backup v28)
+- [2026-09-14T03:14:43] ARCHITECTURE.md (backup v29)
+- [2026-09-14T03:14:51] ARCHITECTURE.md (backup v30)
+- [2026-09-14T03:14:58] ARCHITECTURE.md (backup v31)
+- [2026-09-14T03:54:42] src/RdpAudit.Configurator/Forms/NotificationsPage.cs (backup v33)
+- [2026-09-14T03:55:20] src/RdpAudit.Configurator/Forms/NotificationsPage.cs (backup v34)
+- [2026-09-14T03:56:34] src/RdpAudit.Configurator/Forms/NotificationsPage.cs (backup v35)
+- [2026-09-14T03:58:56] src/RdpAudit.Configurator/Forms/NotificationsPage.cs (backup v36)
+- [2026-09-14T03:59:44] src/RdpAudit.Configurator/Forms/NotificationsPage.cs (backup v37)
+- [2026-09-14T04:00:03] src/RdpAudit.Configurator/Forms/NotificationsPage.cs (backup v38)
+- [2026-09-14T04:00:19] src/RdpAudit.Configurator/Forms/NotificationsPage.cs (backup v39)
+- [2026-09-14T04:00:52] src/RdpAudit.Configurator/Forms/NotificationsPage.cs (backup v40)
+- [2026-09-14T04:02:38] tests/RdpAudit.Configurator.Tests/NotificationsPageTests.cs (backup v3)
+- [2026-09-19T16:01:46] src/RdpAudit.Core/Util/RdpAuditPaths.cs (backup v2)
+- [2026-09-19T16:01:52] src/RdpAudit.Core/Util/RdpAuditPaths.cs (backup v3)
+- [2026-09-19T16:01:59] src/RdpAudit.Core/Util/RdpAuditPaths.cs (backup v4)
+- [2026-09-19T16:04:46] src/RdpAudit.Core/Security/WebTokenVault.cs
+- [2026-09-19T16:05:41] src/RdpAudit.Core/Security/WebTokenVault.cs (backup v1)
+- [2026-09-19T16:06:17] src/RdpAudit.Core/Security/WebTokenVault.cs (backup v2)
+- [2026-09-19T16:06:29] src/RdpAudit.Core/Security/WebTokenVault.cs (backup v3)
+- [2026-09-19T16:06:37] src/RdpAudit.Core/Security/WebTokenVault.cs (backup v4)
+- [2026-09-19T16:09:17] tests/RdpAudit.Core.Tests/WebTokenVaultTests.cs
+- [2026-09-19T16:10:21] src/RdpAudit.Core/Security/StorageAclPolicy.cs (backup v1)
+- [2026-09-19T16:10:38] src/RdpAudit.Core/Security/WebTokenVault.cs (backup v5)
+- [2026-09-19T16:11:52] tests/RdpAudit.Core.Tests/WebTokenVaultTests.cs (backup v1)
+- [2026-09-19T16:46:37] src/RdpAudit.Service/RestApi/RestApiEndpoints.cs (backup v13)
+- [2026-09-19T16:46:46] src/RdpAudit.Service/RestApi/RestApiEndpoints.cs (backup v14)
+- [2026-09-19T16:47:12] src/RdpAudit.Service/RestApi/RestApiEndpoints.cs (backup v15)
+- [2026-09-19T16:47:40] src/RdpAudit.Service/RestApi/RestApiEndpoints.cs (backup v16)
+- [2026-09-19T16:47:51] src/RdpAudit.Service/RestApi/RestApiEndpoints.cs (backup v17)
+- [2026-09-19T16:49:44] src/RdpAudit.Service/RestApi/RestApiEndpoints.cs (backup v18)
+- [2026-09-19T16:49:51] src/RdpAudit.Service/RestApi/RestApiEndpoints.cs (backup v19)
+- [2026-09-19T16:50:49] src/RdpAudit.Service/RestApi/openapi-v1.json (backup v4)
+- [2026-09-19T16:51:13] src/RdpAudit.Service/RestApi/openapi-v1.json (backup v5)
+- [2026-09-19T16:54:39] tests/RdpAudit.Service.Tests/RestApiIntegrationTests.cs (backup v10)
+- [2026-09-19T16:55:01] tests/RdpAudit.Service.Tests/RestApiIntegrationTests.cs (backup v11)
+- [2026-09-19T16:55:26] tests/RdpAudit.Service.Tests/Scenarios/RestApiScenarioTests.cs (backup v2)
+- [2026-09-19T16:59:37] docs/51-rest-api.md (backup v3)
+- [2026-09-19T17:05:48] .dev_agent/scratch/yarp-probe/yarp-probe.csproj
+- [2026-09-19T17:28:02] .dev_agent/scratch/yarp-probe/Program.cs
+- [2026-09-19T17:28:15] .dev_agent/scratch/yarp-probe/yarp-probe.csproj (backup v1)
+- [2026-09-19T17:32:21] src/RdpAudit.Web/RdpAudit.Web.csproj
+- [2026-09-19T17:37:31] .dev_agent/scratch/yarp-probe/Program.cs (backup v1)
+- [2026-09-19T17:38:55] src/RdpAudit.Web/Config/WebUiProxyOptions.cs
+- [2026-09-19T17:43:20] src/RdpAudit.Web/Proxy/IWebUiTokenProvider.cs
+- [2026-09-19T17:45:40] src/RdpAudit.Web/Proxy/VaultTokenProvider.cs
+- [2026-09-19T17:45:56] src/RdpAudit.Web/Proxy/BearerHeaderSettingMiddleware.cs
+- [2026-09-19T17:46:11] src/RdpAudit.Web/Proxy/WebUiProxyTransformer.cs
+- [2026-09-19T17:46:29] src/RdpAudit.Web/Program.cs
+- [2026-09-19T17:46:48] src/RdpAudit.Web/Proxy/SecurityHeadersMiddleware.cs
+- [2026-09-19T17:49:17] src/RdpAudit.Web/Config/WebUiProxyOptions.cs (backup v1)
+- [2026-09-19T17:51:07] src/RdpAudit.Web/Hosting/WebUiProxyApp.cs
+- [2026-09-19T17:51:18] src/RdpAudit.Web/Proxy/BackendHttpClientFactory.cs
+- [2026-09-19T17:51:31] src/RdpAudit.Web/Proxy/Tls/ICertificateValidator.cs
+- [2026-09-19T17:51:45] src/RdpAudit.Web/Proxy/Tls/PinnedCertificateValidator.cs
+- [2026-09-19T17:52:47] src/RdpAudit.Web/Program.cs (backup v1)
+- [2026-09-19T17:53:15] src/RdpAudit.Web/Hosting/WebUiProxyApp.cs (backup v1)
+- [2026-09-19T17:53:22] src/RdpAudit.Web/wwwroot/index.html
+- [2026-09-19T17:58:35] src/RdpAudit.Web/Proxy/Tls/PinnedCertificateValidator.cs (backup v1)
+- [2026-09-19T18:00:23] RdpAudit.sln (backup v4)
+- [2026-09-19T18:03:26] tests/RdpAudit.Web.Tests/RdpAudit.Web.Tests.csproj
+- [2026-09-19T18:03:32] tests/RdpAudit.Web.Tests/xunit.runner.json
+- [2026-09-19T18:07:32] src/RdpAudit.Web/Proxy/VaultTokenProvider.cs (backup v1)
+- [2026-09-19T18:09:03] src/RdpAudit.Web/Proxy/SecurityHeadersMiddleware.cs (backup v1)
+- [2026-09-19T18:09:16] src/RdpAudit.Web/Proxy/BackendHttpClientFactory.cs (backup v1)
+- [2026-09-19T18:09:34] src/RdpAudit.Web/Proxy/BackendHttpClientFactory.cs (backup v2)
+- [2026-09-19T18:17:38] tests/RdpAudit.Web.Tests/FakeBackendServer.cs
+- [2026-09-19T18:19:25] tests/RdpAudit.Web.Tests/WebUiProxyIntegrationTests.cs
+- [2026-09-19T18:20:12] tests/RdpAudit.Web.Tests/WebUiProxyIntegrationTests.cs (backup v1)
+- [2026-09-19T18:20:36] tests/RdpAudit.Web.Tests/WebUiProxyIntegrationTests.cs (backup v2)
+- [2026-09-19T18:22:10] src/RdpAudit.Web/Hosting/WebUiProxyApp.cs (backup v2)
+- [2026-09-19T18:22:17] src/RdpAudit.Web/Hosting/WebUiProxyApp.cs (backup v3)
+- [2026-09-19T18:23:28] tests/RdpAudit.Web.Tests/WebUiProxyIntegrationTests.cs (backup v3)
+- [2026-09-19T18:23:48] src/RdpAudit.Web/Hosting/WebUiProxyApp.cs (backup v4)
+- [2026-09-19T18:24:53] src/RdpAudit.Web/Hosting/WebUiProxyApp.cs (backup v5)
+- [2026-09-19T18:25:25] src/RdpAudit.Web/Hosting/WebUiProxyApp.cs (backup v6)
+- [2026-09-19T18:41:45] src/RdpAudit.Web/wwwroot/index.html (backup v1)
+- [2026-09-19T18:42:34] src/RdpAudit.Web/wwwroot/assets/css/rdpaudit-web.css
+- [2026-09-19T18:43:16] src/RdpAudit.Web/wwwroot/assets/js/rdpaudit-web.js
+- [2026-09-19T18:48:37] tests/RdpAudit.Web.Tests/WebUiStaticAssetContractTests.cs
+- [2026-09-19T18:50:04] tests/RdpAudit.Web.Tests/WebUiStaticAssetContractTests.cs (backup v1)
+- [2026-09-19T18:50:25] tests/RdpAudit.Web.Tests/WebUiStaticAssetContractTests.cs (backup v2)
+- [2026-09-19T18:52:35] .dev_agent/scratch/webui_smoke/harness.html
+- [2026-09-19T18:56:42] .dev_agent/scratch/webui_smoke/run_smoke_report.py
+- [2026-09-19T18:59:39] .dev_agent/scratch/webui_smoke/run_smoke_report.py (backup v1)
+- [2026-09-19T19:06:37] tests/RdpAudit.Web.Tests/WebUiHtmlJsWiringContractTests.cs
+- [2026-09-19T19:14:18] PROJECT_MAP.md (backup v49)
+- [2026-09-19T19:14:50] PROJECT_MAP.md (backup v50)
+- [2026-09-19T19:16:08] PROJECT_MAP.md (backup v51)
+- [2026-09-19T19:16:47] PROJECT_MAP.md (backup v52)
+- [2026-09-19T19:20:57] .dev_agent/scratch/webui_smoke/run_smoke_report.py (backup v2)
+- [2026-09-19T19:46:42] src/RdpAudit.Core/WebUi/WebUiPublisher.cs
+- [2026-09-19T19:47:16] tests/RdpAudit.Core.Tests/WebUiPublisherTests.cs
+- [2026-09-19T19:47:47] src/RdpAudit.Core/WebUi/WebUiPublisher.cs (backup v1)
+- [2026-09-19T19:48:14] tests/RdpAudit.Core.Tests/WebUiPublisherTests.cs (backup v1)
+- [2026-09-19T19:48:50] tests/RdpAudit.Core.Tests/WebUiPublisherTests.cs (backup v2)
+- [2026-09-19T19:52:10] PROJECT_MAP.md (backup v53)
+- [2026-09-19T19:57:17] src/RdpAudit.Core/WebUi/IisInstallCommandSet.cs
+- [2026-09-19T20:02:28] src/RdpAudit.Core/WebUi/IisStatusProbe.cs
+- [2026-09-19T20:02:44] src/RdpAudit.Core/WebUi/IisInstallCommandSet.cs (backup v1)
+- [2026-09-19T20:03:17] tests/RdpAudit.Core.Tests/IisWebAccessTests.cs
+- [2026-09-19T20:04:42] src/RdpAudit.Core/WebUi/IisStatusProbe.cs (backup v1)
+- [2026-09-19T20:05:16] tests/RdpAudit.Core.Tests/IisWebAccessTests.cs (backup v1)
+- [2026-09-19T20:06:07] PROJECT_MAP.md (backup v54)
+- [2026-09-19T20:09:47] src/RdpAudit.Core/WebUi/WebAccessUIModel.cs
+- [2026-09-19T20:10:36] src/RdpAudit.Configurator/Forms/WebAccessPage.cs
+- [2026-09-19T20:10:53] src/RdpAudit.Core/WebUi/IWebAccessWorkflowHost.cs
+- [2026-09-19T20:11:22] src/RdpAudit.Configurator/Services/RegistryWebAccessPreferenceStore.cs
+- [2026-09-19T20:11:37] src/RdpAudit.Configurator/Forms/WebAccessPage.cs (backup v1)
+- [2026-09-19T20:13:35] src/RdpAudit.Configurator/Forms/WebAccessPage.cs (backup v2)
+- [2026-09-19T20:15:22] src/RdpAudit.Configurator/Forms/WebAccessPage.cs (backup v3)
+- [2026-09-19T20:17:30] src/RdpAudit.Configurator/Forms/WebAccessPage.cs (backup v4)
+- [2026-09-19T20:17:57] src/RdpAudit.Configurator/Forms/WebAccessPage.cs (backup v5)
+- [2026-09-19T20:18:43] src/RdpAudit.Configurator/Forms/WebAccessPage.cs (backup v6)
+- [2026-09-19T20:21:24] tests/RdpAudit.Configurator.Tests/WebAccessPageTests.cs
+- [2026-09-19T20:21:55] src/RdpAudit.Configurator/Forms/WebAccessPage.cs (backup v7)
+- [2026-09-19T20:22:27] src/RdpAudit.Configurator/Forms/WebAccessPage.cs (backup v8)
+- [2026-09-19T20:28:30] PROJECT_MAP.md (backup v55)
+- [2026-09-19T20:28:39] PROJECT_MAP.md (backup v56)
+- [2026-09-19T20:28:58] PROJECT_MAP.md (backup v57)
+- [2026-09-19T20:31:19] src/RdpAudit.Configurator/Forms/MainForm.cs (backup v8)
+- [2026-09-19T20:31:25] src/RdpAudit.Configurator/Forms/MainForm.cs (backup v9)
+- [2026-09-19T20:32:05] tests/RdpAudit.Configurator.Tests/MainFormTabOrderTests.cs (backup v5)
+- [2026-09-19T20:33:03] src/RdpAudit.Configurator/Forms/WebAccessPage.cs (backup v9)
+- [2026-09-19T20:33:07] src/RdpAudit.Configurator/Forms/MainForm.cs (backup v10)
+- [2026-09-19T20:40:29] src/RdpAudit.Core/WebUi/IisInstallCommandSet.cs (backup v2)
+- [2026-09-19T20:48:28] src/RdpAudit.Configurator/Services/IisInstallService.cs - Step 10: IisInstallService - idempotent, fail-closed DISM executor for the Install IIS workflow
+- [2026-09-19T20:49:02] src/RdpAudit.Configurator/Services/IisWebAccessWorkflowHost.cs - Step 10: IisWebAccessWorkflowHost - production host for the Web Access Install/Configure buttons
+- [2026-09-19T20:50:14] tests/RdpAudit.Core.Tests/IisWebAccessTests.cs (backup v2)
+- [2026-09-19T20:50:47] tests/RdpAudit.Configurator.Tests/IisInstallServiceTests.cs - Step 10: IisInstallService unit tests (idempotency, elevation, exit codes, fail-closed)
+- [2026-09-19T20:51:06] tests/RdpAudit.Configurator.Tests/IisWebAccessWorkflowHostTests.cs - Step 10: workflow host outcome-composure and no-throw contract tests
+- [2026-09-19T20:51:39] tests/RdpAudit.Configurator.Tests/IisWebAccessWorkflowHostTests.cs (backup v1)
+- [2026-09-19T20:57:26] tests/RdpAudit.Configurator.Tests/IisWebAccessWorkflowHostTests.cs (backup v2)
+- [2026-09-19T20:57:48] src/RdpAudit.Configurator/Forms/WebAccessPage.cs (backup v10)
+- [2026-09-19T20:58:36] src/RdpAudit.Core/WebUi/IisInstallCommandSet.cs (backup v3)
+- [2026-09-19T20:59:16] tests/RdpAudit.Configurator.Tests/IisInstallServiceTests.cs (backup v1)
+- [2026-09-19T20:59:22] tests/RdpAudit.Configurator.Tests/IisInstallServiceTests.cs (backup v2)
+- [2026-09-19T21:04:43] PROJECT_MAP.md (backup v58)
+- [2026-09-19T21:04:54] PROJECT_MAP.md (backup v59)
+- [2026-09-19T21:54:47] src/RdpAudit.Core/WebUi/IisConfigureCommandSet.cs
+- [2026-09-20T00:19:48] src/RdpAudit.Core/WebUi/IisConfigureCommandSet.cs (backup v1) - Step 11: canonical appcmd/netsh command catalog (variant A)
+- [2026-09-20T00:26:04] src/RdpAudit.Core/WebUi/IisConfigureCommandSet.cs (backup v2)
+- [2026-09-20T00:40:13] src/RdpAudit.Core/Util/RdpAuditPaths.cs (backup v5)
+- [2026-09-20T00:40:43] src/RdpAudit.Core/Util/RdpAuditPaths.cs (backup v6)
+- [2026-09-20T00:41:28] src/RdpAudit.Core/Util/RdpAuditPaths.cs (backup v7)
+- [2026-09-20T00:59:47] src/RdpAudit.Core/WebUi/WebUiPublisher.cs (backup v2)
+- [2026-09-20T01:00:21] tests/RdpAudit.Core.Tests/WebUiPublisherTests.cs (backup v3)
+- [2026-09-20T01:06:07] src/RdpAudit.Core/WebUi/IisStatusProbe.cs (backup v2)
+- [2026-09-20T01:09:19] tests/RdpAudit.Core.Tests/WebUiPublisherTests.cs (backup v4)
+- [2026-09-20T01:10:12] tests/RdpAudit.Core.Tests/WebUiPublisherTests.cs (backup v5)
+- [2026-09-20T01:11:58] tests/RdpAudit.Core.Tests/WebUiPublisherTests.cs (backup v6)
+- [2026-09-20T01:24:17] src/RdpAudit.Core/WebUi/IisConfigureCommandSet.cs (backup v3)
+- [2026-09-20T01:31:45] tests/RdpAudit.Core.Tests/IisWebAccessTests.cs (backup v3)
+- [2026-09-20T01:49:36] src/RdpAudit.Core/WebUi/WebUiPoolAcl.cs
+- [2026-09-20T01:50:17] src/RdpAudit.Core/WebUi/WebUiPublisher.cs (backup v3) - WebUiPublisher delegates the pool ACL grant to the shared WebUiPoolAcl helper
+- [2026-09-20T01:50:35] src/RdpAudit.Core/WebUi/WebUiPublisher.cs (backup v4)
+- [2026-09-20T02:00:16] src/RdpAudit.Core/WebUi/IisConfigureCommandSet.cs (backup v4)
+- [2026-09-20T02:04:34] src/RdpAudit.Core/WebUi/WebUiAppStager.cs
+- [2026-09-20T03:01:37] src/RdpAudit.Core/WebUi/WebUiCertificateSource.cs - Step 11: certificate source + self-signed command builder (Core.WebUi)
+- [2026-09-20T03:09:50] src/RdpAudit.Core/WebUi/WebUiCertificateSource.cs (backup v1) - Fix PowerShell cert store path escaping in the self-signed command builder
+- [2026-09-20T03:11:00] src/RdpAudit.Core/WebUi/WebUiCertificateSource.cs (backup v2) - Restore the C# double-backslash escape so the cert store path literal compiles
+- [2026-09-20T03:30:37] src/RdpAudit.Core/WebUi/WebUiCertificateSource.cs (backup v3) - Step 11: net8-safe rewrite of the certificate source (drop .NET 9 SAN API)
+- [2026-09-20T03:35:00] src/RdpAudit.Core/WebUi/IisConfigureCommandSet.cs (backup v5) - Step 11: sc.exe stop/start argument builders in the IIS configure command catalog
+- [2026-09-20T04:30:10] src/RdpAudit.Core/WebUi/WebUiAppSettingsEditor.cs - Step 11: atomic appsettings editor for Api/WebUiProxy sections
+- [2026-09-20T04:42:51] src/RdpAudit.Configurator/Services/IisConfigureService.cs - Step 11: production Configure IIS workflow (IisConfigureService)
+- [2026-09-20T04:43:13] src/RdpAudit.Configurator/Services/IisConfigureService.cs (backup v1) - Step 11: fix non-existent Curry helper
+- [2026-09-20T04:44:12] src/RdpAudit.Configurator/Services/IisConfigureService.cs (backup v2) - Step 11: fix invalid await on non-Task method
+- [2026-09-20T04:45:51] src/RdpAudit.Core/WebUi/WebUiAppStager.cs (backup v1) - Step 11: fix non-existent ArgumentException.ThrowIfNull (CS0117) in existing stager
+- [2026-09-20T04:52:45] src/RdpAudit.Configurator/Services/IisConfigureService.cs (backup v3) - Step 11: final IIS site confirm per journal canon
+- [2026-09-20T04:55:59] src/RdpAudit.Configurator/Services/IisWebAccessWorkflowHost.cs (backup v1) - Step 11: header reflects wired Configure IIS
+- [2026-09-20T04:56:15] src/RdpAudit.Configurator/Services/IisWebAccessWorkflowHost.cs (backup v2) - Step 11: host constructor accepts configure worker
+- [2026-09-20T04:56:19] src/RdpAudit.Configurator/Services/IisWebAccessWorkflowHost.cs (backup v3) - Step 11: real Configure IIS entry point
+- [2026-09-20T04:56:23] src/RdpAudit.Configurator/Services/IisWebAccessWorkflowHost.cs (backup v4) - Step 11: ComposeConfigure curated line
+- [2026-09-20T04:56:31] src/RdpAudit.Configurator/Services/IisWebAccessWorkflowHost.cs (backup v5) - Step 11: RecordConfigure transcript writer
+- [2026-09-20T04:59:16] src/RdpAudit.Configurator/Forms/WebAccessPage.cs (backup v11) - Step 11: wire production Configure IIS workflow into WebAccessPage.CreateDefault
+- [2026-09-20T05:18:02] src/RdpAudit.Configurator/Services/IisConfigureService.cs (backup v4) - Step 11: injectable stager factory for deterministic tests
+- [2026-09-20T05:31:45] publish.ps1 (backup v7) - Step 11: add RdpAudit.Web multi-file project entry + SingleFile flags
+- [2026-09-20T05:32:45] publish.ps1 (backup v8) - Step 11: SingleFile switch in Publish-Project for the multi-file Web publish
+- [2026-09-20T05:34:42] publish.ps1 (backup v9) - Step 11: Recurse switch + relative-path file enumeration in Update-PublishDirectory
+- [2026-09-20T05:35:32] publish.ps1 (backup v10) - Step 11: recursive stale-removal with relative paths
+- [2026-09-20T05:36:24] publish.ps1 (backup v11) - Step 11: relative-path copy with subdirectory creation
+- [2026-09-20T05:37:21] publish.ps1 (backup v12) - Step 11: pass SingleFile from the manifest into Publish-Project
+- [2026-09-20T05:37:40] publish.ps1 (backup v13) - Step 11: recursive sync for multi-file Web tree in the update loop
+- [2026-09-20T05:39:51] publish.ps1 (backup v14) - Step 11: Publish-Project gains OutputDir for the staged Web publish
+- [2026-09-20T05:42:23] publish.ps1 (backup v15) - Step 11: stage the multi-file Web publish into .build-tmp-Web
+- [2026-09-20T05:43:48] publish.ps1 (backup v16) - Step 11: dual-mode sync loop (live single-file dir vs staged multi-file tree)
+- [2026-09-20T05:45:00] publish.ps1 (backup v17) - Step 11: self-test checks for the Web manifest entry and recursive sync
+- [2026-09-20T06:03:11] tests/RdpAudit.Configurator.Tests/IisConfigureServiceTests.cs - Step 11: new IisConfigureServiceTests - gates, happy path, idempotency, failures, cancellation, install->configure->open scenario
+- [2026-09-20T06:08:04] tests/RdpAudit.Configurator.Tests/IisWebAccessWorkflowHostTests.cs (backup v3)
+- [2026-09-20T06:09:16] tests/RdpAudit.Configurator.Tests/IisConfigureServiceTests.cs (backup v1)
+- [2026-09-20T06:09:50] tests/RdpAudit.Configurator.Tests/IisConfigureServiceTests.cs (backup v2) - Fix Assert.DoesNotContain arg order and remove redundant publish variable
+- [2026-09-20T06:11:55] tests/RdpAudit.Configurator.Tests/IisConfigureServiceTests.cs (backup v3) - Restore missing closing brace of BuildContext class
+- [2026-09-20T06:27:18] PROJECT_MAP.md (backup v60) - PROJECT_MAP.md: add the five missing Step-11 Core.WebUi source rows
+- [2026-09-20T06:28:22] PROJECT_MAP.md (backup v61) - PROJECT_MAP.md: add IisConfigureService row and refresh the host row for Step 11
+- [2026-09-20T06:28:42] PROJECT_MAP.md (backup v62) - PROJECT_MAP.md: add missing IisConfigureServiceTests row and refresh host-tests description
+- [2026-09-20T06:35:14] src/RdpAudit.Web/Proxy/LoopbackHostFilterMiddleware.cs
+- [2026-09-20T06:35:18] src/RdpAudit.Web/Hosting/WebUiProxyApp.cs (backup v7) - Step 12: wire the loopback host filter as the first middleware of the proxy pipeline
+- [2026-09-20T06:35:27] tests/RdpAudit.Web.Tests/WebUiProxyIntegrationTests.cs (backup v4) - Step 12: DNS-rebinding host filter integration tests (foreign 400 + loopback allowed)
+- [2026-09-20T06:36:07] src/RdpAudit.Web/Proxy/LoopbackHostFilterMiddleware.cs (backup v1) - Step 12 fix: normalize the bracketed IPv6 Host form before the loopback allow-list check
+- [2026-09-20T06:44:40] tests/RdpAudit.Core.Tests/WebUiAppSettingsEditorTests.cs - Step 12 hardening: unit tests for WebUiAppSettingsEditor (loopback-preserving API surface write, fail-safe CSP, curated failures)
+- [2026-09-20T06:46:17] tests/RdpAudit.Core.Tests/WebUiAppSettingsEditorTests.cs (backup v1) - xUnit2004 fix 1/4: Assert.True in the creation test
+- [2026-09-20T06:46:22] tests/RdpAudit.Core.Tests/WebUiAppSettingsEditorTests.cs (backup v2) - xUnit2004 fix 2/4: Assert.True in the preservation test
+- [2026-09-20T06:46:27] tests/RdpAudit.Core.Tests/WebUiAppSettingsEditorTests.cs (backup v3) - xUnit2004 fix 3/4: Assert.False in the WebUiProxy write test
+- [2026-09-20T06:46:30] tests/RdpAudit.Core.Tests/WebUiAppSettingsEditorTests.cs (backup v4) - xUnit2004 fix 4/4: Assert.False in the pin-removal test
+- [2026-09-20T06:49:30] tests/RdpAudit.Web.Tests/WebUiProxyOptionsTests.cs - Step 12: unit tests for WebUiProxyOptions.Resolve() loopback-only and thumbprint-pin invariants
+- [2026-09-20T06:50:25] tests/RdpAudit.Web.Tests/WebUiProxyOptionsTests.cs (backup v1) - Fix test data: use a real 40-char hex thumbprint (was 44 chars)
+- [2026-09-20T06:54:46] PROJECT_MAP.md (backup v63) - Step 13 docs: add WebUiAppSettingsEditorTests row to PROJECT_MAP.md Core.Tests section
+- [2026-09-20T06:54:54] PROJECT_MAP.md (backup v64) - Step 13 docs: add WebUiProxyOptionsTests row to PROJECT_MAP.md Web.Tests section
+- [2026-09-20T07:01:53] PROJECT_MAP.md (backup v65) - Step 13 docs: add missing LoopbackHostFilterMiddleware row to PROJECT_MAP.md (drift-gate)
+- [2026-09-20T07:02:48] SPEC.md (backup v14) - Step 13 docs: SPEC.md project inventory now includes RdpAudit.Web and RdpAudit.Web.Tests
+- [2026-09-20T07:11:32] SPEC.md (backup v15) - Step 13 docs: SPEC.md product overview mentions the IIS-hosted Web dashboard
+- [2026-09-20T14:31:12] SPEC.md (backup v16) - Step 13 docs: add SPEC.md UC-10 web dashboard use case
+- [2026-09-20T14:31:24] SPEC.md (backup v17) - Step 13 docs: SPEC.md section 3.19 FR-WEB requirements for the IIS web dashboard
+- [2026-09-20T14:33:15] SPEC.md (backup v18) - Step 13 docs: SPEC.md architecture boundaries include RdpAudit.Web
+- [2026-09-20T14:33:41] ARCHITECTURE.md (backup v32) - Step 13 docs: ARCHITECTURE.md component table includes RdpAudit.Web
+- [2026-09-20T14:33:49] ARCHITECTURE.md (backup v33) - Step 13 docs: ARCHITECTURE.md runtime topology + test projects list get the web layer
+- [2026-09-20T14:34:41] README.md (backup v23) - Step 13 docs: README ToC gains the Web Access tab entry
+- [2026-09-20T14:34:46] README.md (backup v24) - Step 13 docs: README projects table gains RdpAudit.Web and RdpAudit.Web.Tests
+- [2026-09-20T14:38:46] README.md (backup v25) - Step 13 docs: README REST overview lists the new read-only endpoints
+- [2026-09-20T14:46:02] README.md (backup v26) - Step 13 docs: README directory tree gains the RdpAudit.Web project
+- [2026-09-20T14:49:40] README.md (backup v27) - Step 13 docs: README tree tab count 13 -> 22 (Web Access added in Step 9)
+- [2026-09-20T14:49:56] README.md (backup v28) - Step 13 docs: README tests tree gains RdpAudit.Web.Tests
+- [2026-09-20T14:50:41] README.md (backup v29) - Step 13 docs: README section 6.16 Web Access Tab
+- [2026-09-20T14:52:21] ARCHITECTURE.md (backup v34) - Step 13 docs: ARCHITECTURE.md gains flow subsection 4.14 Web UI pipeline
+- [2026-09-20T14:53:07] README.ru.md (backup v24) - Step 13 docs: README.ru directory tree gains RdpAudit.Web
+- [2026-09-20T14:53:24] README.ru.md (backup v25) - Step 13 docs: README.ru tree tab count 13 -> 22
+- [2026-09-20T14:53:39] README.ru.md (backup v26) - Step 13 docs: README.ru TOC gains 6.16 Web Access
+- [2026-09-20T14:53:48] README.ru.md (backup v27) - Step 13 docs: README.ru gains section 6.16 Web Access Tab
+- [2026-09-20T14:54:11] README.ru.md (backup v28) - Step 13 docs: fix TOC indent for 6.16 in README.ru
+- [2026-09-20T14:57:17] README.ru.md (backup v29) - Step 13 docs: README.ru tests tree gains RdpAudit.Web.Tests
+- [2026-10-12T19:38:54] src/RdpAudit.Core/Models/AttackStatsAggregator.cs - IsRdpRelevantLogonType / IsRemoteCapableLogonType extracted as the single source of truth for 4624 success classification
+- [2026-10-12T19:38:54] src/RdpAudit.Service/Processors/AuthAttemptFactUpserter.cs - 4624 with a non-RDP logon type no longer produces a Succeeded fact; transport-IP correlation suppressed for known local logon types
+- [2026-10-12T19:38:54] src/RdpAudit.Service/Workers/EventProcessorWorker.cs - Address.SuccessCount only increments for an RDP-relevant 4624
+- [2026-10-12T19:38:54] src/RdpAudit.Service/Storage/IpEventSummaryUpserter.cs - IpEventSummary.SuccessCount follows the same logon-type rule
+- [2026-10-12T19:38:54] src/RdpAudit.Service/Alerts/UnknownIpSuccessRule.cs - Service / Batch logon no longer triggers UNKNOWN_IP_SUCCESS
+- [2026-10-12T19:38:54] tests/RdpAudit.Service.Tests/AuthAttemptFactUpserterTests.cs - 4624 LT5 cases and null-logontype 4625 correlation regression coverage
+- [2026-10-12T19:38:54] tests/RdpAudit.Core.Tests/AttackStatsAggregatorTests.cs - logon-type predicate contracts
+- [2026-10-12T19:38:54] tests/RdpAudit.Service.Tests/AlertRuleTests.cs - UNKNOWN_IP_SUCCESS logon-type gates
+- [2026-10-12T19:38:54] docs/40-alert-rules.md - UNKNOWN_IP_SUCCESS trigger narrowed to RDP-relevant 4624
+- [2026-10-12T19:38:54] docs/46-attack-statistics.md - Successful counter definition corrected
+- [2026-10-12T19:49:21] src/RdpAudit.Service/Storage/ShardIngestionSink.cs - shard record success bit follows the RDP-relevant logon-type rule
+- [2026-10-12T19:49:21] src/RdpAudit.Service/Processors/CrossHostFactExporter.cs - network-context gate reuses AttackStatsAggregator.IsRemoteCapableLogonType
+- [2026-10-12T19:49:21] tests/RdpAudit.Service.Tests/Storage/ShardCapacityGovernanceTests.cs - shard record flag regression coverage
+- [2026-10-23T01:14:01] src/RdpAudit.Core/Data/AuditDbContextOptionsFactory.cs - shared cache removed from write and read-only connection strings (SQLITE_LOCKED on writer contention)
+- [2026-10-23T01:14:02] src/RdpAudit.Core/Data/SqliteTransientErrors.cs - transient busy-locked classifier unwraps DbUpdateException so the bounded retry fires
+- [2026-10-23T01:14:03] src/RdpAudit.Core/Data/SqlitePragmaInterceptor.cs - read-only existence probe receives only connection-local PRAGMAs
+- [2026-10-23T01:14:04] src/RdpAudit.Service/Program.cs - write connection string comes from AuditDbContextOptionsFactory
+- [2026-10-23T01:14:05] src/RdpAudit.Configurator/Services/ReadOnlyDb.cs - read-only connection without shared cache
+- [2026-10-23T01:14:06] src/RdpAudit.Service/Workers/EventProcessorWorker.cs - bounded retry recognises EF-wrapped SQLite busy-locked failures
+- [2026-10-23T01:14:07] src/RdpAudit.Service/Workers/MaintenanceWorker.cs - retention retry uses the shared transient-failure classifier
+- [2026-10-23T01:14:08] src/RdpAudit.Service/Workers/CrossHostCorrelationWorker.cs - correlation retry uses the shared transient-failure classifier
+- [2026-10-23T01:14:09] tests/RdpAudit.Core.Tests/SqliteConcurrencyGuardsTests.cs - regression coverage for connection strings and the transient classifier
+- [2026-10-23T01:14:10] docs/91-troubleshooting.md - runbook for SQLite Error 6 database table is locked
+- [2026-10-23T01:56:46] src/RdpAudit.Service/Workers/EventProcessorWorker.cs - failed batch retained for a head-of-line retry instead of discarded (unrecoverable audit gap)
+- [2026-10-23T01:56:47] src/RdpAudit.Service/ServiceMetrics.cs - counters for retained and stalled persist batches
+- [2026-10-23T01:56:48] src/RdpAudit.Service/Program.cs - day-rolling file sink drops EF Executed DbCommand noise; Warning and Error still pass
+- [2026-10-23T01:56:49] src/RdpAudit.Service/Services/SettingsManager.cs - settings save merges into the existing document and keeps unknown root sections (Serilog)
+- [2026-10-23T01:56:50] src/RdpAudit.Core/Security/WebTokenVault.cs - vault DACL names the writing identity so hardening cannot lock the vault against itself
+- [2026-10-23T01:56:51] src/RdpAudit.Core/Models/TabularExportWriter.cs - tabular export JSON uses camelCase like every other JSON file in the product
+- [2026-10-23T01:56:52] src/RdpAudit.Service/Security/StorageAclEnforcer.cs - create the whole tree before hardening; access-denied is unverifiable, never 'missing'
+- [2026-10-23T01:56:53] tests/RdpAudit.Service.Tests/EventProcessorWorkerRetainedBatchTests.cs - regression coverage for the retained batch
+- [2026-10-23T01:56:54] tests/RdpAudit.Service.Tests/MikroTikClientTests.cs - scripted handler captures the request body while the request is alive
+- [2026-10-23T01:56:55] tests/RdpAudit.Core.Tests/TabularExportWriterTests.cs - TXT export records compared without the CRLF terminator
+- [2026-10-23T01:56:56] tests/RdpAudit.Core.Tests/IisWebAccessTests.cs - DISM coverage asserted over the two vectors the installer actually runs
+- [2026-10-23T01:56:57] docs/91-troubleshooting.md - runbook updated for SQLite Error 6 wording
+- [2026-10-23T02:14:09] src/RdpAudit.Core/Ipc/Contracts/DatabaseOverviewDto.cs - append-only keys 81/82 carry the ingest persistence counters (-1 means the service reported none)
+- [2026-10-23T02:14:10] src/RdpAudit.Service/Services/DatabaseOverviewService.cs - overview snapshot reads the retained/stalled batch counters from ServiceMetrics
+- [2026-10-23T02:14:11] src/RdpAudit.Configurator/Forms/DatabasePage.cs - Database tab renders the ingest persistence line with healthy, degraded and unknown wording
+- [2026-10-23T02:14:12] tests/RdpAudit.Service.Tests/IpcDispatcherDatabaseTests.cs - GetDatabaseOverview propagation coverage for the persistence counters
+- [2026-10-23T02:14:13] tests/RdpAudit.Configurator.Tests/DatabasePageTests.cs - overview wording covered for zero, retained and unknown counter states
+- [2026-10-23T02:14:14] docs/30-configurator.md - Database tab description lists the ingest persistence line
+- [2026-10-23T02:38:09] tools/Deploy-RdpAuditFleet.ps1 - fleet upgrade over SSH: preflight, per-host backup, stop, deliver, start, log verification, rollback
+- [2026-10-23T02:38:10] tools/fleet-hosts.txt - fleet inventory for the upgrade tool
+- [2026-10-23T02:38:11] docs/95-fleet-upgrade.md - fleet runbook: control channel, procedure, migrations per host, measured traps and this run
+- [2026-10-23T03:23:34] src/RdpAudit.Configurator/Services/IisInstallService.cs - failed bundle or tools step marks the remaining plan steps Skipped; reboot no longer excuses a missing ASP.NET Core module
+- [2026-10-23T03:23:35] src/RdpAudit.Core/WebUi/IisInstallPlan.cs - management-tools plan text names the separate DISM run instead of 'part of the feature set above'
+- [2026-10-23T03:23:36] tests/RdpAudit.Configurator.Tests/IisInstallServiceTests.cs - platform fake models the post-install state; the clean-machine test no longer pins a false success
+- [2026-10-23T03:23:37] tests/RdpAudit.Configurator.Tests/IisConfigureServiceTests.cs - install-then-configure scenario runs entirely on fakes (module probe and appcmd injected)
+- [2026-10-23T03:23:38] tests/RdpAudit.Configurator.Tests/IisInstallProgressDialogTests.cs - dialog tests show the form before PerformClick so the click actually arrives
+- [2026-10-23T03:23:39] tests/RdpAudit.Configurator.Tests/ButtonAvailabilityColourTests.cs - destructive hover asserts the danger shade and refuses the green accent instead of demanding an identical colour
+- [2026-10-23T03:23:40] tools/Deploy-RdpAuditFleet.ps1 - database copy is opt-in (-IncludeDatabaseBackup): the initializer snapshot already covers schema risk
+- [2026-10-23T03:23:41] tools/Clear-RdpAuditBackups.ps1 - strips only the database payload from upgrade copies, never the product snapshot
+- [2026-10-23T03:23:42] docs/95-fleet-upgrade.md - backup retention rule and the cleanup tool
+- [2026-10-23T04:50:38] tools/Set-RdpAuditMikroTik.ps1 - enables the MikroTik provider per host; touches only mikroTik and firewall.provider and reverts if any other section changes
+- [2026-10-23T04:50:39] tools/Test-RdpAuditMikroTik.ps1 - checks REST reachability from the host with the service account, exactly as the service connects
+- [2026-10-23T04:50:40] docs/95-fleet-upgrade.md - per-host MikroTik mapping, transport, account restrictions, rollback
+- [2026-10-23T05:01:51] tools/Set-RdpAuditWhitelist.ps1 - sets the block whitelist only; alert suppression is deliberately left untouched
+- [2026-10-23T05:01:52] tools/Set-RdpAuditProvider.ps1 - switches firewall.provider with the same fingerprint guard and backup
+- [2026-10-23T05:01:53] docs/95-fleet-upgrade.md - whitelist ranges, Both mode rationale, open question about the input chain
+- [2026-10-23T05:12:45] tools/Set-RdpAuditFilterChain.ps1 - switches mikroTik.filterChain with the fingerprint guard and backup
+- [2026-10-23T05:12:46] docs/95-fleet-upgrade.md - forward chain rationale, verified rule position, the first two real blocks
+- [2026-10-23T05:46:25] src/RdpAudit.Service/Firewall/INetshRunner.cs — the name=all dump is routed through the pinned-English console; IFirewallRuleScanner reports an unparseable dump as unscannable instead of zero rules
+- [2026-10-23T05:46:26] src/RdpAudit.Service/Workers/FirewallExpirationWorker.cs — expired Failed blocks are swept, and removal uses the RuleHandle prefix so a config rename cannot orphan a live rule
+- [2026-10-23T05:46:27] src/RdpAudit.Service/Firewall/WindowsServiceThirdPartyFirewallProbe.cs — the Kaspersky-manages-Windows-Firewall flag is derived from the kavfs* services instead of a hardcoded false
+- [2026-10-23T05:46:28] src/RdpAudit.Service/Services/EnforcementReconciliationService.cs — reconciliation consults the third-party probe and downgrades confidence to ExistsButProviderMayBypass; IpcDispatcher counts caveated rules as enforced and fills FirewallStatusDto keys 12/13
+- [2026-10-23T05:46:29] src/RdpAudit.Service/Workers/FirewallAutoBlockWorker.cs — a failed block is retried three times with backoff in bounded memory, still writing no row
+- [2026-10-23T05:46:30] src/RdpAudit.Core/Firewall/EnforcementReconciliation.cs — parameter verification now requires the rule to target the blocked address
+- [2026-10-23T05:46:31] tests/RdpAudit.Service.Tests/NetshFirewallRuleScannerTests.cs — locks fail-closed scanning; NetshRunnerRoutingTests now expects the English-console route it used to forbid
+- [2026-10-23T10:12:17] src/RdpAudit.Core/Models/AttackStatsAggregator.cs — ExpectsSourceAddress reserves the unresolved sentinel for classes whose events normally carry an address
+- [2026-10-23T10:12:18] src/RdpAudit.Service/Workers/AttackStatsRefreshWorker.cs — address-less event classes are skipped instead of inflating (unresolved), and a Security 4776 twin of a Security 4625 is counted once
+- [2026-10-23T10:12:19] docs/46-attack-statistics.md — what counts as RDP activity, why the sentinel row was 3 562 on ILAB, and the 4776/4625 de-duplication
+- [2026-10-23T11:34:08] src/RdpAudit.Core/Models/AttackStatsAggregator.cs - Successful counts RDP sessions only (7/10 + 1149/21/25); 4624 LogonType 3 and unknown types become Neutral (Total only)
+- [2026-10-23T11:34:09] src/RdpAudit.Service/Workers/AttackStatsRefreshWorker.cs - a successful fact keeps its original evidence id, so 4776/4648/4768/4769 no longer masquerade as RDP logons
+- [2026-10-23T11:34:10] docs/46-attack-statistics.md - what counts as an RDP success, with the measured 130/2870 phantom-success cases
+- [2026-10-23T11:47:52] src/RdpAudit.Service/Workers/AttackStatsRefreshWorker.cs - full rebuild now re-derives rows older than the look-back window, so counters computed by the previous classifier cannot survive (measured: 7228 phantom successes across 92 fleet rows)
+- [2026-10-23T11:47:53] docs/46-attack-statistics.md - full-rebuild repair of historical rows documented
+- [2026-10-23T13:39:54] src/RdpAudit.Service/Firewall/MikroTikFirewallProvider.cs - refuse reserved/private addresses (RefusePrivateAddressBlock) before touching the router; canonical address in the request
+- [2026-10-23T13:39:55] docs/45-firewall.md - router provider guard documented with the 23.10.2026 lockout measurement
+- [2026-10-23T14:20:04] src/RdpAudit.Core/Models/Alert.cs - additive SourceIpDerived flag (correlated address is display-only)
+- [2026-10-23T14:20:04] src/RdpAudit.Service/Workers/FirewallAutoBlockWorker.cs - auto-block skips alerts whose source address was correlated (reason derived-ip)
+- [2026-10-23T14:20:04] src/RdpAudit.Core/Events/AlertRuleBase.cs - CreateAlert carries SourceIpDerived from the triggering event
+- [2026-10-23T14:20:04] src/RdpAudit.Core/Data/Migrations - AddAlertSourceIpDerived (new bool column, default false)
+- [2026-10-23T14:20:04] docs/45-firewall.md - correlated addresses never feed auto-block, with the 23.10.2026 lockout measurement
+- [2026-10-23T14:40:21] docs/45-firewall.md - fleet whitelist composition recorded (server IPs + internal ranges), incl. the broken one-line range entry
+- [2026-10-24T01:35:59] src/RdpAudit.Service/Infrastructure/RawEventSlot.cs - ingest slot widened from 4 KB to 8 KB with an explicit truncation flag
+- [2026-10-24T01:35:59] src/RdpAudit.Service/Infrastructure/RawEventSerializer.cs - truncation flag is preserved instead of silently cutting the XML payload
+- [2026-10-24T01:35:59] src/RdpAudit.Service/Workers/EventProcessorWorker.cs - RawEvents deduplicated by (Channel, RecordId, TimeUtc)
+- [2026-10-24T01:35:59] src/RdpAudit.Core/Data/Migrations - Stage 20 adds RawEvents.RecordId and the partial unique index (additive, nullable)
+- [2026-10-24T01:35:59] src/RdpAudit.Service/Processors/EventNormalizer.cs - session-IP correlation anchored to event time instead of ingest time
+- [2026-10-24T01:35:59] src/RdpAudit.Service/Processors/SessionCorrelationCache.cs - chain cache dedup bounded by a time window with refresh
+- [2026-10-24T01:35:59] src/RdpAudit.Service/Processors/SessionIpCorrelationUpserter.cs - correlated session addresses are marked as derived
+- [2026-10-24T01:35:59] src/RdpAudit.Service/Services/EnforcementReconciliationService.cs - reconciliation driven by the active-block rows in the database
+- [2026-10-24T01:35:59] src/RdpAudit.Service/Workers/EnforcementReconciliationWorker.cs - reconciliation worker cancels cleanly on shutdown
+- [2026-10-24T01:35:59] src/RdpAudit.Service/Workers/FirewallAutoBlockWorker.cs - auto-block skips derived addresses (reason derived-ip)
+- [2026-10-24T01:35:59] src/RdpAudit.Service/Firewall/RouteBlackholeProvider.cs - invalid destination or gateway returns a typed failure, no ghost route
+- [2026-10-24T01:35:59] src/RdpAudit.Service/Alerts/NewAccountRule.cs - account-creation rule reviewed for non-interactive look-alikes
+- [2026-10-24T01:35:59] src/RdpAudit.Service/Alerts/PipelineLogFloodRule.cs - pipeline flood rule made window- and dedup-bounded
+- [2026-10-24T01:35:59] src/RdpAudit.Service/Infrastructure/MpmcEventChannel.cs - MPMC channel is the ingest backend
+- [2026-10-24T01:35:59] src/RdpAudit.Service/EventSources/EventLogWatcherEventSource.cs - watcher and backfill share the RecordId contract
+- [2026-10-24T01:35:59] src/RdpAudit.Service/Ipc/IpcDispatcher.cs - masked settings never leave the service over IPC
+- [2026-10-24T01:35:59] docs/96-remaining-work.md - all 27 review findings closed, each with a pinned regression test
+- [2026-10-25T22:04:12] src/RdpAudit.Core/Config/ZabbixOptions.cs
+- [2026-10-25T22:04:12] src/RdpAudit.Core/Config/RdpAuditOptions.cs
+- [2026-10-25T22:04:12] src/RdpAudit.Core/Zabbix/ZabbixHostName.cs
+- [2026-10-25T22:04:12] src/RdpAudit.Core/Zabbix/ZabbixIncidentPayload.cs
+- [2026-10-25T22:04:12] src/RdpAudit.Core/Zabbix/ZabbixItemKeys.cs
+- [2026-10-25T22:04:12] src/RdpAudit.Core/Zabbix/ZabbixLinks.cs
+- [2026-10-25T22:04:12] src/RdpAudit.Core/Zabbix/ZabbixSenderProtocol.cs
+- [2026-10-25T22:04:12] src/RdpAudit.Core/Zabbix/ZabbixSeverity.cs
+- [2026-10-25T22:04:12] src/RdpAudit.Core/Ipc/IpcCommand.cs
+- [2026-10-25T22:04:12] src/RdpAudit.Core/Ipc/IpcConstants.cs
+- [2026-10-25T22:04:12] src/RdpAudit.Core/Ipc/Contracts/ZabbixSettingsDto.cs
+- [2026-10-25T22:04:12] src/RdpAudit.Core/Ipc/Contracts/ZabbixStatusDto.cs
+- [2026-10-25T22:04:12] src/RdpAudit.Core/Ipc/Contracts/ZabbixTestResultDto.cs
+- [2026-10-25T22:04:12] src/RdpAudit.Core/Ipc/Contracts/ZabbixPushResultDto.cs
+- [2026-10-25T22:04:12] src/RdpAudit.Core/Ipc/Contracts/ZabbixProvisionResultDto.cs
+- [2026-10-25T22:04:12] src/RdpAudit.Core/Ipc/Contracts/ZabbixSentIncidentDto.cs
+- [2026-10-25T22:04:12] src/RdpAudit.Core/Util/RdpAuditPaths.cs
+- [2026-10-25T22:04:12] src/RdpAudit.Service/Zabbix/IZabbixSender.cs
+- [2026-10-25T22:04:12] src/RdpAudit.Service/Zabbix/ZabbixSenderClient.cs
+- [2026-10-25T22:04:12] src/RdpAudit.Service/Zabbix/IZabbixApiClient.cs
+- [2026-10-25T22:04:12] src/RdpAudit.Service/Zabbix/ZabbixApiClient.cs
+- [2026-10-25T22:04:12] src/RdpAudit.Service/Zabbix/ZabbixLocalAddresses.cs
+- [2026-10-25T22:04:12] src/RdpAudit.Service/Zabbix/ZabbixPushStateStore.cs
+- [2026-10-25T22:04:12] src/RdpAudit.Service/Zabbix/ZabbixPushService.cs
+- [2026-10-25T22:04:12] src/RdpAudit.Service/Zabbix/ZabbixPushWorker.cs
+- [2026-10-25T22:04:12] src/RdpAudit.Service/Ipc/IpcDispatcher.cs
+- [2026-10-25T22:04:12] src/RdpAudit.Service/Ipc/IpcDispatcher.Zabbix.cs
+- [2026-10-25T22:04:12] src/RdpAudit.Service/Services/SettingsManager.cs
+- [2026-10-25T22:04:12] src/RdpAudit.Service/AppSettingsTemplate.cs
+- [2026-10-25T22:04:12] src/RdpAudit.Service/Program.cs
+- [2026-10-25T22:04:12] src/RdpAudit.Configurator/Forms/ZabbixPage.cs
+- [2026-10-25T22:04:12] src/RdpAudit.Configurator/Forms/MainForm.cs
+- [2026-10-25T22:04:12] src/RdpAudit.Configurator/Services/ZabbixGateway.cs
+- [2026-10-25T22:04:12] tests/RdpAudit.Core.Tests/ZabbixSenderProtocolTests.cs
+- [2026-10-25T22:04:12] tests/RdpAudit.Core.Tests/ZabbixIncidentPayloadTests.cs
+- [2026-10-25T22:04:12] tests/RdpAudit.Core.Tests/IpcCommandStabilityTests.cs
+- [2026-10-25T22:04:12] tests/RdpAudit.Core.Tests/IpcConstantsTimeoutTests.cs
+- [2026-10-25T22:04:12] tests/RdpAudit.Service.Tests/ZabbixSenderClientTests.cs
+- [2026-10-25T22:04:12] tests/RdpAudit.Service.Tests/ZabbixPushStateStoreTests.cs
+- [2026-10-25T22:04:12] tests/RdpAudit.Service.Tests/ZabbixApiRequestBodyTests.cs
+- [2026-10-25T22:04:12] tests/RdpAudit.Configurator.Tests/ZabbixPageTests.cs
+- [2026-10-25T22:04:12] tests/RdpAudit.Configurator.Tests/MainFormTabOrderTests.cs
+- [2026-10-25T22:04:12] docs/50-ipc.md
+- [2026-10-25T22:04:12] docs/30-configurator.md
+- [2026-10-25T22:04:12] docs/53-zabbix.md
+- [2026-10-25T22:04:12] PROJECT_MAP.md

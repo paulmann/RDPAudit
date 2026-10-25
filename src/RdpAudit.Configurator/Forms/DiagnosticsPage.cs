@@ -1,0 +1,1085 @@
+// File:    src/RdpAudit.Configurator/Forms/DiagnosticsPage.cs
+// Module:  RdpAudit.Configurator.Forms
+// Purpose: Diagnostic tab — renders the LLM-friendly DiagnosticsSnapshotDto returned by the
+//          service. Shows effective channels and event IDs, Security watcher / backfill state,
+//          DB counts grouped by channel and event ID, the most recent monitoring-config repair
+//          report, the install path, and last pipeline errors. Operators can Copy the rendered
+//          report to the clipboard or Export it to a timestamped .txt file. All DB lookups run
+//          via Microsoft.Data.Sqlite through EF Core on the service side; no external sqlite3.exe
+//          dependency is introduced.
+// Extends: System.Windows.Forms.TabPage
+// Author:  Mikhail Deynekin
+// Site:    https://Deynekin.com
+
+using System.Diagnostics;
+using System.Globalization;
+using System.Runtime.Versioning;
+using System.Text;
+using System.Text.Json.Nodes;
+using RdpAudit.Configurator.Ipc;
+using RdpAudit.Configurator.Services;
+using RdpAudit.Core.Data;
+using RdpAudit.Core.Integrity;
+using RdpAudit.Core.Ipc;
+using RdpAudit.Core.Ipc.Contracts;
+using RdpAudit.Core.Util;
+
+namespace RdpAudit.Configurator.Forms;
+
+/// <summary>Diagnostic tab — renders the LLM-friendly DiagnosticsSnapshotDto returned by the service.</summary>
+[SupportedOSPlatform("windows")]
+public sealed class DiagnosticsPage : TabPage
+{
+	private readonly IpcClient _ipc;
+	private readonly TextBox _report;
+	private readonly Button _refresh;
+	private readonly Button _copy;
+	private readonly Button _export;
+	private readonly Button _probe;
+	private readonly Button _diagnoseService;
+	private readonly Button _observeProcess;
+	private readonly Label _status;
+	private bool _migrationRecoveryInProgress;
+
+	public DiagnosticsPage(IpcClient ipc)
+	{
+		_ipc = ipc;
+		Text = "Diagnostic";
+		Padding = new Padding(8);
+
+		FlowLayoutPanel toolbar = new()
+		{
+			Dock = DockStyle.Top,
+			Height = 36,
+			AutoSize = false,
+			FlowDirection = FlowDirection.LeftToRight,
+		};
+
+		_refresh = new Button { Text = "Refresh", Width = 110 };
+		_copy = new Button { Text = "Copy to clipboard", Width = 150 };
+		_export = new Button { Text = "Export to file…", Width = 150 };
+		_probe = new Button { Text = "Run Security Auth Probe", Width = 200 };
+		_diagnoseService = new Button
+		{
+			Text = "Diagnose service startup",
+			Width = 210,
+		};
+		_observeProcess = new Button
+		{
+			Text = "Report process observation",
+			Width = 210,
+		};
+		_refresh.Click += async (_, _) => await RefreshAsync().ConfigureAwait(true);
+		_copy.Click += OnCopy;
+		_export.Click += OnExport;
+		_probe.Click += async (_, _) => await RunProbeAsync().ConfigureAwait(true);
+		_diagnoseService.Click += async (_, _) => await RunServiceStartupDiagnosticsAsync().ConfigureAwait(true);
+		_observeProcess.Click += async (_, _) => await RunProcessObservationAsync().ConfigureAwait(true);
+
+		toolbar.Controls.AddRange(new Control[] { _refresh, _copy, _export, _probe, _diagnoseService, _observeProcess });
+
+		_status = new Label
+		{
+			Dock = DockStyle.Top,
+			Height = 22,
+			Text = "Awaiting first refresh…",
+			AutoSize = false,
+			TextAlign = ContentAlignment.MiddleLeft,
+			Padding = new Padding(4, 2, 4, 2),
+		};
+
+		_report = new TextBox
+		{
+			Dock = DockStyle.Fill,
+			Multiline = true,
+			ReadOnly = true,
+			ScrollBars = ScrollBars.Both,
+			WordWrap = false,
+			Font = new Font(FontFamily.GenericMonospace, 9f),
+		};
+
+		Controls.Add(_report);
+		Controls.Add(_status);
+		Controls.Add(toolbar);
+
+		HandleCreated += async (_, _) =>
+		{
+			await TryShowMigrationRecoveryPromptAsync().ConfigureAwait(true);
+			await RefreshAsync().ConfigureAwait(true);
+		};
+	}
+
+	private async Task RefreshAsync()
+	{
+		_status.Text = "Refreshing…";
+		_refresh.Enabled = false;
+		try
+		{
+			// Use the structured call shape so a connect-failure, a timeout, a service-side error and a
+			// genuinely empty payload are each distinguishable — the historic SendAsync collapsed all of
+			// them to null and produced the misleading bare "No diagnostics available". When the pipe is
+			// reachable we always render an actionable structured failure (command, outcome, duration,
+			// exception type/message, pipe state, plus a tail of recent OperationLog entries) rather than
+			// a generic placeholder.
+			IpcCallResult<DiagnosticsSnapshotDto> call =
+				await _ipc.SendDetailedAsync<DiagnosticsSnapshotDto>(IpcCommand.GetDiagnostics).ConfigureAwait(true);
+
+			if (call.IsSuccess && call.Value is { } snapshot)
+			{
+				_report.Text = DiagnosticsReportFormatter.Format(snapshot)
+					+ Environment.NewLine
+					+ SqliteSupportBundleReportFormatter.Format(AppContext.BaseDirectory);
+				_status.Text = string.Format(
+					CultureInfo.InvariantCulture,
+					"Snapshot at {0:yyyy-MM-dd HH:mm:ss}Z  |  Status={1}  |  RawEvents={2}  AuthAttemptFacts={3}  RdpPort={4}",
+					snapshot.GeneratedUtc,
+					snapshot.Status,
+					snapshot.RawEventsTotal,
+					snapshot.AuthAttemptFactsTotal,
+					snapshot.ResolvedRdpPort);
+				return;
+			}
+
+			// Not a clean success. Build a structured failure report. If the pipe connected we can still
+			// pull a tail of the durable OperationLog to give the operator real recent context.
+			List<OperationLogDto> logTail = call.ServiceLikelyReachable
+				? await TryLoadOperationLogTailAsync().ConfigureAwait(true)
+				: new List<OperationLogDto>();
+
+			_report.Text = DiagnosticsReportFormatter.FormatFailure(call, logTail)
+				+ Environment.NewLine
+				+ SqliteSupportBundleReportFormatter.Format(AppContext.BaseDirectory);
+			_status.Text = "Diagnostics " + call.Headline();
+		}
+		catch (Exception ex)
+		{
+			_status.Text = "Service: error — " + ex.GetType().Name;
+			_report.Text = "Unexpected error while requesting diagnostics: " + ex.GetType().Name + " — " + ex.Message;
+		}
+		finally
+		{
+			_refresh.Enabled = true;
+		}
+	}
+
+	/// <summary>Best-effort tail of the durable OperationLog used to enrich a structured diagnostics
+	/// failure report. Never throws — on any error it returns an empty list so the failure report still
+	/// renders.</summary>
+	private async Task<List<OperationLogDto>> TryLoadOperationLogTailAsync()
+	{
+		try
+		{
+			OperationLogQueryRequest request = new()
+			{
+				DepthDays = 7,
+				Page = 0,
+				PageSize = 25,
+			};
+			IpcCallResult<OperationLogPageDto> call =
+				await _ipc.SendDetailedAsync<OperationLogPageDto>(IpcCommand.QueryOperationLogs, request).ConfigureAwait(true);
+			if (call.IsSuccess && call.Value is { } page && page.Status == IpcResultStatus.Success)
+			{
+				return page.Items.ToList();
+			}
+		}
+		catch
+		{
+			// best-effort — the failure report is still useful without the tail
+		}
+
+		return new List<OperationLogDto>();
+	}
+
+	private async Task RunProbeAsync()
+	{
+		_status.Text = "Running Security auth probe…";
+		_probe.Enabled = false;
+		try
+		{
+			SecurityAuthProbeDto? probe = await _ipc.SendAsync<SecurityAuthProbeDto>(IpcCommand.RunSecurityAuthProbe).ConfigureAwait(true);
+			if (probe is null)
+			{
+				_status.Text = "Service: probe returned nothing — is the service running?";
+				_report.Text = "No probe result. Start the service and retry.";
+				return;
+			}
+
+			_report.Text = SecurityAuthProbeReportFormatter.Format(probe);
+			_status.Text = string.Format(
+				CultureInfo.InvariantCulture,
+				"Probe at {0:yyyy-MM-dd HH:mm:ss}Z  |  Outcome={1}  |  Count={2}  |  Elapsed={3} ms",
+				probe.GeneratedUtc,
+				probe.Outcome,
+				probe.Count,
+				probe.ElapsedMilliseconds);
+		}
+		catch (Exception ex)
+		{
+			_status.Text = "Probe: error — " + ex.GetType().Name;
+			_report.Text = ex.Message;
+		}
+		finally
+		{
+			_probe.Enabled = true;
+		}
+	}
+
+	/// <summary>DEBUG-panel entry point for the manual process-observation dialog. Gated on
+	/// Diagnostics.DebugMode read over GetSettings; refuses with a status note when DEBUG is off
+	/// so the operator never posts observations from a production UI accidentally.</summary>
+	private async Task RunProcessObservationAsync()
+	{
+		if (!await ResolveDebugModeAsync().ConfigureAwait(true))
+		{
+			_status.Text = "Process observation requires DEBUG mode (Settings → Diagnostics.DebugMode).";
+			return;
+		}
+
+		try
+		{
+			using ProcessObservationDialog dialog = new(_ipc);
+			dialog.ShowDialog(FindForm());
+		}
+		catch (Exception ex)
+		{
+			_status.Text = "Process observation dialog failed: " + ex.GetType().Name;
+		}
+	}
+
+	/// <summary>Reads Diagnostics.DebugMode over GetSettings; fail-closed to false so a
+	/// transport or JSON problem can never unlock the DEBUG dialog.</summary>
+	private async Task<bool> ResolveDebugModeAsync()
+	{
+		try
+		{
+			JsonNode? settings = await _ipc.SendAsync<JsonNode>(IpcCommand.GetSettings).ConfigureAwait(true);
+			return settings?["Diagnostics"]?["DebugMode"] is JsonValue v
+				&& v.TryGetValue(out bool b)
+				&& b;
+		}
+		catch
+		{
+			return false;
+		}
+	}
+
+	private void OnCopy(object? sender, EventArgs e)
+	{
+		if (string.IsNullOrEmpty(_report.Text))
+		{
+			return;
+		}
+
+		try
+		{
+			Clipboard.SetText(_report.Text);
+			_status.Text = "Copied diagnostics to clipboard.";
+		}
+		catch (Exception ex)
+		{
+			_status.Text = "Clipboard copy failed: " + ex.Message;
+		}
+	}
+
+	private void OnExport(object? sender, EventArgs e)
+	{
+		if (string.IsNullOrEmpty(_report.Text))
+		{
+			return;
+		}
+
+		using SaveFileDialog dlg = new()
+		{
+			Title = "Export RdpAudit diagnostics",
+			Filter = "Text files (*.txt)|*.txt|All files (*.*)|*.*",
+			FileName = string.Format(
+				CultureInfo.InvariantCulture,
+				"rdpaudit-diagnostics-{0:yyyyMMdd-HHmmss}.txt",
+				DateTime.UtcNow),
+			OverwritePrompt = true,
+		};
+		if (dlg.ShowDialog(FindForm()) != DialogResult.OK)
+		{
+			return;
+		}
+
+		try
+		{
+			File.WriteAllText(dlg.FileName, _report.Text, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+			_status.Text = "Exported diagnostics to " + dlg.FileName;
+		}
+		catch (Exception ex)
+		{
+			_status.Text = "Export failed: " + ex.Message;
+		}
+	}
+
+	// Version: 1.0.0
+	/// <summary>Runs the IPC-free service startup diagnostics runner and dumps the report into
+	/// the read-only text box. Prompts the operator before running the optional console self-test
+	/// because it actually launches the service executable in this session.</summary>
+	private async Task RunServiceStartupDiagnosticsAsync()
+	{
+		DialogResult selfTest = MessageBox.Show(
+			this,
+			"Also launch the service executable with --console for up to 8 seconds to capture the " +
+			"startup exception directly?\n\n" +
+			"Yes  — include the console self-test (service must be stopped, admin recommended).\n" +
+			"No   — collect logs and SCM state only.",
+			"Diagnose service startup",
+			MessageBoxButtons.YesNoCancel,
+			MessageBoxIcon.Question,
+			MessageBoxDefaultButton.Button2);
+
+		if (selfTest == DialogResult.Cancel)
+		{
+			return;
+		}
+
+		bool runConsoleSelfTest = selfTest == DialogResult.Yes;
+
+		_status.Text = "Collecting service startup diagnostics…";
+		_diagnoseService.Enabled = false;
+		_refresh.Enabled         = false;
+		_probe.Enabled           = false;
+		_observeProcess.Enabled  = false;
+
+		try
+		{
+			ServiceStartupDiagnosticsRunner runner = new(
+				configuratorDirectory: AppContext.BaseDirectory,
+				runConsoleSelfTest:    runConsoleSelfTest);
+
+			string report = await Task.Run(() => runner.CollectAsync()).ConfigureAwait(true);
+
+			_report.Text = report;
+			_status.Text = "Service startup diagnostics collected " +
+				(runConsoleSelfTest ? "(with console self-test)" : "(logs + SCM only)") +
+				"  —  Copy / Export apply to this report.";
+
+			// Diagnostics often surface the migration failure via SCM state or event log entries. If the
+			// service left a recovery marker on disk, offer the operator a guided reset right here so the
+			// path from "diagnostics revealed the problem" to "database has been reset" is one dialog.
+			await TryShowMigrationRecoveryPromptAsync().ConfigureAwait(true);
+		}
+		catch (Exception ex)
+		{
+			_status.Text = "Startup diagnostics failed: " + ex.GetType().Name;
+			_report.Text = "Startup diagnostics failed: " + ex.GetType().Name + " — " + ex.Message +
+				Environment.NewLine + Environment.NewLine + ex.StackTrace;
+		}
+		finally
+		{
+			_diagnoseService.Enabled = true;
+			_refresh.Enabled         = true;
+			_probe.Enabled           = true;
+			_observeProcess.Enabled  = true;
+		}
+	}
+
+	// ── Migration failure recovery ───────────────────────────────────────────────
+
+	/// <summary>If the Service wrote a migration-failure marker under ProgramData, prompt the
+	/// operator once per tab-open cycle to back up the incompatible database and let the Service
+	/// bootstrap a fresh schema. All I/O happens off the UI thread so the tab stays responsive.</summary>
+	private async Task TryShowMigrationRecoveryPromptAsync()
+	{
+		if (_migrationRecoveryInProgress)
+		{
+			return;
+		}
+
+		string programData = ResolveProgramDataDirectory();
+
+		MigrationFailureMarkerPayload? marker;
+		try
+		{
+			marker = await Task.Run(() => DatabaseMigrationFailureMarker.TryRead(programData))
+				.ConfigureAwait(true);
+		}
+		catch
+		{
+			return;
+		}
+
+		if (marker is null)
+		{
+			return;
+		}
+
+		_migrationRecoveryInProgress = true;
+		try
+		{
+			string failed = marker.PendingMigrations.Count > 0 ? marker.PendingMigrations[0] : "(unknown)";
+			string exception = (marker.ExceptionType ?? "Exception") + " — " + (marker.ExceptionMessage ?? "(no message)");
+			string dbPath = string.IsNullOrWhiteSpace(marker.DatabasePath)
+				? RdpAuditPaths.Default.DatabasePath
+				: marker.DatabasePath;
+
+			string message =
+				"The RdpAudit service could not apply a database schema migration and stopped itself " +
+				"to avoid a Service Control Manager restart loop." + Environment.NewLine + Environment.NewLine +
+				"Failed migration: " + failed + Environment.NewLine +
+				"Marker written:   " + marker.TimestampUtc.ToString("yyyy-MM-dd HH:mm:ss 'UTC'", CultureInfo.InvariantCulture) + Environment.NewLine +
+				"Database file:    " + dbPath + Environment.NewLine +
+				"Exception:        " + exception + Environment.NewLine + Environment.NewLine +
+				"Would you like to back up the incompatible database (rdpaudit.db plus WAL/SHM sidecars " +
+				"will be renamed with a '.YYYYMMDD-HHmmss.bak' suffix) and let the service create a fresh " +
+				"database on next start?" + Environment.NewLine + Environment.NewLine +
+				"Yes — back up now and restart the service." + Environment.NewLine +
+				"No  — keep the marker; you can review the database manually and resolve later.";
+
+			DialogResult choice = MessageBox.Show(
+				this,
+				message,
+				"RdpAudit — database schema incompatible",
+				MessageBoxButtons.YesNo,
+				MessageBoxIcon.Warning,
+				MessageBoxDefaultButton.Button2);
+
+			if (choice != DialogResult.Yes)
+			{
+				return;
+			}
+
+			_status.Text = "Backing up incompatible database and restarting service…";
+			_diagnoseService.Enabled = false;
+			_refresh.Enabled         = false;
+			_probe.Enabled           = false;
+
+			DatabaseResetResult result;
+			try
+			{
+				DatabaseResetService reset = new();
+				result = await reset.ExecuteAsync(marker, programData).ConfigureAwait(true);
+			}
+			catch (Exception ex)
+			{
+				result = DatabaseResetResult.Fail(
+					"Database reset failed: " + ex.GetType().Name + " — " + ex.Message +
+					Environment.NewLine + ex.StackTrace);
+			}
+			finally
+			{
+				_diagnoseService.Enabled = true;
+				_refresh.Enabled         = true;
+				_probe.Enabled           = true;
+			}
+
+			_report.Text = result.Log;
+			_status.Text = result.Success
+				? "Database reset completed " + (result.BackupPath is null ? string.Empty : "— backup at " + result.BackupPath)
+				: "Database reset finished with errors — see the report above.";
+
+			MessageBox.Show(
+				this,
+				result.Success
+					? "Database has been backed up and the service has been started. A fresh database will be created on demand."
+					: "Database reset finished with errors. See the report on the Diagnostic tab for details.",
+				"RdpAudit — database reset",
+				MessageBoxButtons.OK,
+				result.Success ? MessageBoxIcon.Information : MessageBoxIcon.Error);
+		}
+		finally
+		{
+			_migrationRecoveryInProgress = false;
+		}
+	}
+
+	private static string ResolveProgramDataDirectory() => RdpAuditPaths.Default.ProgramDataDirectory;
+}
+
+/// <summary>Pure formatter that turns a <see cref="DiagnosticsSnapshotDto"/> into a flat,
+/// monospace-friendly report. Pulled out of the TabPage so it can be unit-tested without WinForms
+/// and so the same string can be piped to either the clipboard or an exported .txt.</summary>
+public static class DiagnosticsReportFormatter
+{
+	/// <summary>Format the snapshot for the Diagnostic tab. Always English; never throws.</summary>
+	public static string Format(DiagnosticsSnapshotDto dto)
+	{
+		ArgumentNullException.ThrowIfNull(dto);
+		StringBuilder sb = new();
+		sb.AppendLine("RdpAudit diagnostics snapshot");
+		sb.AppendLine("============================");
+		sb.AppendFormat(CultureInfo.InvariantCulture, "Generated (UTC):       {0:O}", dto.GeneratedUtc).AppendLine();
+		sb.AppendFormat(CultureInfo.InvariantCulture, "Result status:         {0}", dto.Status).AppendLine();
+		if (!string.IsNullOrWhiteSpace(dto.Message))
+		{
+			sb.AppendFormat(CultureInfo.InvariantCulture, "Message:               {0}", dto.Message).AppendLine();
+		}
+		sb.AppendFormat(CultureInfo.InvariantCulture, "Service version:       {0}", dto.ServiceVersion ?? "(unknown)").AppendLine();
+		sb.AppendFormat(CultureInfo.InvariantCulture, "Install path:          {0}", dto.InstallPath ?? "(unknown)").AppendLine();
+		sb.AppendFormat(CultureInfo.InvariantCulture, "Database path:         {0}", dto.DatabasePath ?? "(unknown)").AppendLine();
+		sb.AppendLine();
+
+		sb.AppendLine("RDP listener & firewall scope");
+		sb.AppendLine("-----------------------------");
+		sb.AppendFormat(CultureInfo.InvariantCulture, "Resolved RDP port:     {0}", dto.ResolvedRdpPort).AppendLine();
+		sb.AppendFormat(CultureInfo.InvariantCulture, "Port source:           {0}", dto.ResolvedRdpPortSource ?? "(unknown)").AppendLine();
+		if (!string.IsNullOrWhiteSpace(dto.ResolvedRdpPortDetail))
+		{
+			sb.AppendFormat(CultureInfo.InvariantCulture, "Port detail:           {0}", dto.ResolvedRdpPortDetail).AppendLine();
+		}
+		sb.AppendFormat(CultureInfo.InvariantCulture, "Firewall block scope:  {0}", dto.FirewallBlockScope ?? "(unknown)").AppendLine();
+		// Make the LocalPort semantics explicit so an operator can map scope -> firewall rule shape without
+		// guessing: RdpPortOnly pins the resolved port; AllInbound deliberately matches every inbound port.
+		if (string.Equals(dto.FirewallBlockScope, "RdpPortOnly", StringComparison.OrdinalIgnoreCase))
+		{
+			sb.AppendFormat(CultureInfo.InvariantCulture, "  -> RdpOnly rules block TCP LocalPort={0} (the resolved RDP port).", dto.ResolvedRdpPort).AppendLine();
+		}
+		else if (string.Equals(dto.FirewallBlockScope, "AllInbound", StringComparison.OrdinalIgnoreCase))
+		{
+			sb.AppendLine("  -> AllInbound rules block LocalPort=Any (every inbound port from the source IP).");
+		}
+		sb.AppendLine();
+
+		sb.AppendLine("RDP Activity (AttackStats) freshness");
+		sb.AppendLine("------------------------------------");
+		sb.AppendFormat(CultureInfo.InvariantCulture, "Latest RawEvent (local):        {0}", FormatLocalWithUtc(dto.LatestRawEventUtc)).AppendLine();
+		sb.AppendFormat(CultureInfo.InvariantCulture, "Latest AuthAttemptFact (local): {0}", FormatLocalWithUtc(dto.LatestAuthAttemptFactUtc)).AppendLine();
+		sb.AppendFormat(CultureInfo.InvariantCulture, "Latest AttackStat upd. (local): {0}", FormatLocalWithUtc(dto.LatestAttackStatUpdatedUtc)).AppendLine();
+		sb.AppendFormat(CultureInfo.InvariantCulture, "AttackStats rows:               {0}", dto.AttackStatsTotal).AppendLine();
+		sb.AppendFormat(CultureInfo.InvariantCulture, "Stats worker last run (local):  {0}", FormatLocalWithUtc(dto.StatsWorkerLastRunUtc)).AppendLine();
+		sb.AppendFormat(CultureInfo.InvariantCulture, "Stats worker runs / last rows:  {0} / {1}", dto.StatsWorkerRunCount, dto.StatsWorkerLastRowsUpserted).AppendLine();
+		sb.AppendFormat(CultureInfo.InvariantCulture, "Stats worker last error:        {0}", dto.StatsWorkerLastError ?? "(none)").AppendLine();
+		sb.AppendLine();
+
+		sb.AppendLine("Effective monitoring configuration");
+		sb.AppendLine("----------------------------------");
+		sb.AppendFormat(CultureInfo.InvariantCulture, "Channels ({0}):", dto.EnabledChannels.Count).AppendLine();
+		if (dto.EnabledChannels.Count == 0)
+		{
+			sb.AppendLine("  (none — falling back to EventCatalog defaults)");
+		}
+		else
+		{
+			foreach (string c in dto.EnabledChannels)
+			{
+				sb.AppendFormat(CultureInfo.InvariantCulture, "  - {0}", c).AppendLine();
+			}
+		}
+		sb.AppendFormat(CultureInfo.InvariantCulture, "Event IDs filter ({0}):", dto.EnabledEventIds.Count).AppendLine();
+		if (dto.EnabledEventIds.Count == 0)
+		{
+			sb.AppendLine("  (empty — every catalog event ID for the enabled channels)");
+		}
+		else
+		{
+			sb.AppendFormat(CultureInfo.InvariantCulture, "  {0}", string.Join(", ", dto.EnabledEventIds)).AppendLine();
+		}
+		sb.AppendLine();
+
+		sb.AppendLine("Monitoring config repair (stale appsettings.json)");
+		sb.AppendLine("-------------------------------------------------");
+		sb.AppendFormat(CultureInfo.InvariantCulture, "Changed this run:      {0}", dto.MonitoringConfigRepairChanged).AppendLine();
+		sb.AppendFormat(CultureInfo.InvariantCulture, "Changed runs (total):  {0}", dto.MonitoringConfigRepairChangedRunCount).AppendLine();
+		if (dto.MonitoringConfigRepairUtc is DateTime repUtc)
+		{
+			sb.AppendFormat(CultureInfo.InvariantCulture, "Last run (UTC):        {0:O}", repUtc).AppendLine();
+		}
+		if (dto.MonitoringConfigRepairAddedChannels.Count > 0)
+		{
+			sb.AppendFormat(CultureInfo.InvariantCulture, "Added channels:        {0}", string.Join(", ", dto.MonitoringConfigRepairAddedChannels)).AppendLine();
+		}
+		if (dto.MonitoringConfigRepairAddedEventIds.Count > 0)
+		{
+			sb.AppendFormat(CultureInfo.InvariantCulture, "Added event IDs:       {0}", string.Join(", ", dto.MonitoringConfigRepairAddedEventIds)).AppendLine();
+		}
+		if (!string.IsNullOrWhiteSpace(dto.MonitoringConfigRepairReason))
+		{
+			sb.AppendFormat(CultureInfo.InvariantCulture, "Reason:                {0}", dto.MonitoringConfigRepairReason).AppendLine();
+		}
+		sb.AppendLine();
+
+		sb.AppendLine("Per-channel collector status");
+		sb.AppendLine("----------------------------");
+		if (dto.ChannelStatus.Count == 0)
+		{
+			sb.AppendLine("  (no channel arm/restart events recorded yet)");
+		}
+		else
+		{
+			foreach (KeyValuePair<string, string> kv in dto.ChannelStatus)
+			{
+				sb.AppendFormat(CultureInfo.InvariantCulture, "  {0,-70} {1}", kv.Key, kv.Value).AppendLine();
+			}
+		}
+		sb.AppendLine();
+
+		sb.AppendLine("Security watcher & backfill");
+		sb.AppendLine("---------------------------");
+		sb.AppendFormat(CultureInfo.InvariantCulture, "Watcher armed:                  {0}", dto.SecurityWatcherEnabled).AppendLine();
+		sb.AppendFormat(CultureInfo.InvariantCulture, "Events read (live):             {0}", dto.SecurityEventsRead).AppendLine();
+		sb.AppendFormat(CultureInfo.InvariantCulture, "Events normalized:              {0}", dto.SecurityEventsNormalized).AppendLine();
+		sb.AppendFormat(CultureInfo.InvariantCulture, "Events rejected:                {0}", dto.SecurityEventsRejected).AppendLine();
+		sb.AppendFormat(CultureInfo.InvariantCulture, "Security 4624 / 4625 / 4648:    {0} / {1} / {2}", dto.Security4624Count, dto.Security4625Count, dto.Security4648Count).AppendLine();
+		sb.AppendFormat(CultureInfo.InvariantCulture, "Last Security event (local):    {0}", FormatLocalWithUtc(dto.LastSecurityEventUtc)).AppendLine();
+		sb.AppendFormat(CultureInfo.InvariantCulture, "Last Security channel error:    {0}", dto.LastSecurityChannelError ?? "(none)").AppendLine();
+		sb.AppendFormat(CultureInfo.InvariantCulture, "Backfill last run (local):      {0}", FormatLocalWithUtc(dto.SecurityBackfillLastRunUtc)).AppendLine();
+		sb.AppendFormat(CultureInfo.InvariantCulture, "Backfill read / fwd / dup:      {0} / {1} / {2}", dto.SecurityBackfillRecordsRead, dto.SecurityBackfillRecordsForwarded, dto.SecurityBackfillRecordsDeduped).AppendLine();
+		sb.AppendLine();
+
+		sb.AppendLine("AuthAttemptFact counters");
+		sb.AppendLine("------------------------");
+		sb.AppendFormat(CultureInfo.InvariantCulture, "Created (failed+succeeded):     {0}", dto.AuthAttemptFactCreated).AppendLine();
+		sb.AppendFormat(CultureInfo.InvariantCulture, "Failed:                         {0}", dto.AuthAttemptFactFailed).AppendLine();
+		sb.AppendFormat(CultureInfo.InvariantCulture, "Succeeded:                      {0}", dto.AuthAttemptFactSucceeded).AppendLine();
+		sb.AppendFormat(CultureInfo.InvariantCulture, "Last created (local):           {0}", FormatLocalWithUtc(dto.LastAuthAttemptFactCreatedUtc)).AppendLine();
+		sb.AppendLine();
+
+		sb.AppendLine("Database counts (EF Core / Microsoft.Data.Sqlite)");
+		sb.AppendLine("-------------------------------------------------");
+		sb.AppendFormat(CultureInfo.InvariantCulture, "RawEvents total:                {0}", dto.RawEventsTotal).AppendLine();
+		sb.AppendFormat(CultureInfo.InvariantCulture, "AuthAttemptFacts total:         {0}", dto.AuthAttemptFactsTotal).AppendLine();
+		sb.AppendLine();
+
+		AppendStoreIntegrity(sb, dto);
+
+		sb.AppendLine("RawEvents grouped by channel");
+		sb.AppendLine("-----------------------------");
+		if (dto.RawEventsByChannel.Count == 0)
+		{
+			sb.AppendLine("  (no rows)");
+		}
+		else
+		{
+			foreach (DiagnosticsChannelCount row in dto.RawEventsByChannel)
+			{
+				sb.AppendFormat(CultureInfo.InvariantCulture, "  {0,10}  {1}", row.Count, row.Channel).AppendLine();
+			}
+		}
+		sb.AppendLine();
+
+		sb.AppendLine("RawEvents grouped by event ID (top 30)");
+		sb.AppendLine("---------------------------------------");
+		if (dto.RawEventsByEventId.Count == 0)
+		{
+			sb.AppendLine("  (no rows)");
+		}
+		else
+		{
+			foreach (DiagnosticsEventIdCount row in dto.RawEventsByEventId)
+			{
+				sb.AppendFormat(CultureInfo.InvariantCulture, "  {0,10}  {1,6}  {2}", row.Count, row.EventId, row.Channel).AppendLine();
+			}
+		}
+		sb.AppendLine();
+
+		sb.AppendLine("AuthAttemptFacts grouped by EvidenceEventId / Outcome (top 30)");
+		sb.AppendLine("---------------------------------------------------------------");
+		if (dto.AuthAttemptFactsByOutcome.Count == 0)
+		{
+			sb.AppendLine("  (no rows)");
+		}
+		else
+		{
+			foreach (DiagnosticsFactOutcomeCount row in dto.AuthAttemptFactsByOutcome)
+			{
+				sb.AppendFormat(CultureInfo.InvariantCulture, "  {0,10}  {1,6}  {2}", row.Count, row.EvidenceEventId, row.Outcome).AppendLine();
+			}
+		}
+		sb.AppendLine();
+
+		sb.AppendLine("Recent pipeline errors");
+		sb.AppendLine("----------------------");
+		if (dto.RecentPipelineErrors.Count == 0)
+		{
+			sb.AppendLine("  (none)");
+		}
+		else
+		{
+			foreach (string err in dto.RecentPipelineErrors)
+			{
+				sb.AppendFormat(CultureInfo.InvariantCulture, "  - {0}", err).AppendLine();
+			}
+		}
+		sb.AppendLine();
+
+		sb.AppendLine("Recent operation log (newest first)");
+		sb.AppendLine("-----------------------------------");
+		if (dto.RecentOperationLog.Count == 0)
+		{
+			sb.AppendLine("  (no recent program-action log entries)");
+		}
+		else
+		{
+			foreach (DiagnosticsOperationLogLine line in dto.RecentOperationLog)
+			{
+				sb.AppendFormat(
+					CultureInfo.InvariantCulture,
+					"  {0:yyyy-MM-dd HH:mm:ss}Z  {1,-11}  {2}/{3}: {4}",
+					line.TimeUtc,
+					line.Severity,
+					line.Source,
+					line.Operation,
+					line.Message).AppendLine();
+			}
+		}
+
+		return sb.ToString();
+	}
+
+	/// <summary>Name of the diagnostics section that produces the fingerprint-chain verdict. Shared with the
+	/// producer (<c>IpcDispatcher</c>) so "the verdict section completed" means the same thing on both sides.</summary>
+	internal const string StoreFingerprintSectionName = "StoreFingerprint";
+
+	/// <summary>Name of the diagnostics section that verifies the deletion-ledger chain and reads the journaled
+	/// check outcomes.</summary>
+	internal const string StoreIntegritySectionName = "StoreIntegrity";
+
+	/// <summary>B25: renders the store integrity / tamper-evidence section. Every value is a reading; nothing
+	/// here runs a check. The verdict band comes from
+	/// <see cref="StoreFingerprintChainVerdict.BandForReport"/>, the same decision the Database tab's banner
+	/// makes, so the two tabs can never grade one state differently.
+	/// <para>
+	/// When the verdict was not obtained - the snapshot failed, the <c>StoreFingerprint</c> section timed out
+	/// or failed, or the state is absent - the section says UNKNOWN and names the reason. It never renders a
+	/// missing reading as a pass, and it prints the two integrity section outcomes so the reason is visible
+	/// rather than asserted.
+	/// </para>
+	/// </summary>
+	private static void AppendStoreIntegrity(StringBuilder sb, DiagnosticsSnapshotDto dto)
+	{
+		bool succeeded = dto.Status == IpcResultStatus.Success;
+		bool sectionCompleted = dto.SectionTimings.Any(timing =>
+			string.Equals(timing.Section, StoreFingerprintSectionName, StringComparison.Ordinal)
+			&& string.Equals(timing.Status, "Completed", StringComparison.Ordinal));
+		bool reported = StoreFingerprintChainVerdict.WasReported(succeeded, sectionCompleted, dto.FingerprintChainState);
+		StoreIntegrityVerdictBand band =
+			StoreFingerprintChainVerdict.BandForReport(succeeded, sectionCompleted, dto.FingerprintChainState);
+
+		sb.AppendLine("Store integrity / tamper evidence");
+		sb.AppendLine("---------------------------------");
+		AppendIntegrityLine(sb, "Verdict:", band switch
+		{
+			StoreIntegrityVerdictBand.Ok => "OK — the fingerprint chain verifies",
+			StoreIntegrityVerdictBand.Warning => "WARNING — reported, not attributable to tampering",
+			StoreIntegrityVerdictBand.Error => "ERROR — recorded state is missing, unreadable or inconsistent",
+			_ => "UNKNOWN — no verdict was obtained; this is NOT a pass",
+		});
+		AppendIntegrityLine(sb, "Verdict detail:", reported
+			? StoreFingerprintChainVerdict.Describe(dto.FingerprintChainState)
+			: StoreFingerprintChainVerdict.DescribeNotReported(!succeeded
+				? "the service reported " + dto.Status + " for this snapshot"
+				: !sectionCompleted
+					? "this snapshot carries no completed '" + StoreFingerprintSectionName + "' section"
+						+ (dto.IsPartial ? ", so the snapshot is partial" : string.Empty)
+					: "the service reported no chain state"));
+		AppendIntegrityLine(
+			sb,
+			"Fingerprint chain state:",
+			StoreFingerprintChainVerdict.LabelOf(dto.FingerprintChainState)
+				+ (string.IsNullOrWhiteSpace(dto.FingerprintChainState) ? " (not reported — this is NOT a pass)" : string.Empty));
+		AppendIntegrityLine(sb, "Fingerprint chain entries:", dto.FingerprintChainEntryCount.ToString(CultureInfo.InvariantCulture));
+		AppendIntegrityLine(sb, "Fingerprint mirror:", dto.FingerprintChainMirrorAvailable switch
+		{
+			true => "available outside the integrity folder",
+			false => "NOT available — the sealed tip is the only second store",
+			null => "unknown (the chain was not verified)",
+		});
+		if (!string.IsNullOrWhiteSpace(dto.FingerprintChainMessage))
+		{
+			AppendIntegrityLine(sb, "Fingerprint chain message:", dto.FingerprintChainMessage);
+		}
+
+		AppendIntegrityLine(sb, "Last clean-shutdown fingerprint:", FormatLocalWithUtc(dto.FingerprintCleanShutdownUtc));
+		AppendIntegrityLine(sb, "Last periodic fingerprint:", FormatLocalWithUtc(dto.FingerprintPeriodicUtc));
+		AppendIntegrityLine(
+			sb,
+			"Anomaly marker:",
+			dto.IntegrityAnomalyMarkerPresent ? "PRESENT — the last start-up comparison found something to read" : "absent");
+		if (dto.IntegrityAnomalyMarkerPresent && !string.IsNullOrWhiteSpace(dto.IntegrityAnomalyDetail))
+		{
+			foreach (string line in dto.IntegrityAnomalyDetail.Replace("\r\n", "\n").Split('\n'))
+			{
+				AppendIntegrityLine(sb, string.Empty, line, indent: true);
+			}
+		}
+
+		AppendIntegrityLine(sb, "Ledger chain intact:", dto.LedgerChainIntact switch
+		{
+			true => "yes",
+			false => "NO — the chain does not verify",
+			null => "not inspected (this is not a pass)",
+		});
+		AppendIntegrityLine(sb, "Ledger chained rows:", DescribeCount(dto.LedgerChainedRows));
+		AppendIntegrityLine(
+			sb,
+			"Ledger unchained rows:",
+			DescribeCount(dto.LedgerUnchainedRows)
+				+ (dto.LedgerUnchainedRows > 0 ? " (written before the chain existed: not verifiable, not a break)" : string.Empty));
+		if (!string.IsNullOrWhiteSpace(dto.LedgerChainMessage))
+		{
+			AppendIntegrityLine(sb, "Ledger chain message:", dto.LedgerChainMessage);
+		}
+
+		AppendIntegrityLine(sb, "Last quick check:", DescribeCheck(dto.LastQuickCheck, "never run"));
+		AppendIntegrityLine(sb, "Last full integrity check:", DescribeCheck(dto.LastFullIntegrityCheck, "never run (the full check is opt-in)"));
+		AppendIntegrityLine(sb, "Last ledger-chain check:", DescribeCheck(dto.LastLedgerChainCheck, "never run"));
+
+		// The snapshot's own completeness: a partial snapshot is not rendered anywhere else in this report, and
+		// it is the difference between "the verdict is ok" and "only some sections answered".
+		AppendIntegrityLine(
+			sb,
+			"Snapshot partial:",
+			dto.IsPartial ? "yes — see the integrity section outcomes below" : "no");
+		foreach (DiagnosticsSectionTiming timing in dto.SectionTimings.Where(timing =>
+			string.Equals(timing.Section, StoreFingerprintSectionName, StringComparison.Ordinal)
+			|| string.Equals(timing.Section, StoreIntegritySectionName, StringComparison.Ordinal)))
+		{
+			sb.AppendFormat(
+				CultureInfo.InvariantCulture,
+				"  {0} {1} {2} ({3} ms){4}",
+				timing.Status == "Completed" ? "[OK ]" : "[!! ]",
+				timing.Section.PadRight(17),
+				timing.Status,
+				timing.DurationMs,
+				string.IsNullOrEmpty(timing.Error) ? string.Empty : " — " + timing.Error).AppendLine();
+		}
+
+		sb.AppendLine();
+	}
+
+	/// <summary>Label column of the integrity section, aligned with the Database tab's section so the two
+	/// reports read the same shape.</summary>
+	private const int IntegrityLabelWidth = 32;
+
+	/// <summary>One label/value line of the integrity section, in the report's aligned column layout.</summary>
+	private static void AppendIntegrityLine(StringBuilder sb, string label, string value, bool indent = false)
+		=> sb.Append(indent ? "    " + label : label.PadRight(IntegrityLabelWidth)).Append(value).AppendLine();
+
+	private static string DescribeCount(long value) =>
+		value < 0 ? "not inspected" : value.ToString(CultureInfo.InvariantCulture);
+
+	private static string DescribeCheck(DiagnosticsIntegrityCheckRow? row, string whenAbsent) =>
+		row is null
+			? whenAbsent
+			: row.Outcome + " at " + row.CompletedUtc.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture)
+				+ " (" + row.DurationMs.ToString(CultureInfo.InvariantCulture) + " ms, " + row.InitiatedBy + ")"
+				+ (string.IsNullOrWhiteSpace(row.Detail) ? string.Empty : " — " + row.Detail);
+
+	/// <summary>Build an actionable structured failure report when GetDiagnostics did not return a clean
+	/// snapshot. Never the bare "No diagnostics available": it states the command, outcome, duration,
+	/// pipe/response state, exception type/message and, when the service was reachable, a tail of recent
+	/// OperationLog entries so the operator has real context to act on. Always English; never throws.</summary>
+	public static string FormatFailure(IpcCallResult<DiagnosticsSnapshotDto> call, IReadOnlyList<OperationLogDto> logTail)
+	{
+		ArgumentNullException.ThrowIfNull(call);
+		StringBuilder sb = new();
+		sb.AppendLine("RdpAudit diagnostics — could not build a full snapshot");
+		sb.AppendLine("======================================================");
+		sb.AppendFormat(CultureInfo.InvariantCulture, "Command:               {0}", call.Command).AppendLine();
+		sb.AppendFormat(CultureInfo.InvariantCulture, "Outcome:               {0}", call.Outcome).AppendLine();
+		sb.AppendFormat(CultureInfo.InvariantCulture, "Headline:              {0}", call.Headline()).AppendLine();
+		sb.AppendFormat(CultureInfo.InvariantCulture, "Started (UTC):         {0:O}", call.StartUtc).AppendLine();
+		sb.AppendFormat(CultureInfo.InvariantCulture, "Duration / timeout:    {0} ms / {1} ms", call.DurationMs, call.TimeoutMs).AppendLine();
+		sb.AppendFormat(CultureInfo.InvariantCulture, "Pipe connected:        {0}", call.PipeConnected).AppendLine();
+		sb.AppendFormat(CultureInfo.InvariantCulture, "Response received:     {0}", call.ResponseReceived).AppendLine();
+		sb.AppendFormat(CultureInfo.InvariantCulture, "Exception type:        {0}", call.ErrorType ?? "(none)").AppendLine();
+		sb.AppendFormat(CultureInfo.InvariantCulture, "Error message:         {0}", call.Error ?? "(none)").AppendLine();
+		sb.AppendLine();
+
+		sb.AppendLine("What this means");
+		sb.AppendLine("---------------");
+		sb.AppendLine(call.Outcome switch
+		{
+			IpcCallOutcome.ConnectFailed =>
+				"The service named pipe did not accept a connection. The service is most likely stopped or not installed. Start the RdpAudit service (run the Configurator as administrator) and retry.",
+			IpcCallOutcome.Timeout =>
+				"The service is reachable but did not finish within the deadline. A long-running operation may be in progress; wait a moment and retry.",
+			IpcCallOutcome.ServiceError =>
+				"The service handled the request but reported an error. See the error message above and the recent operation log below.",
+			IpcCallOutcome.TransportError =>
+				"A transport / framing error occurred mid-stream after connecting. This usually indicates a version mismatch between the Configurator and the running service — re-publish and restart the service.",
+			IpcCallOutcome.SuccessNoPayload =>
+				"The service reported success but returned no diagnostics payload. This is unexpected; the recent operation log below may show why.",
+			_ => "Unexpected outcome — see the trace line and recent operation log below.",
+		});
+		sb.AppendLine();
+		sb.AppendFormat(CultureInfo.InvariantCulture, "Trace: {0}", call.TraceLine).AppendLine();
+		sb.AppendLine();
+
+		sb.AppendLine("Recent operation log (newest first)");
+		sb.AppendLine("-----------------------------------");
+		if (!call.ServiceLikelyReachable)
+		{
+			sb.AppendLine("  (service unreachable — operation log could not be queried)");
+		}
+		else if (logTail.Count == 0)
+		{
+			sb.AppendLine("  (no recent program-action log entries returned)");
+		}
+		else
+		{
+			foreach (OperationLogDto line in logTail)
+			{
+				sb.AppendFormat(
+					CultureInfo.InvariantCulture,
+					"  {0:yyyy-MM-dd HH:mm:ss}Z  {1,-11}  {2}/{3}: {4}",
+					line.TimeUtc,
+					line.Severity,
+					line.Source,
+					line.Operation,
+					line.Message).AppendLine();
+				if (!string.IsNullOrEmpty(line.ExceptionType))
+				{
+					sb.AppendFormat(CultureInfo.InvariantCulture, "      exception: {0}: {1}", line.ExceptionType, line.ExceptionMessage ?? "(no message)").AppendLine();
+				}
+			}
+		}
+
+		return sb.ToString();
+	}
+
+	/// <summary>v1.2.1: render a persisted UTC timestamp as "<local> | <UTC>Z" for the operator
+	/// diagnostics panel. The deep-diagnostic dump keeps the UTC trace alongside the local form so
+	/// support tickets pasted across timezones never lose evidence of the original wall clock.</summary>
+	private static string FormatLocalWithUtc(DateTime? utc)
+	{
+		if (utc is not DateTime v)
+		{
+			return "(never)";
+		}
+
+		return LocalTimeFormatter.FormatBoth(v);
+	}
+}
+
+/// <summary>Pure formatter that turns a <see cref="SecurityAuthProbeDto"/> into a flat,
+/// monospace-friendly report. Pulled out of the TabPage so it can be unit-tested without
+/// WinForms and so the same string can be piped to the clipboard or an exported .txt.</summary>
+public static class SecurityAuthProbeReportFormatter
+{
+	/// <summary>Format the probe outcome for the Diagnostic tab. Always English; never throws.</summary>
+	public static string Format(SecurityAuthProbeDto dto)
+	{
+		ArgumentNullException.ThrowIfNull(dto);
+		StringBuilder sb = new();
+		sb.AppendLine("RdpAudit Security auth probe");
+		sb.AppendLine("============================");
+		sb.AppendFormat(CultureInfo.InvariantCulture, "Generated (UTC):       {0:O}", dto.GeneratedUtc).AppendLine();
+		sb.AppendFormat(CultureInfo.InvariantCulture, "Result status:         {0}", dto.Status).AppendLine();
+		sb.AppendFormat(CultureInfo.InvariantCulture, "Outcome:               {0}", dto.Outcome).AppendLine();
+		sb.AppendFormat(CultureInfo.InvariantCulture, "Identity:              {0}", dto.Identity ?? "(unknown)").AppendLine();
+		sb.AppendFormat(CultureInfo.InvariantCulture, "Lookback (hours):      {0}", dto.LookbackHours).AppendLine();
+		sb.AppendFormat(CultureInfo.InvariantCulture, "Elapsed (ms):          {0}", dto.ElapsedMilliseconds).AppendLine();
+		sb.AppendFormat(CultureInfo.InvariantCulture, "Count returned:        {0}", dto.Count).AppendLine();
+		if (!string.IsNullOrWhiteSpace(dto.Message))
+		{
+			sb.AppendFormat(CultureInfo.InvariantCulture, "Message:               {0}", dto.Message).AppendLine();
+		}
+		if (!string.IsNullOrWhiteSpace(dto.Query))
+		{
+			sb.AppendLine();
+			sb.AppendLine("XPath issued");
+			sb.AppendLine("------------");
+			sb.AppendLine(dto.Query);
+		}
+
+		if (!string.IsNullOrEmpty(dto.ExceptionType))
+		{
+			sb.AppendLine();
+			sb.AppendLine("Exception detail");
+			sb.AppendLine("----------------");
+			sb.AppendFormat(CultureInfo.InvariantCulture, "Type:                  {0}", dto.ExceptionType).AppendLine();
+			sb.AppendFormat(CultureInfo.InvariantCulture, "HResult:               {0}", dto.ExceptionHResult ?? "(none)").AppendLine();
+			sb.AppendFormat(CultureInfo.InvariantCulture, "Message:               {0}", dto.ExceptionMessage ?? "(none)").AppendLine();
+		}
+
+		if (dto.FirstEvent is SecurityAuthProbeEvent first)
+		{
+			sb.AppendLine();
+			sb.AppendLine("First parsed event");
+			sb.AppendLine("------------------");
+			sb.AppendFormat(CultureInfo.InvariantCulture, "EventId:               {0}", first.EventId).AppendLine();
+			sb.AppendFormat(
+				CultureInfo.InvariantCulture,
+				"Time:                  {0}",
+				first.TimeUtc is { } t ? LocalTimeFormatter.FormatBoth(t) : "(unknown)").AppendLine();
+			sb.AppendFormat(CultureInfo.InvariantCulture, "User:                  {0}", first.User ?? "(none)").AppendLine();
+			sb.AppendFormat(CultureInfo.InvariantCulture, "Domain:                {0}", first.Domain ?? "(none)").AppendLine();
+			sb.AppendFormat(CultureInfo.InvariantCulture, "Source IP:             {0}", first.Ip ?? "(none)").AppendLine();
+			sb.AppendFormat(CultureInfo.InvariantCulture, "LogonType:             {0}", first.LogonType?.ToString(CultureInfo.InvariantCulture) ?? "(none)").AppendLine();
+			sb.AppendFormat(CultureInfo.InvariantCulture, "Status:                {0}", first.Status ?? "(none)").AppendLine();
+			sb.AppendFormat(CultureInfo.InvariantCulture, "SubStatus:             {0}", first.SubStatus ?? "(none)").AppendLine();
+			sb.AppendFormat(CultureInfo.InvariantCulture, "SubStatus meaning:     {0}", first.SubStatusMeaning ?? "(none)").AppendLine();
+			sb.AppendFormat(CultureInfo.InvariantCulture, "AuthPackage:           {0}", first.AuthPackage ?? "(none)").AppendLine();
+			sb.AppendFormat(CultureInfo.InvariantCulture, "Workstation:           {0}", first.WorkstationName ?? "(none)").AppendLine();
+		}
+
+		return sb.ToString();
+	}
+}
+
+/// <summary>Renders a bounded, read-only preflight report describing whether the SQLite diagnostic
+/// support bundle (Microsoft.Data.Sqlite + SQLitePCLRaw.* + native e_sqlite3.dll) is physically
+/// present next to the running Configurator. External PowerShell diagnostics need these as loose
+/// files; this section tells the operator the exact path of each required file and its on-disk
+/// version. It performs at most one existence check and one metadata read per required file, never
+/// loads a managed assembly, and never throws — a failure to read a version degrades to "(unknown)".</summary>
+internal static class SqliteSupportBundleReportFormatter
+{
+	public static string Format(string configuratorDirectory)
+	{
+		StringBuilder sb = new();
+		sb.AppendLine();
+		sb.AppendLine("SQLite diagnostic support bundle (Configurator-local)");
+		sb.AppendLine("=====================================================");
+
+		if (string.IsNullOrWhiteSpace(configuratorDirectory))
+		{
+			sb.AppendLine("Configurator directory: (unknown)");
+			sb.AppendLine("Bundle status:          cannot inspect — base directory is not resolvable.");
+			return sb.ToString();
+		}
+
+		SqliteSupportBundleStatus status = SqliteSupportBundle.Verify(configuratorDirectory);
+		sb.AppendFormat(CultureInfo.InvariantCulture, "Configurator directory: {0}", configuratorDirectory).AppendLine();
+		sb.AppendFormat(
+			CultureInfo.InvariantCulture,
+			"Bundle complete:        {0} ({1}/{2} files present)",
+			status.Complete ? "Yes" : "No",
+			status.PresentFiles.Count,
+			SqliteSupportBundle.RequiredFiles.Count).AppendLine();
+		sb.AppendLine();
+		sb.AppendLine("Required files");
+		sb.AppendLine("--------------");
+
+		foreach (string fileName in SqliteSupportBundle.RequiredFiles)
+		{
+			string fullPath = Path.Combine(configuratorDirectory, fileName);
+			bool present = File.Exists(fullPath);
+			string marker = present ? "[OK ]" : "[!! ]";
+			sb.AppendFormat(CultureInfo.InvariantCulture, "{0} {1}", marker, fullPath).AppendLine();
+			if (present)
+			{
+				sb.AppendFormat(CultureInfo.InvariantCulture, "      version: {0}", TryReadFileVersion(fullPath)).AppendLine();
+			}
+		}
+
+		if (!status.Complete)
+		{
+			sb.AppendLine();
+			sb.AppendLine(SqliteSupportBundle.DescribeMissing(status));
+		}
+
+		return sb.ToString();
+	}
+
+	/// <summary>Reads file/product version strings without loading the assembly. Bounded and
+	/// exception-safe: any IO or metadata failure degrades to "(unknown)".</summary>
+	private static string TryReadFileVersion(string fullPath)
+	{
+		try
+		{
+			FileVersionInfo info = FileVersionInfo.GetVersionInfo(fullPath);
+			string file = string.IsNullOrWhiteSpace(info.FileVersion) ? "(none)" : info.FileVersion!;
+			string product = string.IsNullOrWhiteSpace(info.ProductVersion) ? "(none)" : info.ProductVersion!;
+			return string.Format(CultureInfo.InvariantCulture, "file={0}, product={1}", file, product);
+		}
+		catch
+		{
+			return "(unknown)";
+		}
+	}
+}

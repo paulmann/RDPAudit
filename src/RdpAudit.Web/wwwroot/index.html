@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang='en'>
+<head>
+  <meta charset='utf-8'>
+  <meta name='viewport' content='width=device-width, initial-scale=1'>
+  <title>RdpAudit Web Access</title>
+  <link rel='stylesheet' href='assets/css/rdpaudit-web.css'>
+</head>
+<body>
+  <div class='app'>
+    <header class='topbar'>
+      <div class='brand'>
+        <h1>RdpAudit Web Access</h1>
+        <p class='subtitle'>Read-only monitoring of the RdpAudit service</p>
+      </div>
+      <div class='top-actions'>
+        <span id='last-updated' class='pill'>Loading&#8230;</span>
+        <button id='refresh-btn' class='btn' type='button'>Refresh</button>
+        <button id='theme-toggle' class='btn btn-icon' type='button' aria-label='Toggle color theme'>&#9789;</button>
+      </div>
+    </header>
+
+    <nav class='tabs' id='tabs' role='tablist' aria-label='Dashboard sections'>
+      <button class='tab active' type='button' role='tab' aria-selected='true' data-tab='overview'>Overview</button>
+      <button class='tab' type='button' role='tab' aria-selected='false' data-tab='attacks'>Attacks</button>
+      <button class='tab' type='button' role='tab' aria-selected='false' data-tab='addresses'>Addresses</button>
+      <button class='tab' type='button' role='tab' aria-selected='false' data-tab='sessions'>Sessions</button>
+      <button class='tab' type='button' role='tab' aria-selected='false' data-tab='alerts'>Alerts</button>
+      <button class='tab' type='button' role='tab' aria-selected='false' data-tab='events'>Events</button>
+    </nav>
+
+    <div id='error-banner' class='error-banner hidden' role='alert'></div>
+
+    <main>
+      <section id='tab-overview' class='tab-panel active' role='tabpanel'>
+        <div id='status-cards' class='cards'></div>
+        <div class='card'>
+          <h2>Event channels</h2>
+          <div id='channel-status' class='table-wrap'></div>
+        </div>
+      </section>
+
+      <section id='tab-attacks' class='tab-panel' role='tabpanel'>
+        <div class='card filters'>
+          <label for='attacks-ip-query'>IP contains
+            <input id='attacks-ip-query' type='text' maxlength='256' placeholder='e.g. 185.220'>
+          </label>
+          <label for='attacks-min-threat'>Minimum threat score
+            <input id='attacks-min-threat' type='number' min='0' step='any' placeholder='0'>
+          </label>
+          <label class='check' for='attacks-only-blocked'>
+            <input id='attacks-only-blocked' type='checkbox'>
+            <span>Blocked only</span>
+          </label>
+          <button id='attacks-apply' class='btn' type='button'>Apply filters</button>
+        </div>
+        <div id='attacks-summary' class='cards'></div>
+        <div class='card'>
+          <h2>Attack statistics</h2>
+          <div id='attacks-table' class='table-wrap'></div>
+        </div>
+      </section>
+
+      <section id='tab-addresses' class='tab-panel' role='tabpanel'>
+        <div class='card'>
+          <h2>IP activity aggregates</h2>
+          <div id='addresses-table' class='table-wrap'></div>
+        </div>
+      </section>
+
+      <section id='tab-sessions' class='tab-panel' role='tabpanel'>
+        <div class='card'>
+          <h2>RDP sessions</h2>
+          <div id='sessions-table' class='table-wrap'></div>
+        </div>
+      </section>
+
+      <section id='tab-alerts' class='tab-panel' role='tabpanel'>
+        <div class='card'>
+          <h2>Recent alerts</h2>
+          <div id='alerts-table' class='table-wrap'></div>
+        </div>
+      </section>
+
+      <section id='tab-events' class='tab-panel' role='tabpanel'>
+        <div class='card filters'>
+          <label for='events-event-id'>Event id
+            <input id='events-event-id' type='number' step='1' min='0' placeholder='any'>
+          </label>
+          <label for='events-source-ip'>Source IP
+            <input id='events-source-ip' type='text' maxlength='64' placeholder='any'>
+          </label>
+          <label for='events-limit'>Limit
+            <input id='events-limit' type='number' min='1' max='500' value='100'>
+          </label>
+          <button id='events-apply' class='btn' type='button'>Apply filters</button>
+        </div>
+        <div class='card'>
+          <h2>Raw events</h2>
+          <div id='events-meta' class='meta'></div>
+          <div id='events-table' class='table-wrap'></div>
+        </div>
+      </section>
+    </main>
+
+    <footer>
+      <p>Read-only telemetry served by the RdpAudit Web proxy. Authentication is handled server-side and is never exposed to the page.</p>
+    </footer>
+  </div>
+
+  <script src='assets/js/rdpaudit-web.js'></script>
+</body>
+</html>

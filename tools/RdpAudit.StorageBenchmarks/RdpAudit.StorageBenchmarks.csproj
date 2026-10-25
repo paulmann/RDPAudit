@@ -1,0 +1,39 @@
+<Project Sdk="Microsoft.NET.Sdk">
+	<PropertyGroup>
+		<!--
+			Operator-runnable storage benchmark: measures this machine's store machinery through the real
+			product code and emits a report with tuning recommendations.
+
+			It is an executable tool, never a shipped artifact: it is not published by publish.ps1 and it
+			applies nothing it recommends. See docs/92-storage-benchmarks-and-tuning.md.
+		-->
+		<OutputType>Exe</OutputType>
+		<RootNamespace>RdpAudit.StorageBenchmarks</RootNamespace>
+		<AssemblyName>RdpAudit.StorageBenchmarks</AssemblyName>
+		<RuntimeIdentifier>win-x64</RuntimeIdentifier>
+		<SelfContained>false</SelfContained>
+		<IsPackable>false</IsPackable>
+		<Nullable>enable</Nullable>
+		<!-- The media-type fact needs device IOCTLs, whose buffers are passed as pointers. -->
+		<AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+		<!--
+			CA2100 (review SQL for injection) is suppressed project-wide because every SQL statement in
+			this tool is either a constant declared in the file that uses it or a constant composed with a
+			number this process resolved. The tool has no caller-supplied SQL and no wire input of any kind:
+			its only inputs are command-line switches that are parsed into typed bounds.
+		-->
+		<NoWarn>$(NoWarn);CA2100</NoWarn>
+		<!--
+			The offline compaction probe drives the REAL DatabaseCompactService, which lives in the
+			Configurator assembly, so this tool needs the Windows Desktop framework reference that project
+			carries. Reimplementing VACUUM INTO plus the validated swap here would mean publishing numbers
+			for code that is not the code that runs.
+		-->
+		<UseWindowsForms>true</UseWindowsForms>
+	</PropertyGroup>
+	<ItemGroup>
+		<ProjectReference Include="..\..\src\RdpAudit.Core\RdpAudit.Core.csproj" />
+		<ProjectReference Include="..\..\src\RdpAudit.Service\RdpAudit.Service.csproj" />
+		<ProjectReference Include="..\..\src\RdpAudit.Configurator\RdpAudit.Configurator.csproj" />
+	</ItemGroup>
+</Project>
