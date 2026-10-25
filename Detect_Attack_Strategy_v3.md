@@ -1,7 +1,8 @@
 # RdpAudit Attack Detection Strategy — v3.0
 
 > **Version:** 3.0
-> **Previous versions:** [v2.0](Detect_Attack_Strategy_v2.md)
+> **Previous versions:** v1.0 and v2.0 were removed from the repository on 25.10.2026; they are
+> superseded by this document and are kept only in the pre-Community archive.
 > **Scope:** Windows 10/11, Windows Server 2012 R2 – 2025, RDS Session Host, RD Gateway, standalone hosts, domain-joined environments
 > **Audience:** Senior Windows security engineers, detection engineers, SOC analysts, RdpAudit developers
 > **Last updated:** 2026-05-26

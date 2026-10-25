@@ -97,7 +97,7 @@ current. `EventCollectorWorker`, `EventNormalizerWorker` and
 - `src/RdpAudit.Service/Alerts/*` — 20+ rules (brute force, Kerberos spraying, pass-the-hash, Golden/Silver ticket, LSASS/PPL, privileged logon 4672, RDP hijack, off-hours, and others).
 - `AttackStatsAggregator`, `AttackThreatScoring` — per-IP statistics and a 0..100 score with green/yellow/red banding.
 - Per-IP forensics are stored as **file shards** (128-byte records, CRC-32C, ring overwrite), not as tables.
-- **Current detection strategy is `Detect_Attack_Strategy_v3.md`**; references to it exist in 10+ code sites. `Detect_Attack_Strategy.md` (v1) and `_v2.md` are archive and are not referenced by code.
+- **Current detection strategy is `Detect_Attack_Strategy_v3.md`**; references to it exist in 10+ code sites. The v1 and v2 drafts are no longer part of the repository: they were referenced by nothing in code and their copies live in the pre-Community archive (B:\Backup\RDPAudit.25.10.2026.PreCommunity).
 
 ### 4.4 IPC
 

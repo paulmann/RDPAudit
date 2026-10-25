@@ -1070,7 +1070,6 @@ RDPAudit 2.0 service and configurator solution. Generated from source file heade
 | docs/52-siem-export.md | SIEM export guide (CEF / LEEF / NDJSON formats, field shapes, operation). |
 | docs/20-service.md | Service architecture documentation. |
 | docs/91-troubleshooting.md | Operator troubleshooting guide. |
-| 1st-RdpMonSecurityAnalyzer.ps1 / .html | Standalone RDP attack security analyzer report. |
 | install.ps1 / publish.ps1 / benchmarks.ps1 | Install, publish and benchmark scripts. |
 
 
