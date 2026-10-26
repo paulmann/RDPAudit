@@ -9,6 +9,8 @@
 <!-- md-i18n:switcher -->
 **其他语言：** [English](README.md) · [Deutsch](README.de.md) · 中文 · [हिन्दी](README.hi.md) · [Español](README.es.md) · [Русский](README.ru.md)
 
+> **版本：Community（社区版）。** 单台服务器上的本地检测与本地处置。本构建包含什么、不包含什么：[README-EDITION.md](README-EDITION.md)。
+
 > **RDPAudit** 是一个可直接投产的 Windows 平台，用于监控 RDP 活动并对基于 RDP 的威胁做出响应。  
 > 它由两部分组成：**Windows 服务**（后台事件采集、21 条告警规则、自动拦截）和 **WinForms 配置器**（用于管理、统计、诊断与策略配置的图形界面）。
 

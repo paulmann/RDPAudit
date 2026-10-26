@@ -9,6 +9,8 @@
 <!-- md-i18n:switcher -->
 **अन्य भाषाओं में:** [English](README.md) · [Deutsch](README.de.md) · [中文](README.zh.md) · हिन्दी · [Español](README.es.md) · [Русский](README.ru.md)
 
+> **संस्करण: Community.** एक सर्वर पर स्थानीय पहचान और स्थानीय प्रतिक्रिया। इस बिल्ड में क्या है और क्या नहीं: [README-EDITION.md](README-EDITION.md).
+
 > **RDPAudit** RDP गतिविधि की निगरानी और RDP-आधारित ख़तरों का जवाब देने के लिए एक प्रोडक्शन-रेडी Windows प्लेटफ़ॉर्म है।
 > इसमें एक **Windows Service** (बैकग्राउंड में इवेंट संग्रह, 21 अलर्ट नियम, स्वचालित ब्लॉकिंग) और एक **WinForms Configurator** (प्रबंधन, आँकड़े, डायग्नोस्टिक्स और पॉलिसी कॉन्फ़िगरेशन के लिए GUI) शामिल हैं।
 

@@ -9,6 +9,8 @@
 <!-- md-i18n:switcher -->
 **En otros idiomas:** [English](README.md) · [Deutsch](README.de.md) · [中文](README.zh.md) · [हिन्दी](README.hi.md) · Español · [Русский](README.ru.md)
 
+> **Edición: Community.** Detección y respuesta locales en un solo servidor. Qué incluye esta compilación y qué no: [README-EDITION.md](README-EDITION.md).
+
 > **RDPAudit** es una plataforma Windows lista para producción destinada a monitorizar la actividad RDP y responder a las amenazas basadas en RDP.  
 > Consta de un **servicio de Windows** (recopilación de eventos en segundo plano, 21 reglas de alerta, bloqueo automático) y de un **Configurador WinForms** (GUI para gestión, estadísticas, diagnóstico y configuración de políticas).
 

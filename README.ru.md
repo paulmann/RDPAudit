@@ -9,6 +9,8 @@
 <!-- md-i18n:switcher -->
 **На других языках:** [English](README.md) · [Deutsch](README.de.md) · [中文](README.zh.md) · [हिन्दी](README.hi.md) · [Español](README.es.md) · Русский
 
+> **Издание: Community.** Локальная детекция и локальный ответ на одном сервере. Что входит в эту сборку, а чего в ней нет: [README-EDITION.md](README-EDITION.md).
+
 > **RDPAudit** — это production-ready платформа мониторинга и реагирования на RDP-угрозы для Windows.  
 > Состоит из **Windows Service** (фоновый сборщик событий + 21 правило тревог + автоблокировка) и **WinForms Configurator** (GUI для управления, просмотра статистики и настройки).
 

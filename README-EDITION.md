@@ -1,5 +1,8 @@
 # RDPAudit 2.0 - Community edition
 
+<!-- md-i18n:switcher -->
+**Read this in:** English · [Deutsch](README-EDITION.de.md) · [中文](README-EDITION.zh.md) · [हिन्दी](README-EDITION.hi.md) · [Español](README-EDITION.es.md) · [Русский](README-EDITION.ru.md)
+
 The free edition: one Windows server, local detection and local response, no fleet and no
 integrations. This is the edition that must stay useful on its own - a single host with the
 service, the Configurator and a Windows Firewall block is a complete product.
