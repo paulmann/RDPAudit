@@ -10,8 +10,10 @@
 // Extends: Add a refusal here whenever the publisher gains a rule.
 
 using System.Collections.Generic;
+using System.Linq;
 using System.Runtime.Versioning;
 using System.Security.AccessControl;
+using System.Security.Principal;
 using RdpAudit.Core.Util;
 using RdpAudit.Core.WebUi;
 using Xunit;
@@ -209,8 +211,17 @@ public sealed class WebUiPublisherTests : IDisposable
 		Assert.True(result.Succeeded, string.Join(" | ", result.Failures));
 		DirectorySecurity security = new DirectoryInfo(paths.WebUiWwwRootDirectory)
 			.GetAccessControl(AccessControlSections.Access);
-		string sddl = security.GetSecurityDescriptorSddlForm(AccessControlSections.Access);
-		string currentUserSid = System.Security.Principal.WindowsIdentity.GetCurrent().User!.Value;
-		Assert.Contains(currentUserSid, sddl, StringComparison.Ordinal);
+		// Assert the grant by SID, not by SDDL text: Windows spells some identities in the SDDL with an
+		// alias instead of the full SID (the built-in Administrator, RID 500, is "LA"), so a substring
+		// assertion depends on which account runs the test rather than on the ACL that was applied.
+		SecurityIdentifier currentUserSid = System.Security.Principal.WindowsIdentity.GetCurrent().User!;
+		Assert.Contains(
+			security.GetAccessRules(
+				includeExplicit: true,
+				includeInherited: true,
+				targetType: typeof(SecurityIdentifier)).Cast<FileSystemAccessRule>(),
+			rule => rule.AccessControlType == AccessControlType.Allow
+				&& rule.FileSystemRights.HasFlag(FileSystemRights.ReadAndExecute)
+				&& rule.IdentityReference.Equals(currentUserSid));
 	}
 }
