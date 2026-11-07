@@ -406,7 +406,10 @@ public sealed class WebTokenVault
 	/// identity or the single identity that wrote the file. Inherited ACEs are accepted (files normally
 	/// inherit the hardened folder DACL); a grant to any group - including Users, Everyone or Authenticated
 	/// Users - fails the check, and so does a SID that was not declared for this write. A missing DACL also
-	/// fails: 'D:' absent means everyone has full control.
+	/// fails: 'D:' absent means everyone has full control. Identities are compared as security identifiers,
+	/// not as raw SDDL text, because Windows spells well-known identities with aliases (the built-in
+	/// Administrator RID 500 is "LA", Local Service is "LS") - text comparison would reject a correctly
+	/// hardened file on such a host.
 	/// </summary>
 	internal static bool FileDaclAllowsOnlySystemAndAdministrators(
 		string sddl,
@@ -436,12 +439,7 @@ public sealed class WebTokenVault
 				foundAnyAllowAce = true;
 				string[] parts = ace.Split(';');
 				string sid = parts.Length >= 6 ? parts[5] : string.Empty;
-				string? allowedPoolSid = poolSid?.Value;
-				string? allowedWriterSid = writerSid?.Value;
-				if (!string.Equals(sid, "SY", StringComparison.Ordinal)
-					&& !string.Equals(sid, "BA", StringComparison.Ordinal)
-					&& !string.Equals(sid, allowedPoolSid, StringComparison.Ordinal)
-					&& !string.Equals(sid, allowedWriterSid, StringComparison.Ordinal))
+				if (!IsAllowedFileSid(sid, poolSid, writerSid))
 				{
 					return false;
 				}
@@ -451,6 +449,57 @@ public sealed class WebTokenVault
 		}
 
 		return foundAnyAllowAce;
+	}
+
+	/// <summary>
+	/// True when an allow ACE's SDDL SID token names SYSTEM, Administrators, the configured pool identity
+	/// or the identity that wrote the file. The token is resolved to a security identifier first: the
+	/// same identity can be spelled in two ways in SDDL (a full <c>S-1-5-21-...-500</c> or the alias
+	/// <c>LA</c>), and only the identifier identity of the two matters for access. A SID that cannot be
+	/// resolved is refused, so an unparsable descriptor never becomes an allow.
+	/// </summary>
+	private static bool IsAllowedFileSid(string sddlSid, SecurityIdentifier? poolSid, SecurityIdentifier? writerSid)
+	{
+		if (string.Equals(sddlSid, "SY", StringComparison.Ordinal)
+			|| string.Equals(sddlSid, "BA", StringComparison.Ordinal))
+		{
+			return true;
+		}
+
+		SecurityIdentifier? actual = ResolveSddlSid(sddlSid);
+		return actual is not null
+			&& ((poolSid is not null && actual.Equals(poolSid)) || (writerSid is not null && actual.Equals(writerSid)));
+	}
+
+	/// <summary>Resolves one SDDL SID token - a full SID or a well-known alias - to a security identifier, or
+	/// null when the token cannot be parsed. The aliases are resolved by the SDDL parser, so a SID that
+	/// Windows renders as an alias is compared with the identity that was declared for this write.</summary>
+	private static SecurityIdentifier? ResolveSddlSid(string sddlSid)
+	{
+		if (string.IsNullOrWhiteSpace(sddlSid))
+		{
+			return null;
+		}
+
+		try
+		{
+			if (sddlSid.StartsWith("S-1-", StringComparison.Ordinal))
+			{
+				return new SecurityIdentifier(sddlSid);
+			}
+
+			RawSecurityDescriptor descriptor = new("D:(A;;FA;;;" + sddlSid + ")");
+			if (descriptor.DiscretionaryAcl is { Count: 1 } acl && acl[0] is QualifiedAce ace)
+			{
+				return ace.SecurityIdentifier;
+			}
+
+			return null;
+		}
+		catch (Exception ex) when (ex is ArgumentException or FormatException or PlatformNotSupportedException)
+		{
+			return null;
+		}
 	}
 
 	private static void TryDelete(string path)

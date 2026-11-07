@@ -281,6 +281,32 @@ public sealed class WebTokenVaultTests : IDisposable
 		Assert.False(WebTokenVault.FileDaclAllowsOnlySystemAndAdministrators(sddl));
 	}
 
+	/// <summary>Windows spells some identities in SDDL with an alias instead of a full SID: the built-in
+	/// Administrator (RID 500) is "LA" and Local Service is "LS". This is the descriptor a Windows Server
+	/// runner produces when the test host runs as the built-in Administrator; the gate must accept it when
+	/// the identity that wrote the file is that same SID, and must still refuse it when it was not declared.</summary>
+	[Fact]
+	public void FileDacl_WhenTheWriterSidIsSpelledAsItsSddlAlias_IsAccepted()
+	{
+		SecurityIdentifier builtInAdministrator = ((QualifiedAce)new RawSecurityDescriptor("D:(A;;FA;;;LA)")
+			.DiscretionaryAcl![0]).SecurityIdentifier;
+		string sddl = "D:AI(A;ID;FA;;;SY)(A;ID;FA;;;BA)(A;ID;0x1301bf;;;LA)";
+
+		Assert.True(WebTokenVault.FileDaclAllowsOnlySystemAndAdministrators(sddl, null, builtInAdministrator));
+		Assert.False(WebTokenVault.FileDaclAllowsOnlySystemAndAdministrators(sddl, null));
+	}
+
+	/// <summary>Alias resolution must not become a hole: an allow ACE that names a well-known identity under
+	/// its alias, when that identity was not declared for this write, is still refused.</summary>
+	[Fact]
+	public void FileDacl_WhenAnUndeclaredIdentityIsGrantedUnderItsAlias_IsRefused()
+	{
+		string sddl = "D:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1301bf;;;NS)";
+
+		Assert.False(WebTokenVault.FileDaclAllowsOnlySystemAndAdministrators(
+			sddl, null, new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null)));
+	}
+
 	// ── Real filesystem behaviour (Windows) ─────────────────────────────────────
 
 	/// <summary>Given a successful store, when the secrets folder is read back from the filesystem, then
